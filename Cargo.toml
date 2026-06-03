@@ -4,3 +4,12 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+clap = { version = "4.6.1", features = ["derive"] }
+color-eyre = "0.6.5"
+crossterm = "0.29.0"
+env_logger = "0.11.10"
+log = "0.4.31"
+ratatui = "0.30.0"
+serde = { version = "1.0.228", features = ["derive"] }
+xdg = "3.0.0"
+yaml_serde = "0.10.4"
