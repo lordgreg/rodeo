@@ -7,12 +7,13 @@ use log::info;
 use ratatui::{
     DefaultTerminal, Frame,
     layout::{Constraint, Direction, Layout},
+    style::Style,
+    widgets::Block,
 };
 
-use crate::ui::{footer::Footer, theme::Theme};
+use crate::ui::{footer::Footer, panes::MoveDirection, theme::Theme};
 
 pub mod component;
-pub mod events;
 pub mod footer;
 pub mod header;
 pub mod panes;
@@ -46,7 +47,7 @@ impl App {
             ui_config: UiConfig::new(),
             header: Header::new("~info one", "~/current/directory/foo", "git:master +2 ~1"),
             footer: Footer::default(),
-            panes: Panes::new("Left Pane", "Right Pane"),
+            panes: Panes::new(),
         }
     }
 
@@ -58,7 +59,11 @@ impl App {
         Ok(())
     }
 
-    fn render(&self, frame: &mut Frame<'_>) {
+    fn render(&mut self, frame: &mut Frame<'_>) {
+        let background = Block::default().style(Style::new().bg(self.theme.colors.background()));
+
+        frame.render_widget(background, frame.area());
+
         let outer_layout = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Max(1), Constraint::Fill(1), Constraint::Max(1)])
@@ -83,6 +88,15 @@ impl App {
     fn handle_input(&mut self) -> std::io::Result<()> {
         match event::read()? {
             Event::Key(key_event) if key_event.kind == KeyEventKind::Press => {
+                // if popup is active, only handle esc to close it
+                if self.is_popup_active() {
+                    if key_event.code == KeyCode::Esc {
+                        self.ui_config.active_keybind_popup = false;
+                        self.ui_config.active_about_popup = false;
+                    }
+                    return Ok(());
+                }
+
                 match key_event.code {
                     KeyCode::Char('q') => self.exit = true,
                     KeyCode::Char('h') => self.toggle_active_pane(ActivePane::Left),
@@ -108,6 +122,13 @@ impl App {
                             self.exit = true;
                         }
                     }
+                    // up/down j/k
+                    KeyCode::Char('j') | KeyCode::Down => {
+                        self.panes.goto_next(&self.ui_config, MoveDirection::Down);
+                    }
+                    KeyCode::Char('k') | KeyCode::Up => {
+                        self.panes.goto_next(&self.ui_config, MoveDirection::Up);
+                    }
                     _ => {}
                 }
             }
@@ -121,7 +142,7 @@ impl App {
         self.ui_config.active_pane = pane;
     }
 
-    fn _is_popup_active(&self) -> bool {
+    fn is_popup_active(&self) -> bool {
         self.ui_config.active_keybind_popup || self.ui_config.active_about_popup
     }
 }

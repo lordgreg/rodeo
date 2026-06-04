@@ -1,4 +1,4 @@
-#[derive(Debug, Default)]
+#[derive(Debug, Default, PartialEq)]
 pub enum ActivePane {
     #[default]
     Left,

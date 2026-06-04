@@ -9,12 +9,12 @@ Rodeo is a modern terminal file manager inspired by Norton and Midnight Commande
 - [x] Project scaffolding with Cargo workspaces
 - [x] Input handling with Clap
 - [x] Load config from `~/.config/rodeo/config.toml` using Serde and Derive
-- [ ] Basic terminal UI setup with Ratatui
+- [x] Basic terminal UI setup with Ratatui
 
 ## M1: Navigation
 
 - ~~[ ] Single-pane file browser~~
-- [ ] `hjkl` navigation
+- [x] `hjkl` navigation
 - [ ] `Enter` to open directories
 - [x] `q` to quit
 

@@ -16,7 +16,7 @@ impl PopupKeybinds {
     }
 }
 impl Component for PopupKeybinds {
-    fn render(&self, frame: &mut Frame<'_>, theme: &Theme, _ui: &UiConfig, area: Rect) {
+    fn render(&mut self, frame: &mut Frame<'_>, theme: &Theme, _ui: &UiConfig, area: Rect) {
         let popup_area = Rect {
             x: area.x + area.width / 4,
             y: area.y + area.height / 4,
