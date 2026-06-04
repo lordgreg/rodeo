@@ -99,7 +99,7 @@ impl Panes {
         widths: [Constraint; 4],
     ) {
         let color_border = if active {
-            theme.colors.highlight()
+            theme.colors.secondary()
         } else {
             theme.colors.border()
         };
@@ -113,8 +113,8 @@ impl Panes {
             .style(Style::new().fg(theme.colors.primary()))
             .row_highlight_style(
                 Style::new()
-                    .fg(theme.colors.secondary())
-                    .bg(theme.colors.background())
+                    .fg(theme.colors.highlight())
+                    .bg(theme.colors.surface())
                     .bold(),
             )
             .cell_highlight_style(Style::new().reversed().yellow())

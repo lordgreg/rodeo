@@ -1,3 +1,5 @@
+use std::fs;
+
 use log::info;
 use ratatui::style::Color;
 use serde::{Deserialize, Serialize};
@@ -126,8 +128,38 @@ impl Theme {
         Self::load_from_file(&filename)
     }
 
+    pub fn get_theme_list() -> Vec<String> {
+        let mut themes: Vec<String> = Vec::new();
+        let entries = fs::read_dir(DEFAULT_THEME_DIR).unwrap();
+
+        for entry in entries {
+            let entry = entry.unwrap();
+            let path = entry.path();
+
+            if !path.extension().is_some_and(|ext| ext == "yaml") {
+                continue;
+            }
+
+            if let Some(stem) = path.file_stem() {
+                if let Some(name) = stem.to_str() {
+                    themes.push(name.to_string());
+                }
+            }
+        }
+
+        themes
+    }
+
     pub fn load_from_file(filename: &str) -> Self {
-        let theme_str = std::fs::read_to_string(filename).expect("Failed to read theme file");
+        let theme_str = match std::fs::read_to_string(filename) {
+            Ok(s) => s,
+            Err(e) => {
+                log::error!("Failed to read theme file '{}': {}", filename, e);
+                log::error!("Available themes:\n{}", Self::get_theme_list().join("\n"));
+                std::process::exit(1);
+            }
+        };
+
         let theme: Theme = yaml_serde::from_str(&theme_str).expect("Failed to parse theme file");
 
         info!("Loaded theme {}", theme.name);
