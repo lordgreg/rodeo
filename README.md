@@ -15,7 +15,7 @@ Rodeo is a modern terminal file manager inspired by Norton and Midnight Commande
 
 - ~~[ ] Single-pane file browser~~
 - [x] `hjkl` navigation
-- [ ] `Enter` to open directories
+- [x] `Enter` to open directories
 - [x] `q` to quit
 
 ## M2: Operations
