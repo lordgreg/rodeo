@@ -1,17 +1,18 @@
+use crate::{
+    Config,
+    ui::{footer::Footer, panes::{MoveDirection, OpenAction}, theme::Theme},
+};
 use crossterm::event::{
     self,
     Event::{self},
-    KeyCode, KeyEventKind,
+    KeyCode, KeyEventKind, KeyModifiers,
 };
-use log::info;
 use ratatui::{
     DefaultTerminal, Frame,
     layout::{Constraint, Direction, Layout},
     style::Style,
     widgets::Block,
 };
-
-use crate::ui::{footer::Footer, panes::MoveDirection, theme::Theme};
 
 pub mod component;
 pub mod footer;
@@ -40,14 +41,14 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(theme: Theme) -> Self {
+    pub fn new(theme: Theme, config: Config) -> Self {
         Self {
             exit: false,
             theme,
             ui_config: UiConfig::new(),
             header: Header::new("~info one", "~/current/directory/foo", "git:master +2 ~1"),
             footer: Footer::default(),
-            panes: Panes::new(),
+            panes: Panes::new(config),
         }
     }
 
@@ -97,18 +98,42 @@ impl App {
                     return Ok(());
                 }
 
-                match key_event.code {
-                    KeyCode::Char('q') => self.exit = true,
-                    KeyCode::Char('h') => self.toggle_active_pane(ActivePane::Left),
-                    KeyCode::Char('l') => self.toggle_active_pane(ActivePane::Right),
-                    KeyCode::Char('k')
-                        if key_event
-                            .modifiers
-                            .contains(crossterm::event::KeyModifiers::CONTROL) =>
-                    {
-                        self.ui_config.active_about_popup = false;
-                        self.ui_config.active_keybind_popup = !self.ui_config.active_keybind_popup
+                if key_event.modifiers.contains(KeyModifiers::CONTROL) {
+                    match key_event.code {
+                        KeyCode::Char('h') => {
+                            self.ui_config.show_hidden_entries =
+                                !self.ui_config.show_hidden_entries;
+                            self.panes.reload(self.ui_config.show_hidden_entries);
+                        }
+                        _ => todo!("no action defined!"),
                     }
+                }
+
+                match key_event.code {
+                    KeyCode::Enter => {
+                        match self.panes.get_active_pane_mut().open() {
+                            OpenAction::Reload => {
+                                self.panes.reload(self.ui_config.show_hidden_entries);
+                            }
+                            OpenAction::FileOpened(_path) => {
+                                // future: spawn editor/viewer
+                            }
+                            OpenAction::Nothing => {}
+                        }
+                    }
+                    KeyCode::Char('x') => self.panes.get_active_pane_mut().toggle_select(),
+                    KeyCode::Char('q') => self.exit = true,
+                    KeyCode::Char('h') => self.panes.set_active_pane(ActivePane::Left),
+                    KeyCode::Char('l') => self.panes.set_active_pane(ActivePane::Right),
+                    KeyCode::Tab => self.panes.toggle_active_pane(),
+                    // KeyCode::Char('k')
+                    //     if key_event
+                    //         .modifiers
+                    //         .contains(crossterm::event::KeyModifiers::CONTROL) =>
+                    // {
+                    //     self.ui_config.active_about_popup = false;
+                    //     self.ui_config.active_keybind_popup = !self.ui_config.active_keybind_popup
+                    // }
                     KeyCode::Char('?') => {
                         self.ui_config.active_keybind_popup = false;
                         self.ui_config.active_about_popup = !self.ui_config.active_about_popup
@@ -124,10 +149,10 @@ impl App {
                     }
                     // up/down j/k
                     KeyCode::Char('j') | KeyCode::Down => {
-                        self.panes.goto_next(&self.ui_config, MoveDirection::Down);
+                        self.panes.goto_next(MoveDirection::Down);
                     }
                     KeyCode::Char('k') | KeyCode::Up => {
-                        self.panes.goto_next(&self.ui_config, MoveDirection::Up);
+                        self.panes.goto_next(MoveDirection::Up);
                     }
                     _ => {}
                 }
@@ -135,11 +160,6 @@ impl App {
             _ => {}
         };
         Ok(())
-    }
-
-    fn toggle_active_pane(&mut self, pane: ActivePane) {
-        info!("Switching active pane to {:?}", pane);
-        self.ui_config.active_pane = pane;
     }
 
     fn is_popup_active(&self) -> bool {

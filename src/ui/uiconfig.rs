@@ -7,11 +7,11 @@ pub enum ActivePane {
 
 #[derive(Debug, Default)]
 pub struct UiConfig {
-    pub active_pane: ActivePane,
-    pub log_pane: bool,
-    pub active_cmd_popup: bool,
+    // pub log_pane: bool,
+    // pub active_cmd_popup: bool,
     pub active_keybind_popup: bool,
     pub active_about_popup: bool,
+    pub show_hidden_entries: bool,
 }
 
 impl UiConfig {

@@ -1,3 +1,11 @@
+use std::{
+    fs::{self},
+    path::{Path, PathBuf},
+    time::SystemTime,
+};
+
+use chrono;
+
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
@@ -5,47 +13,53 @@ use ratatui::{
     widgets::{Block, Borders, Row, Table, TableState},
 };
 
-use crate::ui::{
-    component::Component,
-    theme::Theme,
-    uiconfig::{ActivePane, UiConfig},
+use crate::{
+    config::Config,
+    ui::{
+        component::Component,
+        theme::Theme,
+        uiconfig::{ActivePane, UiConfig},
+    },
 };
 
-#[derive(PartialEq)]
-pub enum MoveDirection {
-    Up,
-    Down,
+fn format_size(size: u64) -> String {
+    const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB"];
+    let mut size = size as f64;
+    let mut unit_idx = 0;
+    while size >= 1024.0 && unit_idx < UNITS.len() - 1 {
+        size /= 1024.0;
+        unit_idx += 1;
+    }
+    if unit_idx == 0 {
+        format!("{} {}", size as u64, UNITS[unit_idx])
+    } else {
+        format!("{:.1} {}", size, UNITS[unit_idx])
+    }
+}
+
+fn format_date(t: SystemTime) -> String {
+    let dt: chrono::DateTime<chrono::Utc> = t.into();
+    dt.format("%Y-%m-%d %H:%M").to_string()
 }
 
 #[derive(Debug)]
-pub struct Panes {
-    pub table_state_left: TableState,
-    pub table_state_right: TableState,
-    rows_left: Vec<Row<'static>>,
-    rows_right: Vec<Row<'static>>,
-    widths: [Constraint; 4],
+pub struct Pane {
+    pub state: TableState,
+    pub path: String,
+    pub selection: Vec<PathBuf>,
+    paths: Vec<PathBuf>,
+    constraints: [Constraint; 4],
 }
 
-impl Panes {
-    pub fn new() -> Self {
+impl Pane {
+    pub fn new(path: String, show_hidden: bool) -> Self {
+        let paths = read_dir_paths(&path, show_hidden);
         Self {
-            table_state_left: TableState::default(),
-            table_state_right: TableState::default(),
-            rows_left: vec![
-                Row::new(["", "..", "/", ""]),
-                Row::new(["", "foo", "12kb", "date()"]),
-                Row::new(["◌", "foo", "12kb", "date()"]),
-                Row::new(["", "foo", "12kb", "date()"]),
-                Row::new(["", "foo", "12kb", "date()"]),
-            ],
-            rows_right: vec![
-                Row::new(["", "..", "/", ""]),
-                Row::new(["", "foo2", "12kb", "date()"]),
-                Row::new(["", "foo2", "12kb", "date()"]),
-                Row::new(["", "foo2", "12kb", "date()"]),
-                Row::new(["", "foo2", "12kb", "date()"]),
-            ],
-            widths: [
+            state: TableState::default(),
+            path,
+            selection: Vec::new(),
+            paths,
+            constraints: [
                 Constraint::Max(1),
                 Constraint::Fill(1),
                 Constraint::Percentage(20),
@@ -54,50 +68,107 @@ impl Panes {
         }
     }
 
-    pub fn next_index(row_count: usize, current: Option<usize>, direction: MoveDirection) -> usize {
-        let max = row_count.saturating_sub(1);
-        match direction {
-            MoveDirection::Down => match current {
-                Some(i) if i >= max => 0,
-                Some(i) => i + 1,
-                None => 0,
-            },
-            MoveDirection::Up => match current {
-                Some(0) => max,
-                Some(i) => i - 1,
-                None => 0,
-            },
+    pub fn clear_selections(&mut self) {
+        self.selection.clear();
+    }
+
+    pub fn entries_to_rows(&self) -> Vec<[String; 4]> {
+        self.paths
+            .iter()
+            .map(|p| {
+                let is_selected = self.selection.contains(p);
+                let marker = if is_selected { "x" } else { "" };
+
+                let is_parent = p.file_name().is_some_and(|n| n == "..");
+                let name = p
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "-".to_string());
+
+                if is_parent {
+                    return [marker.to_string(), name, String::new(), String::new()];
+                }
+
+                let (size_str, date_str) = fs::metadata(p)
+                    .ok()
+                    .map(|meta| {
+                        let size = format_size(meta.len());
+                        let date = meta
+                            .modified()
+                            .ok()
+                            .map(format_date)
+                            .unwrap_or_else(|| "-".to_string());
+                        (size, date)
+                    })
+                    .unwrap_or_else(|| ("-".to_string(), "-".to_string()));
+
+                [marker.to_string(), name, size_str, date_str]
+            })
+            .collect()
+    }
+
+    pub fn toggle_select(&mut self) {
+        let Some(i) = self.state.selected() else {
+            return;
+        };
+        let Some(path) = self.paths.get(i) else {
+            return;
+        };
+
+        if path.file_name().is_some_and(|n| n == "..") {
+            return;
+        }
+
+        if let Some(pos) = self.selection.iter().position(|p| p == path) {
+            self.selection.remove(pos);
+        } else {
+            self.selection.push(path.clone());
         }
     }
 
-    pub fn goto_next(&mut self, ui: &UiConfig, direction: MoveDirection) {
-        let (current, table_state, row_count) = if ui.active_pane == ActivePane::Left {
-            (
-                self.table_state_left.selected(),
-                &mut self.table_state_left,
-                self.rows_left.len(),
-            )
-        } else {
-            (
-                self.table_state_right.selected(),
-                &mut self.table_state_right,
-                self.rows_right.len(),
-            )
-        };
-
-        let next = Self::next_index(row_count, current, direction);
-        table_state.select(Some(next));
+    pub fn reload(&mut self, show_hidden: bool) {
+        self.clear_selections();
+        self.paths = read_dir_paths(&self.path, show_hidden);
+        self.state = TableState::default();
     }
 
-    fn render_pane(
+    pub fn open(&mut self) -> OpenAction {
+        let Some(i) = self.state.selected() else {
+            return OpenAction::Nothing;
+        };
+
+        let Some(entry) = self.paths.get(i) else {
+            return OpenAction::Nothing;
+        };
+
+        if entry.is_dir() {
+            let previous = self.path.clone();
+            self.path = entry.to_string_lossy().to_string();
+
+            if self.path == ".." {
+                if let Some(parent) = Path::new(&previous).parent() {
+                    self.path = parent.to_string_lossy().to_string();
+
+                    return OpenAction::Reload;
+                }
+            }
+
+            return OpenAction::Reload;
+        }
+
+        OpenAction::FileOpened(entry.clone())
+    }
+
+    pub fn render(
+        &mut self,
         frame: &mut Frame,
         area: Rect,
-        table_state: &mut TableState,
         active: bool,
         theme: &Theme,
-        rows: &[Row<'static>],
-        widths: [Constraint; 4],
+        _ui: &UiConfig,
     ) {
+        let entries = self.entries_to_rows();
+
         let color_border = if active {
             theme.colors.secondary()
         } else {
@@ -107,7 +178,12 @@ impl Panes {
         let header = Row::new(["", "Name", "Size", "Modify Time"])
             .style(Style::new().fg(theme.colors.highlight()).bold());
 
-        let table = Table::new(rows.iter().cloned(), widths)
+        let rows: Vec<Row> = entries
+            .iter()
+            .map(|e| Row::new([e[0].as_str(), e[1].as_str(), e[2].as_str(), e[3].as_str()]))
+            .collect();
+
+        let table = Table::new(rows, self.constraints)
             .header(header)
             .column_spacing(1)
             .style(Style::new().fg(theme.colors.primary()))
@@ -126,7 +202,123 @@ impl Panes {
                     .title_style(Style::new().fg(theme.colors.primary())),
             );
 
-        frame.render_stateful_widget(table, area, table_state);
+        frame.render_stateful_widget(table, area, &mut self.state);
+    }
+}
+
+fn read_dir_paths(dir: &str, show_hidden: bool) -> Vec<PathBuf> {
+    let mut paths: Vec<PathBuf> = fs::read_dir(dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| {
+            show_hidden
+                || !p
+                    .file_name()
+                    .is_some_and(|n| n.to_string_lossy().starts_with('.'))
+        })
+        .collect();
+    paths.insert(0, PathBuf::from(".."));
+    paths
+}
+
+#[derive(PartialEq)]
+pub enum MoveDirection {
+    Up,
+    Down,
+}
+
+pub enum OpenAction {
+    Reload,
+    FileOpened(PathBuf),
+    Nothing,
+}
+
+#[derive(Debug)]
+pub struct Panes {
+    pub pane_left: Pane,
+    pub pane_right: Pane,
+    active_pane: ActivePane,
+}
+
+impl Panes {
+    pub fn new(config: Config) -> Self {
+        Self {
+            pane_left: Pane::new(config.initial_dir().to_string(), false),
+            pane_right: Pane::new(config.initial_dir().to_string(), false),
+            active_pane: ActivePane::Left,
+        }
+    }
+
+    pub fn set_active_pane(&mut self, pane: ActivePane) {
+        self.active_pane = pane;
+    }
+
+    pub fn get_active_pane(&self) -> &Pane {
+        if self.active_pane == ActivePane::Left {
+            &self.pane_left
+        } else {
+            &self.pane_right
+        }
+    }
+
+    pub fn get_active_pane_mut(&mut self) -> &mut Pane {
+        if self.active_pane == ActivePane::Left {
+            &mut self.pane_left
+        } else {
+            &mut self.pane_right
+        }
+    }
+
+    pub fn toggle_active_pane(&mut self) {
+        self.active_pane = if self.active_pane == ActivePane::Left {
+            ActivePane::Right
+        } else {
+            ActivePane::Left
+        }
+    }
+
+    pub fn reload(&mut self, show_hidden: bool) {
+        self.pane_left.reload(show_hidden);
+        self.pane_right.reload(show_hidden);
+    }
+
+    pub fn next_index(
+        row_count: &usize,
+        current: Option<usize>,
+        direction: MoveDirection,
+    ) -> usize {
+        let max = row_count.saturating_sub(1);
+        match direction {
+            MoveDirection::Down => match current {
+                Some(i) if i >= max => 0,
+                Some(i) => i + 1,
+                None => 0,
+            },
+            MoveDirection::Up => match current {
+                Some(0) => max,
+                Some(i) => i - 1,
+                None => 0,
+            },
+        }
+    }
+
+    pub fn goto_next(&mut self, direction: MoveDirection) {
+        if self.active_pane == ActivePane::Left {
+            let next = Self::next_index(
+                &self.pane_left.paths.len(),
+                self.pane_left.state.selected(),
+                direction,
+            );
+            self.pane_left.state.select(Some(next));
+        } else {
+            let next = Self::next_index(
+                &self.pane_right.paths.len(),
+                self.pane_right.state.selected(),
+                direction,
+            );
+            self.pane_right.state.select(Some(next));
+        }
     }
 }
 
@@ -137,24 +329,19 @@ impl Component for Panes {
             .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
             .split(area);
 
-        Self::render_pane(
+        self.pane_left.render(
             frame,
             layout[0],
-            &mut self.table_state_left,
-            ui.active_pane == ActivePane::Left,
+            self.active_pane == ActivePane::Left,
             theme,
-            &self.rows_left,
-            self.widths,
+            ui,
         );
-
-        Self::render_pane(
+        self.pane_right.render(
             frame,
             layout[1],
-            &mut self.table_state_right,
-            ui.active_pane == ActivePane::Right,
+            self.active_pane == ActivePane::Right,
             theme,
-            &self.rows_right,
-            self.widths,
+            ui,
         );
     }
 }

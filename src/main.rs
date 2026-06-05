@@ -6,6 +6,8 @@ use log::info;
 use ui::App;
 use ui::theme::Theme;
 
+use crate::config::Config;
+
 mod cli;
 mod config;
 mod ui;
@@ -16,11 +18,11 @@ fn main() -> io::Result<()> {
 
     let args = cli::Args::parse();
 
-    let config = config::load_config(args.config.as_deref());
+    let config = Config::load_config(args.config.as_deref());
     println!("Config: {:?}", config);
 
     let theme = Theme::load_theme(args.theme.as_deref());
 
     info!("Starting UI");
-    ratatui::run(|terminal| App::new(theme).run(terminal))
+    ratatui::run(|terminal| App::new(theme, config).run(terminal))
 }
