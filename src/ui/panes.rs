@@ -42,22 +42,87 @@ fn format_date(t: SystemTime) -> String {
     dt.format("%Y-%m-%d %H:%M").to_string()
 }
 
+#[derive(PartialEq, Debug, Clone)]
+pub enum EntryKind {
+    Parent,
+    Directory,
+    Symlink,
+    File,
+    Unknown,
+}
+
+#[derive(Debug, Clone)]
+pub struct Entry {
+    pub kind: EntryKind,
+    pub path: PathBuf,
+    pub name: String,
+    pub size: String,
+    pub modified: String,
+    pub selected: bool,
+}
+
+impl Entry {
+    pub fn new(path: PathBuf) -> Self {
+        let kind = if path.is_file() {
+            EntryKind::File
+        } else if path.file_name().is_some_and(|name| name == "..") {
+            EntryKind::Parent
+        } else if path.is_dir() {
+            EntryKind::Directory
+        } else if path.is_symlink() {
+            EntryKind::Symlink
+        } else {
+            EntryKind::Unknown
+        };
+
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "-".to_string());
+
+        let (size, modified) = path
+            .metadata()
+            .ok()
+            .map(|meta| {
+                (
+                    format_size(meta.len()),
+                    meta.modified()
+                        .ok()
+                        .map(format_date)
+                        .unwrap_or_else(|| "-".to_string()),
+                )
+            })
+            .unwrap_or_else(|| ("-".to_string(), "-".to_string()));
+
+        Self {
+            kind,
+            path,
+            name,
+            size,
+            modified,
+            selected: false,
+        }
+    }
+
+    pub fn toggle_selected(&mut self) {
+        self.selected = !self.selected;
+    }
+}
+
 #[derive(Debug)]
 pub struct Pane {
     pub state: TableState,
     pub path: String,
-    pub selection: Vec<PathBuf>,
-    paths: Vec<PathBuf>,
+    paths: Vec<Entry>,
     constraints: [Constraint; 4],
 }
 
 impl Pane {
     pub fn new(path: String, show_hidden: bool) -> Self {
-        let paths = read_dir_paths(&path, show_hidden);
+        let paths = read_entries(&path, show_hidden);
         Self {
             state: TableState::default(),
             path,
-            selection: Vec::new(),
             paths,
             constraints: [
                 Constraint::Max(1),
@@ -69,40 +134,24 @@ impl Pane {
     }
 
     pub fn clear_selections(&mut self) {
-        self.selection.clear();
+        for path in self.paths.iter_mut() {
+            path.selected = false;
+        }
     }
+    // .iter_mut(|entry| entry.selected = false);
 
     pub fn entries_to_rows(&self) -> Vec<[String; 4]> {
         self.paths
             .iter()
             .map(|p| {
-                let is_selected = self.selection.contains(p);
-                let marker = if is_selected { "x" } else { "" };
+                let marker = if p.selected { "x" } else { "" };
 
-                let is_parent = p.file_name().is_some_and(|n| n == "..");
-                let name = p
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_else(|| "-".to_string());
-
-                if is_parent {
-                    return [marker.to_string(), name, String::new(), String::new()];
-                }
-
-                let (size_str, date_str) = fs::metadata(p)
-                    .ok()
-                    .map(|meta| {
-                        let size = format_size(meta.len());
-                        let date = meta
-                            .modified()
-                            .ok()
-                            .map(format_date)
-                            .unwrap_or_else(|| "-".to_string());
-                        (size, date)
-                    })
-                    .unwrap_or_else(|| ("-".to_string(), "-".to_string()));
-
-                [marker.to_string(), name, size_str, date_str]
+                [
+                    marker.to_string(),
+                    p.name.clone(),
+                    p.size.clone(),
+                    p.modified.clone(),
+                ]
             })
             .collect()
     }
@@ -111,25 +160,22 @@ impl Pane {
         let Some(i) = self.state.selected() else {
             return;
         };
-        let Some(path) = self.paths.get(i) else {
+        let Some(path) = self.paths.get_mut(i) else {
             return;
         };
 
-        if path.file_name().is_some_and(|n| n == "..") {
+        if path.kind != EntryKind::File {
             return;
         }
 
-        if let Some(pos) = self.selection.iter().position(|p| p == path) {
-            self.selection.remove(pos);
-        } else {
-            self.selection.push(path.clone());
-        }
+        path.toggle_selected();
     }
 
     pub fn reload(&mut self, show_hidden: bool) {
         self.clear_selections();
-        self.paths = read_dir_paths(&self.path, show_hidden);
+        self.paths = read_entries(&self.path, show_hidden);
         self.state = TableState::default();
+        self.state.select(Some(0));
     }
 
     pub fn open(&mut self) -> OpenAction {
@@ -141,22 +187,26 @@ impl Pane {
             return OpenAction::Nothing;
         };
 
-        if entry.is_dir() {
-            let previous = self.path.clone();
-            self.path = entry.to_string_lossy().to_string();
+        match entry.kind {
+            EntryKind::File => OpenAction::FileOpened(entry.clone()),
+            EntryKind::Parent => {
+                let previous = self.path.clone();
 
-            if self.path == ".." {
                 if let Some(parent) = Path::new(&previous).parent() {
                     self.path = parent.to_string_lossy().to_string();
 
                     return OpenAction::Reload;
+                } else {
+                    return OpenAction::Nothing;
                 }
             }
-
-            return OpenAction::Reload;
-        }
-
-        OpenAction::FileOpened(entry.clone())
+            EntryKind::Directory => {
+                self.path = entry.path.to_str().unwrap().to_string();
+                return OpenAction::Reload;
+            }
+            _ => OpenAction::Nothing,
+        };
+        OpenAction::Nothing
     }
 
     pub fn render(
@@ -206,8 +256,8 @@ impl Pane {
     }
 }
 
-fn read_dir_paths(dir: &str, show_hidden: bool) -> Vec<PathBuf> {
-    let mut paths: Vec<PathBuf> = fs::read_dir(dir)
+fn read_entries(dir: &str, show_hidden: bool) -> Vec<Entry> {
+    let mut entries: Vec<Entry> = fs::read_dir(dir)
         .unwrap()
         .filter_map(|e| e.ok())
         .map(|e| e.path())
@@ -217,9 +267,10 @@ fn read_dir_paths(dir: &str, show_hidden: bool) -> Vec<PathBuf> {
                     .file_name()
                     .is_some_and(|n| n.to_string_lossy().starts_with('.'))
         })
+        .map(|p| Entry::new(p))
         .collect();
-    paths.insert(0, PathBuf::from(".."));
-    paths
+    entries.insert(0, Entry::new(Path::new(dir).join("..")));
+    entries
 }
 
 #[derive(PartialEq)]
@@ -230,7 +281,7 @@ pub enum MoveDirection {
 
 pub enum OpenAction {
     Reload,
-    FileOpened(PathBuf),
+    FileOpened(Entry),
     Nothing,
 }
 

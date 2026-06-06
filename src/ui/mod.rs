@@ -1,6 +1,10 @@
 use crate::{
     Config,
-    ui::{footer::Footer, panes::{MoveDirection, OpenAction}, theme::Theme},
+    ui::{
+        footer::Footer,
+        panes::{MoveDirection, OpenAction},
+        theme::Theme,
+    },
 };
 use crossterm::event::{
     self,
@@ -115,7 +119,7 @@ impl App {
                             OpenAction::Reload => {
                                 self.panes.reload(self.ui_config.show_hidden_entries);
                             }
-                            OpenAction::FileOpened(_path) => {
+                            OpenAction::FileOpened(_entry) => {
                                 // future: spawn editor/viewer
                             }
                             OpenAction::Nothing => {}
