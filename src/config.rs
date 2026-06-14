@@ -4,6 +4,8 @@ use log::{info, warn};
 use serde::{Deserialize, Serialize};
 use xdg;
 
+use crate::ui::panes::{SortOrder, SortType};
+
 pub const CONFIG_FILENAME: &str = "config.yaml";
 pub const CONFIG_DIR: &str = "rodeo";
 
@@ -18,6 +20,19 @@ fn default_theme() -> String {
 fn default_initial_directory() -> String {
     env!("HOME").to_string()
 }
+fn default_sort_type() -> SortType {
+    SortType::Name
+}
+fn default_sort_order() -> SortOrder {
+    SortOrder::Ascending
+}
+fn default_show_hidden() -> bool {
+    false
+}
+fn default_directories_on_top() -> bool {
+    true
+}
+
 ////
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Config {
@@ -27,6 +42,14 @@ pub struct Config {
     theme: String,
     #[serde(default = "default_initial_directory")]
     initial_directory: String,
+    #[serde(default = "default_sort_type")]
+    pub sort_type: SortType,
+    #[serde(default = "default_sort_order")]
+    pub sort_order: SortOrder,
+    #[serde(default = "default_show_hidden")]
+    pub show_hidden: bool,
+    #[serde(default = "default_directories_on_top")]
+    pub directories_on_top: bool,
 }
 
 impl Config {
@@ -35,6 +58,10 @@ impl Config {
             read_only: default_read_only(),
             theme: default_theme(),
             initial_directory: default_initial_directory(),
+            sort_order: default_sort_order(),
+            sort_type: default_sort_type(),
+            show_hidden: default_show_hidden(),
+            directories_on_top: default_directories_on_top(),
         }
     }
 

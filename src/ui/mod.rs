@@ -2,7 +2,7 @@ use crate::{
     Config,
     ui::{
         footer::Footer,
-        panes::{MoveDirection, OpenAction},
+        panes::{MoveDirection, OpenAction, SortOrder, SortType},
         theme::Theme,
     },
 };
@@ -42,17 +42,20 @@ pub struct App {
     header: Header,
     footer: Footer,
     panes: Panes,
+    config: Config,
 }
 
 impl App {
     pub fn new(theme: Theme, config: Config) -> Self {
+        let panes = Panes::new(&config);
         Self {
             exit: false,
             theme,
             ui_config: UiConfig::new(),
             header: Header::new("~info one", "~/current/directory/foo", "git:master +2 ~1"),
             footer: Footer::default(),
-            panes: Panes::new(config),
+            panes,
+            config,
         }
     }
 
@@ -102,14 +105,46 @@ impl App {
                     return Ok(());
                 }
 
+                // CTRL
                 if key_event.modifiers.contains(KeyModifiers::CONTROL) {
                     match key_event.code {
                         KeyCode::Char('h') => {
-                            self.ui_config.show_hidden_entries =
-                                !self.ui_config.show_hidden_entries;
-                            self.panes.reload(self.ui_config.show_hidden_entries);
+                            self.config.show_hidden = !self.config.show_hidden;
+                            self.panes.reload(&self.config);
                         }
-                        _ => todo!("no action defined!"),
+                        _ => todo!("no action defined while pressing CTRL"),
+                    }
+                }
+
+                // SHIFT
+                if key_event.modifiers.contains(KeyModifiers::SHIFT) {
+                    match key_event.code {
+                        KeyCode::Right => {
+                            self.config.sort_type = match self.config.sort_type {
+                                SortType::Flagged => SortType::Name,
+                                SortType::Name => SortType::Size,
+                                SortType::Size => SortType::Time,
+                                SortType::Time => SortType::Flagged,
+                            };
+                            self.panes.reload(&self.config);
+                        }
+                        KeyCode::Left => {
+                            self.config.sort_type = match self.config.sort_type {
+                                SortType::Flagged => SortType::Time,
+                                SortType::Time => SortType::Size,
+                                SortType::Size => SortType::Name,
+                                SortType::Name => SortType::Flagged,
+                            };
+                            self.panes.reload(&self.config);
+                        }
+                        KeyCode::Char('O') => {
+                            self.config.sort_order = match self.config.sort_order {
+                                SortOrder::Ascending => SortOrder::Descending,
+                                SortOrder::Descending => SortOrder::Ascending,
+                            };
+                            self.panes.reload(&self.config)
+                        }
+                        _ => todo!("SHIFT key {} not yet implemented.", key_event.code),
                     }
                 }
 
@@ -117,12 +152,20 @@ impl App {
                     KeyCode::Enter => {
                         match self.panes.get_active_pane_mut().open() {
                             OpenAction::Reload => {
-                                self.panes.reload(self.ui_config.show_hidden_entries);
+                                self.panes.reload(&self.config);
                             }
                             OpenAction::FileOpened(_entry) => {
                                 // future: spawn editor/viewer
                             }
                             OpenAction::Nothing => {}
+                        }
+                    }
+                    KeyCode::Backspace => {
+                        let path = self.panes.get_active_pane_mut().path.to_string();
+
+                        match self.panes.get_active_pane_mut().to_parent(path) {
+                            OpenAction::Reload => self.panes.reload(&self.config),
+                            _ => {}
                         }
                     }
                     KeyCode::Char('x') => self.panes.get_active_pane_mut().toggle_select(),

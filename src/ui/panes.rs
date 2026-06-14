@@ -9,9 +9,10 @@ use chrono;
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
-    style::Style,
-    widgets::{Block, Borders, Row, Table, TableState},
+    style::{Style, Stylize},
+    widgets::{Block, Borders, Cell, Row, Table, TableState},
 };
+use serde::{Deserialize, Serialize};
 
 use crate::{
     config::Config,
@@ -42,6 +43,20 @@ fn format_date(t: SystemTime) -> String {
     dt.format("%Y-%m-%d %H:%M").to_string()
 }
 
+#[derive(PartialEq, Debug, Serialize, Deserialize, Clone, Copy)]
+pub enum SortType {
+    Flagged,
+    Name,
+    Size,
+    Time,
+}
+
+#[derive(PartialEq, Debug, Serialize, Deserialize, Clone, Copy)]
+pub enum SortOrder {
+    Ascending,
+    Descending,
+}
+
 #[derive(PartialEq, Debug, Clone)]
 pub enum EntryKind {
     Parent,
@@ -49,6 +64,18 @@ pub enum EntryKind {
     Symlink,
     File,
     Unknown,
+}
+
+#[derive(Debug)]
+pub struct EntryHeader {
+    pub name: String,
+    pub kind: SortType,
+}
+
+impl EntryHeader {
+    pub fn new(name: String, kind: SortType) -> Self {
+        Self { name, kind }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -59,6 +86,8 @@ pub struct Entry {
     pub size: String,
     pub modified: String,
     pub selected: bool,
+    pub raw_size: u64,
+    pub raw_modified: SystemTime,
 }
 
 impl Entry {
@@ -80,7 +109,7 @@ impl Entry {
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| "-".to_string());
 
-        let (size, modified) = path
+        let (size, modified, raw_size, raw_modified) = path
             .metadata()
             .ok()
             .map(|meta| {
@@ -90,9 +119,11 @@ impl Entry {
                         .ok()
                         .map(format_date)
                         .unwrap_or_else(|| "-".to_string()),
+                    meta.len(),
+                    meta.modified().unwrap_or(SystemTime::UNIX_EPOCH),
                 )
             })
-            .unwrap_or_else(|| ("-".to_string(), "-".to_string()));
+            .unwrap_or_else(|| ("-".to_string(), "-".to_string(), 0, SystemTime::UNIX_EPOCH));
 
         Self {
             kind,
@@ -101,6 +132,8 @@ impl Entry {
             size,
             modified,
             selected: false,
+            raw_size,
+            raw_modified,
         }
     }
 
@@ -109,17 +142,23 @@ impl Entry {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Pane {
     pub state: TableState,
     pub path: String,
     paths: Vec<Entry>,
     constraints: [Constraint; 4],
+    sort_type: SortType,
+    sort_order: SortOrder,
 }
 
 impl Pane {
-    pub fn new(path: String, show_hidden: bool) -> Self {
-        let paths = read_entries(&path, show_hidden);
+    pub fn new(config: &Config) -> Self {
+        let path = config.initial_dir().to_string();
+        let paths = read_entries(&path, config);
+        let sort_order = config.sort_order;
+        let sort_type = config.sort_type;
+
         Self {
             state: TableState::default(),
             path,
@@ -130,6 +169,8 @@ impl Pane {
                 Constraint::Percentage(20),
                 Constraint::Percentage(30),
             ],
+            sort_order: sort_order,
+            sort_type: sort_type,
         }
     }
 
@@ -138,7 +179,6 @@ impl Pane {
             path.selected = false;
         }
     }
-    // .iter_mut(|entry| entry.selected = false);
 
     pub fn entries_to_rows(&self) -> Vec<[String; 4]> {
         self.paths
@@ -171,11 +211,23 @@ impl Pane {
         path.toggle_selected();
     }
 
-    pub fn reload(&mut self, show_hidden: bool) {
+    pub fn reload(&mut self, config: &Config) {
         self.clear_selections();
-        self.paths = read_entries(&self.path, show_hidden);
+        self.paths = read_entries(&self.path, config);
+        self.sort_order = config.sort_order;
+        self.sort_type = config.sort_type;
         self.state = TableState::default();
         self.state.select(Some(0));
+    }
+
+    pub fn to_parent(&mut self, current_path: String) -> OpenAction {
+        if let Some(parent) = Path::new(&current_path).parent() {
+            self.path = parent.canonicalize().unwrap().to_string_lossy().to_string();
+
+            return OpenAction::Reload;
+        } else {
+            return OpenAction::Nothing;
+        }
     }
 
     pub fn open(&mut self) -> OpenAction {
@@ -192,21 +244,45 @@ impl Pane {
             EntryKind::Parent => {
                 let previous = self.path.clone();
 
-                if let Some(parent) = Path::new(&previous).parent() {
-                    self.path = parent.to_string_lossy().to_string();
-
-                    return OpenAction::Reload;
-                } else {
-                    return OpenAction::Nothing;
-                }
+                self.to_parent(previous)
             }
             EntryKind::Directory => {
-                self.path = entry.path.to_str().unwrap().to_string();
+                self.path = entry
+                    .path
+                    .canonicalize()
+                    .unwrap()
+                    .to_string_lossy()
+                    .to_string();
+
                 return OpenAction::Reload;
             }
             _ => OpenAction::Nothing,
         };
         OpenAction::Nothing
+    }
+
+    pub fn header_to_cell(
+        header: &'_ EntryHeader,
+        current_sort_type: SortType,
+        current_sort_order: SortOrder,
+    ) -> Cell<'_> {
+        let mut name = format!("{}", header.name);
+        let mut cell = Cell::from(name);
+
+        if current_sort_type == header.kind {
+            cell = cell.bold();
+
+            let symbol = if current_sort_order == SortOrder::Ascending {
+                "▾"
+            } else {
+                "▴"
+            };
+
+            name = format!("{} {}", header.name, symbol);
+            cell = cell.content(name);
+        }
+
+        cell
     }
 
     pub fn render(
@@ -225,8 +301,19 @@ impl Pane {
             theme.colors.border()
         };
 
-        let header = Row::new(["", "Name", "Size", "Modify Time"])
-            .style(Style::new().fg(theme.colors.highlight()).bold());
+        let mut headers = Vec::new();
+
+        headers.push(EntryHeader::new("".to_string(), SortType::Flagged));
+        headers.push(EntryHeader::new("Name".to_string(), SortType::Name));
+        headers.push(EntryHeader::new("Size".to_string(), SortType::Size));
+        headers.push(EntryHeader::new("Modify Time".to_string(), SortType::Time));
+
+        let header = Row::new(
+            headers
+                .iter()
+                .map(|f| Self::header_to_cell(f, self.sort_type, self.sort_order)),
+        )
+        .style(Style::new().fg(theme.colors.highlight()));
 
         let rows: Vec<Row> = entries
             .iter()
@@ -247,7 +334,7 @@ impl Pane {
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .title("~")
+                    .title(self.path.to_string())
                     .border_style(color_border)
                     .title_style(Style::new().fg(theme.colors.primary())),
             );
@@ -256,19 +343,45 @@ impl Pane {
     }
 }
 
-fn read_entries(dir: &str, show_hidden: bool) -> Vec<Entry> {
+fn read_entries(dir: &str, config: &Config) -> Vec<Entry> {
     let mut entries: Vec<Entry> = fs::read_dir(dir)
         .unwrap()
         .filter_map(|e| e.ok())
         .map(|e| e.path())
         .filter(|p| {
-            show_hidden
+            config.show_hidden
                 || !p
                     .file_name()
                     .is_some_and(|n| n.to_string_lossy().starts_with('.'))
         })
         .map(|p| Entry::new(p))
         .collect();
+
+    entries.sort_by(|a, b| {
+        let mut cmp = match config.sort_type {
+            SortType::Flagged => a.selected.cmp(&b.selected),
+            SortType::Name => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+            SortType::Size => a.raw_size.cmp(&b.raw_size),
+            SortType::Time => a.raw_modified.cmp(&b.raw_modified),
+        };
+        cmp = match config.sort_order {
+            SortOrder::Ascending => cmp,
+            SortOrder::Descending => cmp.reverse(),
+        };
+
+        if config.directories_on_top {
+            let a_is_dir = matches!(a.kind, EntryKind::Directory | EntryKind::Parent);
+            let b_is_dir = matches!(b.kind, EntryKind::Directory | EntryKind::Parent);
+            match (a_is_dir, b_is_dir) {
+                (true, false) => return std::cmp::Ordering::Less,
+                (false, true) => return std::cmp::Ordering::Greater,
+                _ => {} // both same group, fall through to sort_type
+            }
+        }
+
+        cmp
+    });
+
     entries.insert(0, Entry::new(Path::new(dir).join("..")));
     entries
 }
@@ -293,24 +406,16 @@ pub struct Panes {
 }
 
 impl Panes {
-    pub fn new(config: Config) -> Self {
+    pub fn new(config: &Config) -> Self {
         Self {
-            pane_left: Pane::new(config.initial_dir().to_string(), false),
-            pane_right: Pane::new(config.initial_dir().to_string(), false),
+            pane_left: Pane::new(config),
+            pane_right: Pane::new(config),
             active_pane: ActivePane::Left,
         }
     }
 
     pub fn set_active_pane(&mut self, pane: ActivePane) {
         self.active_pane = pane;
-    }
-
-    pub fn get_active_pane(&self) -> &Pane {
-        if self.active_pane == ActivePane::Left {
-            &self.pane_left
-        } else {
-            &self.pane_right
-        }
     }
 
     pub fn get_active_pane_mut(&mut self) -> &mut Pane {
@@ -329,9 +434,9 @@ impl Panes {
         }
     }
 
-    pub fn reload(&mut self, show_hidden: bool) {
-        self.pane_left.reload(show_hidden);
-        self.pane_right.reload(show_hidden);
+    pub fn reload(&mut self, config: &Config) {
+        self.pane_left.reload(config);
+        self.pane_right.reload(config);
     }
 
     pub fn next_index(
