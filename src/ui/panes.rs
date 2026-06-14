@@ -426,6 +426,14 @@ impl Panes {
         }
     }
 
+    pub fn get_active_pane(&self) -> &Pane {
+        if self.active_pane == ActivePane::Left {
+            &self.pane_left
+        } else {
+            &self.pane_right
+        }
+    }
+
     pub fn toggle_active_pane(&mut self) {
         self.active_pane = if self.active_pane == ActivePane::Left {
             ActivePane::Right

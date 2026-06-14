@@ -48,11 +48,13 @@ pub struct App {
 impl App {
     pub fn new(theme: Theme, config: Config) -> Self {
         let panes = Panes::new(&config);
+        let mut header = Header::new("~info one", "~/current/directory/foo", "git:master +2 ~1");
+        header.update(config.initial_dir().to_string());
         Self {
             exit: false,
             theme,
             ui_config: UiConfig::new(),
-            header: Header::new("~info one", "~/current/directory/foo", "git:master +2 ~1"),
+            header,
             footer: Footer::default(),
             panes,
             config,
@@ -153,6 +155,8 @@ impl App {
                         match self.panes.get_active_pane_mut().open() {
                             OpenAction::Reload => {
                                 self.panes.reload(&self.config);
+                                self.header
+                                    .update(self.panes.get_active_pane().path.to_string());
                             }
                             OpenAction::FileOpened(_entry) => {
                                 // future: spawn editor/viewer
@@ -164,7 +168,11 @@ impl App {
                         let path = self.panes.get_active_pane_mut().path.to_string();
 
                         match self.panes.get_active_pane_mut().to_parent(path) {
-                            OpenAction::Reload => self.panes.reload(&self.config),
+                            OpenAction::Reload => {
+                                self.panes.reload(&self.config);
+                                self.header
+                                    .update(self.panes.get_active_pane().path.to_string());
+                            }
                             _ => {}
                         }
                     }
@@ -172,7 +180,11 @@ impl App {
                     KeyCode::Char('q') => self.exit = true,
                     KeyCode::Char('h') => self.panes.set_active_pane(ActivePane::Left),
                     KeyCode::Char('l') => self.panes.set_active_pane(ActivePane::Right),
-                    KeyCode::Tab => self.panes.toggle_active_pane(),
+                    KeyCode::Tab => {
+                        self.panes.toggle_active_pane();
+                        self.header
+                            .update(self.panes.get_active_pane().path.to_string());
+                    }
                     // KeyCode::Char('k')
                     //     if key_event
                     //         .modifiers
