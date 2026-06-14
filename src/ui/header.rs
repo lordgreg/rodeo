@@ -1,79 +1,45 @@
-use std::{path::Path, process::Command};
+use std::process::Command;
 
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, HorizontalAlignment, Layout, Rect},
     style::Style,
+    text::{Line, Span},
     widgets::{Block, Padding, Paragraph},
 };
 
 use crate::ui::{component::Component, theme::Theme, uiconfig::UiConfig};
 
-#[derive(Debug, Default)]
-pub struct Header {
-    pub info: String,
-    pub directory: String,
-    pub git_status: String,
+#[derive(Default, Debug, Clone)]
+struct GitStatus {
+    pub branch: String,
+    pub modified: i32,
+    pub untracked: i32,
 }
 
-impl Header {
-    pub fn new(
-        info: impl Into<String>,
-        directory: impl Into<String>,
-        git_status: impl Into<String>,
-    ) -> Self {
-        Self {
-            info: info.into(),
-            directory: directory.into(),
-            git_status: git_status.into(),
-        }
-    }
-
-    pub fn update(&mut self, directory: String) {
-        self.directory = directory;
-
-        let path = Path::new(&self.directory);
-        if !path.join(".git").exists() {
-            self.git_status = String::new();
-            return;
-        }
+impl GitStatus {
+    pub fn try_from_path(path: &String) -> Option<Self> {
+        Command::new("git")
+            .args(["-C", path, "rev-parse", "--is-inside-work-tree"])
+            .output()
+            .ok()?;
 
         let branch = Command::new("git")
-            .args(["-C", &self.directory, "branch", "--show-current"])
+            .args(["-C", path, "branch", "--show-current"])
             .output()
             .ok()
-            .and_then(|o| {
-                let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
-                if s.is_empty() { None } else { Some(s) }
-            })
-            .unwrap_or_else(|| String::new());
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .filter(|f| !f.is_empty())?;
 
-        let branch = if !branch.is_empty() {
-            branch
-        } else {
-            Command::new("git")
-                .args(["-C", &self.directory, "rev-parse", "--short", "HEAD"])
-                .output()
-                .ok()
-                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-                .unwrap_or_default()
-        };
-
-        let status_output = match Command::new("git")
-            .args(["-C", &self.directory, "status", "--porcelain"])
+        let status = Command::new("git")
+            .args(["-C", path, "status", "--porcelain"])
             .output()
-        {
-            Ok(o) => String::from_utf8_lossy(&o.stdout).to_string(),
-            Err(_) => {
-                self.git_status = String::new();
-                return;
-            }
-        };
+            .ok()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())?;
 
-        let mut modified = 0u32;
-        let mut untracked = 0u32;
-
-        for line in status_output.lines() {
+        let mut modified = 0;
+        let mut untracked = 0;
+        for line in status.lines() {
             if line.is_empty() {
                 continue;
             }
@@ -84,16 +50,61 @@ impl Header {
             }
         }
 
-        let mut parts = Vec::new();
-        parts.push(format!("git:{}", branch));
-        if modified > 0 {
-            parts.push(format!("!{}", modified));
-        }
-        if untracked > 0 {
-            parts.push(format!("?{}", untracked));
-        }
+        Some(Self {
+            branch,
+            modified,
+            untracked,
+        })
+    }
+}
 
-        self.git_status = parts.join(" ");
+#[derive(Debug, Default)]
+pub struct Header {
+    pub info: String,
+    pub directory: String,
+    git_status: Option<GitStatus>,
+}
+
+impl Header {
+    pub fn new(info: impl Into<String>, directory: impl Into<String>) -> Self {
+        Self {
+            info: info.into(),
+            directory: directory.into(),
+            git_status: None,
+        }
+    }
+
+    pub fn update(&mut self, directory: String) {
+        self.directory = directory;
+
+        self.git_status = self.update_git(&self.directory);
+    }
+
+    fn update_git(&self, path: &String) -> Option<GitStatus> {
+        GitStatus::try_from_path(path)
+    }
+
+    fn git_to_line(&self, theme: &Theme) -> Line<'static> {
+        match &self.git_status {
+            Some(g) => {
+                let branch = Span::from(g.branch.clone()).style(theme.colors.primary());
+                let mut spans: Vec<Span<'static>> =
+                    vec![Span::from("git:").style(theme.colors.muted()), branch];
+
+                if g.modified > 0 {
+                    spans.push(
+                        Span::from(format!(" !{}", g.modified)).style(theme.colors.warning()),
+                    );
+                }
+
+                if g.untracked > 0 {
+                    spans.push(Span::from(format!(" ?{}", g.untracked)).style(theme.colors.info()))
+                }
+
+                Line::from(spans)
+            }
+            None => Line::from(vec![]),
+        }
     }
 }
 
@@ -120,14 +131,15 @@ impl Component for Header {
             layout[0],
         );
         frame.render_widget(
-            Paragraph::new(&*self.directory)
+            Paragraph::new("")
                 .block(Block::default().padding(Padding::horizontal(1)))
                 .alignment(HorizontalAlignment::Center)
                 .style(Style::default().fg(theme.colors.foreground())),
             layout[1],
         );
+
         frame.render_widget(
-            Paragraph::new(&*self.git_status)
+            Paragraph::new(self.git_to_line(theme))
                 .alignment(HorizontalAlignment::Right)
                 .block(Block::default().padding(Padding::horizontal(1)))
                 .style(Style::default().fg(theme.colors.muted())),

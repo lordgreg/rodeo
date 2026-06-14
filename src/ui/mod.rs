@@ -48,7 +48,7 @@ pub struct App {
 impl App {
     pub fn new(theme: Theme, config: Config) -> Self {
         let panes = Panes::new(&config);
-        let mut header = Header::new("~info one", "~/current/directory/foo", "git:master +2 ~1");
+        let mut header = Header::new("~info one", "~/current/directory/foo");
         header.update(config.initial_dir().to_string());
         Self {
             exit: false,
@@ -112,7 +112,7 @@ impl App {
                     match key_event.code {
                         KeyCode::Char('h') => {
                             self.config.show_hidden = !self.config.show_hidden;
-                            self.panes.reload(&self.config);
+                            self.panes.reload(&self.config, false);
                         }
                         _ => todo!("no action defined while pressing CTRL"),
                     }
@@ -128,7 +128,7 @@ impl App {
                                 SortType::Size => SortType::Time,
                                 SortType::Time => SortType::Flagged,
                             };
-                            self.panes.reload(&self.config);
+                            self.panes.reload(&self.config, false);
                         }
                         KeyCode::Left => {
                             self.config.sort_type = match self.config.sort_type {
@@ -137,14 +137,14 @@ impl App {
                                 SortType::Size => SortType::Name,
                                 SortType::Name => SortType::Flagged,
                             };
-                            self.panes.reload(&self.config);
+                            self.panes.reload(&self.config, false);
                         }
                         KeyCode::Char('O') => {
                             self.config.sort_order = match self.config.sort_order {
                                 SortOrder::Ascending => SortOrder::Descending,
                                 SortOrder::Descending => SortOrder::Ascending,
                             };
-                            self.panes.reload(&self.config)
+                            self.panes.reload(&self.config, false)
                         }
                         _ => todo!("SHIFT key {} not yet implemented.", key_event.code),
                     }
@@ -153,8 +153,8 @@ impl App {
                 match key_event.code {
                     KeyCode::Enter => {
                         match self.panes.get_active_pane_mut().open() {
-                            OpenAction::Reload => {
-                                self.panes.reload(&self.config);
+                            OpenAction::DirectoryOpened | OpenAction::Reload => {
+                                self.panes.reload(&self.config, true);
                                 self.header
                                     .update(self.panes.get_active_pane().path.to_string());
                             }
@@ -169,7 +169,7 @@ impl App {
 
                         match self.panes.get_active_pane_mut().to_parent(path) {
                             OpenAction::Reload => {
-                                self.panes.reload(&self.config);
+                                self.panes.reload(&self.config, true);
                                 self.header
                                     .update(self.panes.get_active_pane().path.to_string());
                             }

@@ -78,7 +78,7 @@ impl EntryHeader {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Entry {
     pub kind: EntryKind,
     pub path: PathBuf,
@@ -184,7 +184,7 @@ impl Pane {
         self.paths
             .iter()
             .map(|p| {
-                let marker = if p.selected { "x" } else { "" };
+                let marker = if p.selected { "●" } else { "" };
 
                 [
                     marker.to_string(),
@@ -211,9 +211,28 @@ impl Pane {
         path.toggle_selected();
     }
 
-    pub fn reload(&mut self, config: &Config) {
-        self.clear_selections();
+    pub fn reload(&mut self, config: &Config, clear_selection: bool) {
+        let selected_paths: Vec<PathBuf> = self
+            .paths
+            .iter()
+            .filter(|p| p.selected)
+            .map(|p| p.path.clone())
+            .collect();
+
+        if clear_selection {
+            self.clear_selections();
+        }
+
         self.paths = read_entries(&self.path, config);
+
+        if !clear_selection {
+            for entry in &mut self.paths {
+                if selected_paths.contains(&entry.path) {
+                    entry.selected = true
+                }
+            }
+        }
+
         self.sort_order = config.sort_order;
         self.sort_type = config.sort_type;
         self.state = TableState::default();
@@ -224,7 +243,7 @@ impl Pane {
         if let Some(parent) = Path::new(&current_path).parent() {
             self.path = parent.canonicalize().unwrap().to_string_lossy().to_string();
 
-            return OpenAction::Reload;
+            return OpenAction::DirectoryOpened;
         } else {
             return OpenAction::Nothing;
         }
@@ -317,7 +336,14 @@ impl Pane {
 
         let rows: Vec<Row> = entries
             .iter()
-            .map(|e| Row::new([e[0].as_str(), e[1].as_str(), e[2].as_str(), e[3].as_str()]))
+            .map(|e| {
+                Row::new(vec![
+                    Cell::from(e[0].to_string()).style(theme.colors.accent1()),
+                    Cell::from(e[1].to_string()),
+                    Cell::from(e[2].to_string()),
+                    Cell::from(e[3].to_string()),
+                ])
+            })
             .collect();
 
         let table = Table::new(rows, self.constraints)
@@ -396,6 +422,7 @@ pub enum OpenAction {
     Reload,
     FileOpened(Entry),
     Nothing,
+    DirectoryOpened,
 }
 
 #[derive(Debug)]
@@ -442,9 +469,9 @@ impl Panes {
         }
     }
 
-    pub fn reload(&mut self, config: &Config) {
-        self.pane_left.reload(config);
-        self.pane_right.reload(config);
+    pub fn reload(&mut self, config: &Config, clear_selection: bool) {
+        self.pane_left.reload(config, clear_selection);
+        self.pane_right.reload(config, clear_selection);
     }
 
     pub fn next_index(
