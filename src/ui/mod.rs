@@ -2,7 +2,7 @@ use crate::{
     Config,
     ui::{
         footer::Footer,
-        panes::{MoveDirection, OpenAction, SortOrder, SortType},
+        panes::{EntryKind, MoveDirection, OpenAction, SortOrder, SortType},
         theme::Theme,
     },
 };
@@ -24,6 +24,7 @@ pub mod header;
 pub mod panes;
 pub mod popup_about;
 pub mod popup_keybinds;
+pub mod popup_preview;
 pub mod theme;
 pub mod uiconfig;
 
@@ -32,6 +33,7 @@ use header::Header;
 use panes::Panes;
 use popup_about::PopupAbout;
 use popup_keybinds::PopupKeybinds;
+use popup_preview::PopupPreview;
 use uiconfig::{ActivePane, UiConfig};
 
 #[derive(Debug)]
@@ -96,6 +98,12 @@ impl App {
         if self.ui_config.active_about_popup {
             PopupAbout::new().render(frame, &self.theme, &self.ui_config, frame.area());
         }
+
+        if self.ui_config.active_preview_popup {
+            if let Some(entry) = self.panes.get_active_pane().get_selected_entry() {
+                PopupPreview::new(entry).render(frame, &self.theme, &self.ui_config, frame.area());
+            }
+        }
     }
 
     fn handle_input(&mut self) -> std::io::Result<()> {
@@ -106,6 +114,7 @@ impl App {
                     if key_event.code == KeyCode::Esc {
                         self.ui_config.active_keybind_popup = false;
                         self.ui_config.active_about_popup = false;
+                        self.ui_config.active_preview_popup = false;
                     }
                     return Ok(());
                 }
@@ -207,6 +216,19 @@ impl App {
                             self.ui_config.active_about_popup = false;
                         } else {
                             self.exit = true;
+                        }
+                    }
+                    KeyCode::Char(' ') => {
+                        if let Some(e) = self.panes.get_active_pane().get_selected_entry() {
+                            match e.kind {
+                                EntryKind::File | EntryKind::Directory | EntryKind::Symlink => {
+                                    self.ui_config.active_keybind_popup = false;
+                                    self.ui_config.active_about_popup = false;
+                                    self.ui_config.active_preview_popup =
+                                        !self.ui_config.active_preview_popup;
+                                }
+                                _ => todo!("Preview of non-files not implemented yet"),
+                            }
                         }
                     }
                     // up/down j/k

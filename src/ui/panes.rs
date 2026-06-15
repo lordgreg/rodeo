@@ -193,6 +193,12 @@ impl Pane {
         }
     }
 
+    pub fn get_selected_entry(&self) -> Option<Entry> {
+        let selected = self.state.selected()?;
+
+        self.paths.get(selected).cloned()
+    }
+
     pub fn entries_to_rows(&self) -> Vec<[String; 4]> {
         self.paths
             .iter()

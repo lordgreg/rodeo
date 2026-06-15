@@ -13,6 +13,7 @@ pub struct UiConfig {
     // pub active_cmd_popup: bool,
     pub active_keybind_popup: bool,
     pub active_about_popup: bool,
+    pub active_preview_popup: bool,
 }
 
 impl UiConfig {
