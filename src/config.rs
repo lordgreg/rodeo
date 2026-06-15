@@ -1,10 +1,13 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use log::{info, warn};
 use serde::{Deserialize, Serialize};
 use xdg;
 
-use crate::ui::panes::{SortOrder, SortType};
+use crate::ui::{
+    panes::{SortOrder, SortType},
+    uiconfig::ActivePane,
+};
 
 pub const CONFIG_FILENAME: &str = "config.yaml";
 pub const CONFIG_DIR: &str = "rodeo";
@@ -33,6 +36,10 @@ fn default_directories_on_top() -> bool {
     true
 }
 
+fn default_active_pane() -> ActivePane {
+    ActivePane::Left
+}
+
 ////
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Config {
@@ -41,7 +48,9 @@ pub struct Config {
     #[serde(default = "default_theme")]
     theme: String,
     #[serde(default = "default_initial_directory")]
-    initial_directory: String,
+    pub initial_directory_left: String,
+    #[serde(default = "default_initial_directory")]
+    pub initial_directory_right: String,
     #[serde(default = "default_sort_type")]
     pub sort_type: SortType,
     #[serde(default = "default_sort_order")]
@@ -50,6 +59,8 @@ pub struct Config {
     pub show_hidden: bool,
     #[serde(default = "default_directories_on_top")]
     pub directories_on_top: bool,
+    #[serde(default = "default_active_pane")]
+    pub active_pane: ActivePane,
 }
 
 impl Config {
@@ -57,16 +68,32 @@ impl Config {
         Self {
             read_only: default_read_only(),
             theme: default_theme(),
-            initial_directory: default_initial_directory(),
+            initial_directory_left: default_initial_directory(),
+            initial_directory_right: default_initial_directory(),
             sort_order: default_sort_order(),
             sort_type: default_sort_type(),
             show_hidden: default_show_hidden(),
             directories_on_top: default_directories_on_top(),
+            active_pane: default_active_pane(),
         }
     }
 
-    pub fn initial_dir(&self) -> &String {
-        &self.initial_directory
+    pub fn set_initial_dir(&mut self, left: Option<String>, right: Option<String>) {
+        if let Some(left) = left {
+            self.initial_directory_left = PathBuf::from(left).to_string_lossy().to_string();
+        };
+
+        if let Some(right) = right {
+            self.initial_directory_right = PathBuf::from(right).to_string_lossy().to_string();
+        }
+    }
+
+    pub fn get_initial_dir(&self) -> &str {
+        if self.active_pane == ActivePane::Left {
+            &self.initial_directory_left
+        } else {
+            &self.initial_directory_right
+        }
     }
 
     pub fn load_config_from_file(filename: &str) -> Config {

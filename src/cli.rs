@@ -10,4 +10,12 @@ pub struct Args {
     /// Name of path to theme
     #[arg(short, long)]
     pub theme: Option<String>,
+
+    /// Left panel path (will overwrite initial_directory from config)
+    #[arg(short, long)]
+    pub left: Option<String>,
+
+    /// Right panel path (will overwrite initial_directory from config)
+    #[arg(short, long)]
+    pub right: Option<String>,
 }

@@ -48,8 +48,11 @@ pub struct App {
 impl App {
     pub fn new(theme: Theme, config: Config) -> Self {
         let panes = Panes::new(&config);
-        let mut header = Header::new("~info one", "~/current/directory/foo");
-        header.update(config.initial_dir().to_string());
+
+        let current_directory = config.get_initial_dir();
+
+        let header = Header::new("~info one", current_directory);
+        // header.update(config.initial_dir().to_string());
         Self {
             exit: false,
             theme,
@@ -168,7 +171,7 @@ impl App {
                         let path = self.panes.get_active_pane_mut().path.to_string();
 
                         match self.panes.get_active_pane_mut().to_parent(path) {
-                            OpenAction::Reload => {
+                            OpenAction::DirectoryOpened => {
                                 self.panes.reload(&self.config, true);
                                 self.header
                                     .update(self.panes.get_active_pane().path.to_string());

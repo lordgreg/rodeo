@@ -1,4 +1,6 @@
-#[derive(Debug, Default, PartialEq)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Default, PartialEq, Serialize, Deserialize, Copy, Clone)]
 pub enum ActivePane {
     #[default]
     Left,

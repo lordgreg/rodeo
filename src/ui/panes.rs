@@ -94,8 +94,6 @@ impl Entry {
     pub fn new(path: PathBuf) -> Self {
         let kind = if path.is_file() {
             EntryKind::File
-        } else if path.file_name().is_some_and(|name| name == "..") {
-            EntryKind::Parent
         } else if path.is_dir() {
             EntryKind::Directory
         } else if path.is_symlink() {
@@ -137,6 +135,21 @@ impl Entry {
         }
     }
 
+    pub fn parent(dir: &str) -> Self {
+        let path = PathBuf::from(dir).join("..").canonicalize().unwrap();
+
+        Self {
+            kind: EntryKind::Parent,
+            path,
+            name: String::from(".."),
+            modified: String::from("-"),
+            raw_modified: SystemTime::UNIX_EPOCH,
+            raw_size: 0,
+            selected: false,
+            size: String::from("-"),
+        }
+    }
+
     pub fn toggle_selected(&mut self) {
         self.selected = !self.selected;
     }
@@ -153,8 +166,8 @@ pub struct Pane {
 }
 
 impl Pane {
-    pub fn new(config: &Config) -> Self {
-        let path = config.initial_dir().to_string();
+    pub fn new(config: &Config, path: &str) -> Self {
+        let path = path.to_string();
         let paths = read_entries(&path, config);
         let sort_order = config.sort_order;
         let sort_type = config.sort_type;
@@ -185,13 +198,13 @@ impl Pane {
             .iter()
             .map(|p| {
                 let marker = if p.selected { "●" } else { "" };
+                let size = match p.kind {
+                    EntryKind::Directory => String::from("DIR"),
+                    EntryKind::Parent => String::from("UP"),
+                    _ => p.size.to_string(),
+                };
 
-                [
-                    marker.to_string(),
-                    p.name.clone(),
-                    p.size.clone(),
-                    p.modified.clone(),
-                ]
+                [marker.to_string(), p.name.clone(), size, p.modified.clone()]
             })
             .collect()
     }
@@ -273,11 +286,11 @@ impl Pane {
                     .to_string_lossy()
                     .to_string();
 
-                return OpenAction::Reload;
+                OpenAction::Reload
             }
             _ => OpenAction::Nothing,
-        };
-        OpenAction::Nothing
+        }
+        // OpenAction::Nothing
     }
 
     pub fn header_to_cell(
@@ -408,7 +421,7 @@ fn read_entries(dir: &str, config: &Config) -> Vec<Entry> {
         cmp
     });
 
-    entries.insert(0, Entry::new(Path::new(dir).join("..")));
+    entries.insert(0, Entry::parent(dir));
     entries
 }
 
@@ -435,9 +448,9 @@ pub struct Panes {
 impl Panes {
     pub fn new(config: &Config) -> Self {
         Self {
-            pane_left: Pane::new(config),
-            pane_right: Pane::new(config),
-            active_pane: ActivePane::Left,
+            pane_left: Pane::new(config, &config.initial_directory_left),
+            pane_right: Pane::new(config, &config.initial_directory_right),
+            active_pane: config.active_pane,
         }
     }
 

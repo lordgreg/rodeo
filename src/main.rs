@@ -18,7 +18,12 @@ fn main() -> io::Result<()> {
 
     let args = cli::Args::parse();
 
-    let config = Config::load_config(args.config.as_deref());
+    let mut config = Config::load_config(args.config.as_deref());
+
+    if args.left.is_some() || args.right.is_some() {
+        config.set_initial_dir(args.left, args.right);
+    }
+
     println!("Config: {:?}", config);
 
     let theme = Theme::load_theme(args.theme.as_deref());
