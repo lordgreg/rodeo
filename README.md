@@ -37,6 +37,10 @@ M3: Search & Filter
 M4: Preview & Polish
 
 - [ ] Preview panel with text, syntax-highlighted code, image thumbnails
+  - [x] ASCII done
+  - [ ] Archive browser
+  - [x] Image preview (initial)
+  - [ ] PDF/Doc
 - [x] Theming
 - [x] Git status in top right
 
