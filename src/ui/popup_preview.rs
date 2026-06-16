@@ -125,13 +125,8 @@ impl Component for PopupPreview {
             PreviewContent::Image(path) => {
                 let dyn_img = image::ImageReader::open(path).unwrap().decode().unwrap();
 
-                let picker = Picker::halfblocks();
-
-                let font_size = picker.font_size();
-                let size = Size::new(
-                    dyn_img.width().div_ceil(font_size.width as u32) as u16,
-                    dyn_img.height().div_ceil(font_size.height as u32) as u16,
-                );
+                let picker = Picker::from_query_stdio().unwrap_or_else(|_| Picker::halfblocks());
+                let size = Size::from(inner_area);
 
                 let image = picker
                     .new_protocol(dyn_img, size, Resize::Fit(None))
