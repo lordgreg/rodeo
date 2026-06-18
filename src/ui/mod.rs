@@ -45,6 +45,7 @@ pub struct App {
     footer: Footer,
     panes: Panes,
     config: Config,
+    preview: Option<PopupPreview>,
 }
 
 impl App {
@@ -63,6 +64,7 @@ impl App {
             footer: Footer::default(),
             panes,
             config,
+            preview: None,
         }
     }
 
@@ -100,8 +102,12 @@ impl App {
         }
 
         if self.ui_config.active_preview_popup {
-            if let Some(entry) = self.panes.get_active_pane().get_selected_entry() {
-                PopupPreview::new(entry).render(frame, &self.theme, &self.ui_config, frame.area());
+            let current = self.panes.get_active_pane().get_selected_entry();
+            if self.preview.as_ref().and_then(|p| p.selected()) != current.as_ref() {
+                self.preview = current.map(|e| PopupPreview::new(Some(e)));
+            }
+            if let Some(preview) = self.preview.as_mut() {
+                preview.render(frame, &self.theme, &self.ui_config, frame.area());
             }
         }
     }
@@ -116,7 +122,27 @@ impl App {
                         self.ui_config.active_about_popup = false;
                         self.ui_config.active_preview_popup = false;
                     }
-                    return Ok(());
+
+                    // ctrl+up/down or ctrl+j/k scroll preview content
+                    if self.ui_config.active_preview_popup
+                        && key_event.modifiers.contains(KeyModifiers::CONTROL)
+                    {
+                        match key_event.code {
+                            KeyCode::Down | KeyCode::Char('k') => {
+                                if let Some(ref mut preview) = self.preview {
+                                    preview.row_next();
+                                }
+                                return Ok(());
+                            }
+                            KeyCode::Up | KeyCode::Char('j') => {
+                                if let Some(ref mut preview) = self.preview {
+                                    preview.row_prev();
+                                }
+                                return Ok(());
+                            }
+                            _ => {}
+                        }
+                    }
                 }
 
                 // CTRL
@@ -158,7 +184,7 @@ impl App {
                             };
                             self.panes.reload(&self.config, false)
                         }
-                        _ => todo!("SHIFT key {} not yet implemented.", key_event.code),
+                        _ => unimplemented!("SHIFT key {} not yet implemented.", key_event.code),
                     }
                 }
 
@@ -226,6 +252,8 @@ impl App {
                                     self.ui_config.active_about_popup = false;
                                     self.ui_config.active_preview_popup =
                                         !self.ui_config.active_preview_popup;
+
+                                    self.preview = Some(PopupPreview::new(Some(e)));
                                 }
                                 _ => todo!("Preview of non-files not implemented yet"),
                             }
@@ -247,6 +275,8 @@ impl App {
     }
 
     fn is_popup_active(&self) -> bool {
-        self.ui_config.active_keybind_popup || self.ui_config.active_about_popup
+        self.ui_config.active_keybind_popup
+            || self.ui_config.active_about_popup
+            || self.ui_config.active_preview_popup
     }
 }

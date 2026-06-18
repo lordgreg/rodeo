@@ -182,8 +182,8 @@ impl Pane {
                 Constraint::Percentage(20),
                 Constraint::Percentage(30),
             ],
-            sort_order: sort_order,
-            sort_type: sort_type,
+            sort_order,
+            sort_type,
         }
     }
 

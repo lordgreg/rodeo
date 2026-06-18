@@ -2,7 +2,6 @@ use std::path::{Path, PathBuf};
 
 use log::{info, warn};
 use serde::{Deserialize, Serialize};
-use xdg;
 
 use crate::ui::{
     panes::{SortOrder, SortType},

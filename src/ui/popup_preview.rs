@@ -20,7 +20,8 @@ enum PreviewContent {
 
 #[derive(Debug)]
 pub struct PopupPreview {
-    entry: Entry,
+    selected: Option<Entry>,
+    row: u16,
 }
 
 #[derive(PartialEq, Debug)]
@@ -35,8 +36,23 @@ pub enum FileType {
 }
 
 impl PopupPreview {
-    pub fn new(entry: Entry) -> Self {
-        Self { entry: entry }
+    pub fn new(entry: Option<Entry>) -> Self {
+        Self {
+            selected: entry,
+            row: 0,
+        }
+    }
+
+    pub fn row_next(&mut self) {
+        self.row = self.row.saturating_add(10);
+    }
+
+    pub fn row_prev(&mut self) {
+        self.row = self.row.saturating_sub(10);
+    }
+
+    pub fn selected(&self) -> Option<&Entry> {
+        self.selected.as_ref()
     }
 
     fn get_file_type(path: &str) -> FileType {
@@ -100,16 +116,20 @@ impl Component for PopupPreview {
 
         frame.render_widget(Clear, popup_area);
 
+        let entry = self.selected.as_ref().unwrap();
+
         let block = Block::default()
-            .title(format!("Preview {}", self.entry.name))
+            .title(format!("Preview {}", entry.name))
             .borders(Borders::ALL)
             .border_style(Style::new().bg(theme.colors.background()))
             .style(Style::default().fg(theme.colors.foreground()));
 
-        let path = self.entry.path.as_os_str().to_string_lossy();
+        let path = entry.path.as_os_str().to_string_lossy();
 
         let inner_area = block.inner(popup_area);
         frame.render_widget(block, popup_area);
+
+        // frame.set_cursor_position(Position::new(inner_area.x + 1, inner_area.y + 1));
 
         let content = Self::get_file_content(&path);
 
@@ -120,7 +140,7 @@ impl Component for PopupPreview {
 
         match content {
             PreviewContent::Text(text) => {
-                frame.render_widget(Paragraph::new(text), inner_area);
+                frame.render_widget(Paragraph::new(text).scroll((self.row, 0)), inner_area);
             }
             PreviewContent::Image(path) => {
                 let dyn_img = image::ImageReader::open(path).unwrap().decode().unwrap();
