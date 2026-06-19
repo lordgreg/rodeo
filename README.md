@@ -10,7 +10,7 @@ Rodeo is a modern terminal file manager inspired by Norton and Midnight Commande
 - [x] Input handling with Clap
 - [x] Load config from `~/.config/rodeo/config.toml` using Serde and Derive
 - [x] Basic terminal UI setup with Ratatui
-- [x] run params for --left, --right, --theme and --config
+- [x] CLI parameters: --left, --right, --theme, --config, --search, --regex, /
 
 ## M1: Navigation
 
@@ -36,18 +36,18 @@ M3: Search & Filter
 
 M4: Preview & Polish
 
-- [ ] Preview panel with text, syntax-highlighted code, image thumbnails
-  - [x] ASCII done
-  - [ ] Archive browser
-  - [x] Image preview (initial)
-  - [ ] PDF/Doc
+- [ ] Preview panel for text, code (syntax-highlighted)
+  - [x] ASCII support
+  - [x] Image support
+  - [ ] PDF/Doc support
 - [x] Theming
 - [x] Git status in top right
+- [ ] Archive browser preview
 
 M5: Power User
 
 - [x] Git integration (status icons, branch indicator)
-- [ ] Bookmarks & history
+- [ ] Bookmarks & history navigation
 - [ ] Bulk rename with regex and sequential patterns
-- [ ] Archive support (browse `zip`, `tar`, `tar.gz` as virtual directories)
+- [ ] Archive navigation (`zip`, `tar`, `tar.gz` as virtual directories - separate from preview in M4)
 - [ ] Trash support (safe delete instead of permanent removal)
