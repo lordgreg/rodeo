@@ -129,8 +129,6 @@ impl Component for PopupPreview {
         let inner_area = block.inner(popup_area);
         frame.render_widget(block, popup_area);
 
-        // frame.set_cursor_position(Position::new(inner_area.x + 1, inner_area.y + 1));
-
         let content = Self::get_file_content(&path);
 
         if !matches!(content, PreviewContent::Image(_)) {
@@ -140,6 +138,9 @@ impl Component for PopupPreview {
 
         match content {
             PreviewContent::Text(text) => {
+                let line_count = text.lines.len() as u16;
+                let max_row = line_count.saturating_sub(inner_area.height);
+                self.row = self.row.min(max_row);
                 frame.render_widget(Paragraph::new(text).scroll((self.row, 0)), inner_area);
             }
             PreviewContent::Image(path) => {

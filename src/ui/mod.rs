@@ -1,15 +1,6 @@
 use crate::{
     Config,
-    ui::{
-        footer::Footer,
-        panes::{EntryKind, MoveDirection, OpenAction, SortOrder, SortType},
-        theme::Theme,
-    },
-};
-use crossterm::event::{
-    self,
-    Event::{self},
-    KeyCode, KeyEventKind, KeyModifiers,
+    ui::{footer::Footer, theme::Theme},
 };
 use ratatui::{
     DefaultTerminal, Frame,
@@ -21,6 +12,7 @@ use ratatui::{
 pub mod component;
 pub mod footer;
 pub mod header;
+pub mod input;
 pub mod panes;
 pub mod popup_about;
 pub mod popup_keybinds;
@@ -34,7 +26,7 @@ use panes::Panes;
 use popup_about::PopupAbout;
 use popup_keybinds::PopupKeybinds;
 use popup_preview::PopupPreview;
-use uiconfig::{ActivePane, UiConfig};
+use uiconfig::UiConfig;
 
 #[derive(Debug)]
 pub struct App {
@@ -55,7 +47,6 @@ impl App {
         let current_directory = config.get_initial_dir();
 
         let header = Header::new("~info one", current_directory);
-        // header.update(config.initial_dir().to_string());
         Self {
             exit: false,
             theme,
@@ -110,173 +101,5 @@ impl App {
                 preview.render(frame, &self.theme, &self.ui_config, frame.area());
             }
         }
-    }
-
-    fn handle_input(&mut self) -> std::io::Result<()> {
-        match event::read()? {
-            Event::Key(key_event) if key_event.kind == KeyEventKind::Press => {
-                // if popup is active, only handle esc to close it
-                if self.is_popup_active() {
-                    if key_event.code == KeyCode::Esc {
-                        self.ui_config.active_keybind_popup = false;
-                        self.ui_config.active_about_popup = false;
-                        self.ui_config.active_preview_popup = false;
-                    }
-
-                    // ctrl+up/down or ctrl+j/k scroll preview content
-                    if self.ui_config.active_preview_popup
-                        && key_event.modifiers.contains(KeyModifiers::CONTROL)
-                    {
-                        match key_event.code {
-                            KeyCode::Down | KeyCode::Char('k') => {
-                                if let Some(ref mut preview) = self.preview {
-                                    preview.row_next();
-                                }
-                                return Ok(());
-                            }
-                            KeyCode::Up | KeyCode::Char('j') => {
-                                if let Some(ref mut preview) = self.preview {
-                                    preview.row_prev();
-                                }
-                                return Ok(());
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-
-                // CTRL
-                if key_event.modifiers.contains(KeyModifiers::CONTROL) {
-                    match key_event.code {
-                        KeyCode::Char('h') => {
-                            self.config.show_hidden = !self.config.show_hidden;
-                            self.panes.reload(&self.config, false);
-                        }
-                        _ => todo!("no action defined while pressing CTRL"),
-                    }
-                }
-
-                // SHIFT
-                if key_event.modifiers.contains(KeyModifiers::SHIFT) {
-                    match key_event.code {
-                        KeyCode::Right => {
-                            self.config.sort_type = match self.config.sort_type {
-                                SortType::Flagged => SortType::Name,
-                                SortType::Name => SortType::Size,
-                                SortType::Size => SortType::Time,
-                                SortType::Time => SortType::Flagged,
-                            };
-                            self.panes.reload(&self.config, false);
-                        }
-                        KeyCode::Left => {
-                            self.config.sort_type = match self.config.sort_type {
-                                SortType::Flagged => SortType::Time,
-                                SortType::Time => SortType::Size,
-                                SortType::Size => SortType::Name,
-                                SortType::Name => SortType::Flagged,
-                            };
-                            self.panes.reload(&self.config, false);
-                        }
-                        KeyCode::Char('O') => {
-                            self.config.sort_order = match self.config.sort_order {
-                                SortOrder::Ascending => SortOrder::Descending,
-                                SortOrder::Descending => SortOrder::Ascending,
-                            };
-                            self.panes.reload(&self.config, false)
-                        }
-                        _ => unimplemented!("SHIFT key {} not yet implemented.", key_event.code),
-                    }
-                }
-
-                match key_event.code {
-                    KeyCode::Enter => {
-                        match self.panes.get_active_pane_mut().open() {
-                            OpenAction::DirectoryOpened | OpenAction::Reload => {
-                                self.panes.reload(&self.config, true);
-                                self.header
-                                    .update(self.panes.get_active_pane().path.to_string());
-                            }
-                            OpenAction::FileOpened(_entry) => {
-                                // future: spawn editor/viewer
-                            }
-                            OpenAction::Nothing => {}
-                        }
-                    }
-                    KeyCode::Backspace => {
-                        let path = self.panes.get_active_pane_mut().path.to_string();
-
-                        match self.panes.get_active_pane_mut().to_parent(path) {
-                            OpenAction::DirectoryOpened => {
-                                self.panes.reload(&self.config, true);
-                                self.header
-                                    .update(self.panes.get_active_pane().path.to_string());
-                            }
-                            _ => {}
-                        }
-                    }
-                    KeyCode::Char('x') => self.panes.get_active_pane_mut().toggle_select(),
-                    KeyCode::Char('q') => self.exit = true,
-                    KeyCode::Char('h') => self.panes.set_active_pane(ActivePane::Left),
-                    KeyCode::Char('l') => self.panes.set_active_pane(ActivePane::Right),
-                    KeyCode::Tab => {
-                        self.panes.toggle_active_pane();
-                        self.header
-                            .update(self.panes.get_active_pane().path.to_string());
-                    }
-                    // KeyCode::Char('k')
-                    //     if key_event
-                    //         .modifiers
-                    //         .contains(crossterm::event::KeyModifiers::CONTROL) =>
-                    // {
-                    //     self.ui_config.active_about_popup = false;
-                    //     self.ui_config.active_keybind_popup = !self.ui_config.active_keybind_popup
-                    // }
-                    KeyCode::Char('?') => {
-                        self.ui_config.active_keybind_popup = false;
-                        self.ui_config.active_about_popup = !self.ui_config.active_about_popup
-                    }
-                    KeyCode::Esc => {
-                        if self.ui_config.active_keybind_popup {
-                            self.ui_config.active_keybind_popup = false;
-                        } else if self.ui_config.active_about_popup {
-                            self.ui_config.active_about_popup = false;
-                        } else {
-                            self.exit = true;
-                        }
-                    }
-                    KeyCode::Char(' ') => {
-                        if let Some(e) = self.panes.get_active_pane().get_selected_entry() {
-                            match e.kind {
-                                EntryKind::File | EntryKind::Directory | EntryKind::Symlink => {
-                                    self.ui_config.active_keybind_popup = false;
-                                    self.ui_config.active_about_popup = false;
-                                    self.ui_config.active_preview_popup =
-                                        !self.ui_config.active_preview_popup;
-
-                                    self.preview = Some(PopupPreview::new(Some(e)));
-                                }
-                                _ => todo!("Preview of non-files not implemented yet"),
-                            }
-                        }
-                    }
-                    // up/down j/k
-                    KeyCode::Char('j') | KeyCode::Down => {
-                        self.panes.goto_next(MoveDirection::Down);
-                    }
-                    KeyCode::Char('k') | KeyCode::Up => {
-                        self.panes.goto_next(MoveDirection::Up);
-                    }
-                    _ => {}
-                }
-            }
-            _ => {}
-        };
-        Ok(())
-    }
-
-    fn is_popup_active(&self) -> bool {
-        self.ui_config.active_keybind_popup
-            || self.ui_config.active_about_popup
-            || self.ui_config.active_preview_popup
     }
 }
