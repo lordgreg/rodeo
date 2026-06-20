@@ -1,10 +1,10 @@
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use super::{
+    App,
     panes::{EntryKind, MoveDirection, OpenAction, SortOrder, SortType},
     popup_preview::PopupPreview,
     uiconfig::ActivePane,
-    App,
 };
 
 impl App {
@@ -117,22 +117,24 @@ impl App {
 
     fn handle_main_key(&mut self, key: &KeyEvent) {
         match key.code {
-            KeyCode::Enter => {
-                match self.panes.get_active_pane_mut().open() {
-                    OpenAction::DirectoryOpened | OpenAction::Reload => {
-                        self.panes.reload(&self.config, true);
-                        self.header.update(self.panes.get_active_pane().path.to_string());
-                    }
-                    OpenAction::FileOpened(_entry) => {}
-                    OpenAction::Nothing => {}
+            KeyCode::Enter => match self.panes.get_active_pane_mut().open() {
+                OpenAction::DirectoryOpened | OpenAction::Reload => {
+                    self.panes.reload(&self.config, true);
+                    self.header
+                        .update(self.panes.get_active_pane().path.to_string());
                 }
-            }
+                OpenAction::FileOpened(_entry) => {
+                    self.pending_editor_file = Some(_entry.path);
+                }
+                OpenAction::Nothing => {}
+            },
             KeyCode::Backspace => {
                 let path = self.panes.get_active_pane_mut().path.to_string();
                 match self.panes.get_active_pane_mut().to_parent(path) {
                     OpenAction::DirectoryOpened => {
                         self.panes.reload(&self.config, true);
-                        self.header.update(self.panes.get_active_pane().path.to_string());
+                        self.header
+                            .update(self.panes.get_active_pane().path.to_string());
                     }
                     _ => {}
                 }
@@ -143,7 +145,8 @@ impl App {
             KeyCode::Char('l') => self.panes.set_active_pane(ActivePane::Right),
             KeyCode::Tab => {
                 self.panes.toggle_active_pane();
-                self.header.update(self.panes.get_active_pane().path.to_string());
+                self.header
+                    .update(self.panes.get_active_pane().path.to_string());
             }
             KeyCode::Char('?') => {
                 self.ui_config.active_keybind_popup = false;
@@ -164,7 +167,8 @@ impl App {
                         EntryKind::File | EntryKind::Directory | EntryKind::Symlink => {
                             self.ui_config.active_keybind_popup = false;
                             self.ui_config.active_about_popup = false;
-                            self.ui_config.active_preview_popup = !self.ui_config.active_preview_popup;
+                            self.ui_config.active_preview_popup =
+                                !self.ui_config.active_preview_popup;
                             self.preview = Some(PopupPreview::new(Some(e)));
                         }
                         _ => todo!("Preview of non-files not implemented yet"),

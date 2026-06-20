@@ -34,9 +34,12 @@ fn default_show_hidden() -> bool {
 fn default_directories_on_top() -> bool {
     true
 }
-
 fn default_active_pane() -> ActivePane {
     ActivePane::Left
+}
+fn default_editor() -> String {
+  std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string())
+
 }
 
 ////
@@ -60,6 +63,8 @@ pub struct Config {
     pub directories_on_top: bool,
     #[serde(default = "default_active_pane")]
     pub active_pane: ActivePane,
+    #[serde(default = "default_editor")]
+    pub editor: String,
 }
 
 impl Config {
@@ -74,6 +79,7 @@ impl Config {
             show_hidden: default_show_hidden(),
             directories_on_top: default_directories_on_top(),
             active_pane: default_active_pane(),
+            editor: default_editor(),
         }
     }
 

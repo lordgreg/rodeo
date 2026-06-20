@@ -1,3 +1,5 @@
+use std::{path::PathBuf, process::Command};
+
 use crate::{
     Config,
     ui::{footer::Footer, theme::Theme},
@@ -38,6 +40,7 @@ pub struct App {
     panes: Panes,
     config: Config,
     preview: Option<PopupPreview>,
+    pending_editor_file: Option<PathBuf>,
 }
 
 impl App {
@@ -56,6 +59,7 @@ impl App {
             panes,
             config,
             preview: None,
+            pending_editor_file: None,
         }
     }
 
@@ -63,6 +67,14 @@ impl App {
         while !self.exit {
             terminal.draw(|frame| self.render(frame))?;
             self.handle_input()?;
+            if let Some(path) = self.pending_editor_file.take() {
+                terminal.clear()?;
+                Command::new(&self.config.editor).arg(&path).status()?;
+                terminal.clear()?;
+                self.panes.reload(&self.config, true);
+                self.header
+                    .update(self.panes.get_active_pane().path.to_string());
+            }
         }
         Ok(())
     }
