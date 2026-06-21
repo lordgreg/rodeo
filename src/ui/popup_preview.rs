@@ -15,6 +15,7 @@ use crate::ui::{component::Component, panes::Entry, theme::Theme, uiconfig::UiCo
 enum PreviewContent {
     Text(Text<'static>),
     Image(String),
+    Error(String),
     NotImplemented(String),
 }
 
@@ -83,16 +84,33 @@ impl PopupPreview {
     fn get_file_content(path: &str) -> PreviewContent {
         match Self::get_file_type(path) {
             FileType::ASCII => {
-                let cmd = Command::new("bat")
+                let Ok(cmd) = Command::new("bat")
                     .args(["--plain", "--color=always", "--theme=ansi", path])
                     .output()
-                    .unwrap();
+                else {
+                    return PreviewContent::Error("failed to run execution command".into());
+                };
 
-                if cmd.status.success() {
-                    PreviewContent::Text(cmd.stdout.into_text().unwrap())
-                } else {
-                    PreviewContent::Text(cmd.stderr.into_text().unwrap())
+                match (
+                    cmd.status.success(),
+                    cmd.stdout.into_text(),
+                    cmd.stderr.into_text(),
+                ) {
+                    (true, Ok(text), _) => PreviewContent::Text(text),
+                    (false, _, Ok(text)) => PreviewContent::Text(text),
+                    _ => PreviewContent::Error(
+                        "ambigious output producted by execution command".into(),
+                    ),
                 }
+
+                // if cmd.status.success() {
+                //     PreviewContent::Text(match cmd.stdout.into_text() {
+                //         Ok(text) => text,
+                //         Err(err) => PreviewContent::Error(err.into()),
+                //     })
+                // } else {
+                //     PreviewContent::Text(cmd.stderr.into_text())
+                // }
             }
             FileType::Binary => PreviewContent::NotImplemented("BINARY".to_string()),
             FileType::Image => PreviewContent::Image(path.to_string()),
@@ -116,7 +134,9 @@ impl Component for PopupPreview {
 
         frame.render_widget(Clear, popup_area);
 
-        let entry = self.selected.as_ref().unwrap();
+        let Some(entry) = self.selected.as_ref() else {
+            return;
+        };
 
         let block = Block::default()
             .title(format!("Preview {}", entry.name))
@@ -144,20 +164,42 @@ impl Component for PopupPreview {
                 frame.render_widget(Paragraph::new(text).scroll((self.row, 0)), inner_area);
             }
             PreviewContent::Image(path) => {
-                let dyn_img = image::ImageReader::open(path).unwrap().decode().unwrap();
+                let dyn_img = match image::ImageReader::open(&path) {
+                    Ok(reader) => match reader.decode() {
+                        Ok(img) => img,
+                        Err(e) => {
+                            frame.render_widget(
+                                Paragraph::new(format!("Image decode error: {e}")),
+                                inner_area,
+                            );
+                            return;
+                        }
+                    },
+                    Err(e) => {
+                        frame.render_widget(
+                            Paragraph::new(format!("Cannot open image: {e}")),
+                            inner_area,
+                        );
+                        return;
+                    }
+                };
 
                 let picker = Picker::from_query_stdio().unwrap_or_else(|_| Picker::halfblocks());
                 let size = Size::from(inner_area);
-
-                let image = picker
-                    .new_protocol(dyn_img, size, Resize::Fit(None))
-                    .unwrap();
-
+                let image = match picker.new_protocol(dyn_img, size, Resize::Fit(None)) {
+                    Ok(protocol) => protocol,
+                    Err(e) => {
+                        frame.render_widget(
+                            Paragraph::new(format!("protocol error: {e}")),
+                            inner_area,
+                        );
+                        return;
+                    }
+                };
                 let image = Image::new(&image);
-
                 frame.render_widget(image, inner_area);
             }
-            PreviewContent::NotImplemented(msg) => {
+            PreviewContent::NotImplemented(msg) | PreviewContent::Error(msg) => {
                 frame.render_widget(Paragraph::new(msg).wrap(Wrap { trim: true }), inner_area);
             }
         }

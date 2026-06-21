@@ -1,4 +1,7 @@
-use std::path::{Path, PathBuf};
+use std::{
+    io,
+    path::{Path, PathBuf},
+};
 
 use log::{info, warn};
 use serde::{Deserialize, Serialize};
@@ -38,8 +41,7 @@ fn default_active_pane() -> ActivePane {
     ActivePane::Left
 }
 fn default_editor() -> String {
-  std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string())
-
+    std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string())
 }
 
 ////
@@ -101,24 +103,24 @@ impl Config {
         }
     }
 
-    pub fn load_config_from_file(filename: &str) -> Config {
+    pub fn load_config_from_file(filename: &str) -> io::Result<Config> {
         let config_str = match std::fs::read_to_string(filename) {
             Ok(s) => s,
             Err(_) => {
                 let default_config_path = Self::get_config_path(None);
                 warn!(
-                    "Config file not found, creating default config at {}",
-                    default_config_path.to_str().unwrap()
+                    "Config file not found, creating default config at {:?}",
+                    default_config_path.to_str()
                 );
 
                 let config = Config::default();
-                Self::save_config(&config, default_config_path.to_str());
-                return config;
+                Self::save_config(&config, default_config_path.to_str())?;
+                return Ok(config);
             }
         };
         let config: Config =
             yaml_serde::from_str(&config_str).expect("Failed to parse config file");
-        config
+        Ok(config)
     }
 
     pub fn get_config_path(filename: Option<&str>) -> std::path::PathBuf {
@@ -130,19 +132,30 @@ impl Config {
         }
     }
 
-    pub fn save_config(config: &Config, filename: Option<&str>) {
-        let config_str = yaml_serde::to_string(config).expect("Failed to serialize config");
+    pub fn save_config(config: &Config, filename: Option<&str>) -> io::Result<()> {
+        let config_str = yaml_serde::to_string(config)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
         let config_path = Self::get_config_path(filename);
-        let parent_dir = config_path.parent().unwrap();
+        let parent_dir = config_path.parent().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                "config path has no parent directory",
+            )
+        })?;
 
-        std::fs::create_dir_all(parent_dir).expect("Failed to create config directory");
-        std::fs::write(&config_path, config_str).expect("Failed to write config file");
+        std::fs::create_dir_all(parent_dir)?;
+        std::fs::write(&config_path, config_str)?;
 
-        info!("Config saved to {}", &config_path.to_str().unwrap());
+        info!("Config saved to {:?}", &config_path.to_str());
+        Ok(())
     }
 
-    pub fn load_config(filename: Option<&str>) -> Config {
-        Self::load_config_from_file(Self::get_config_path(filename).to_str().unwrap())
+    pub fn load_config(filename: Option<&str>) -> io::Result<Config> {
+        let config_path = Self::get_config_path(filename);
+        let path = config_path.to_str().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::NotFound, format!("cannot get config path."))
+        })?;
+        Self::load_config_from_file(path)
     }
 }

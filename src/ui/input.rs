@@ -34,9 +34,13 @@ impl App {
             || self.ui_config.active_about_popup
             || self.ui_config.active_preview_popup
     }
-
+    // Keys checked in order: popup-specific → Ctrl-modified → Shift-modified → unmodified.
+    // Popup handler takes priority when any popup is active.
     fn handle_popup_key(&mut self, key: &KeyEvent) -> bool {
-        if key.code == KeyCode::Esc {
+        if key.code == KeyCode::Esc
+            || key.code == KeyCode::Char(' ')
+            || key.code == KeyCode::Char('q')
+        {
             self.ui_config.active_keybind_popup = false;
             self.ui_config.active_about_popup = false;
             self.ui_config.active_preview_popup = false;
@@ -57,11 +61,17 @@ impl App {
                     }
                     return true;
                 }
+                _ => return false,
+            }
+        } else if self.ui_config.active_preview_popup && key.modifiers.is_empty() {
+            match key.code {
+                KeyCode::Up | KeyCode::Char('k') => self.panes.goto_next(MoveDirection::Up),
+                KeyCode::Down | KeyCode::Char('j') => self.panes.goto_next(MoveDirection::Down),
                 _ => {}
             }
         }
 
-        true
+        false
     }
 
     fn handle_ctrl_key(&mut self, key: &KeyEvent) -> bool {
@@ -72,7 +82,10 @@ impl App {
                     self.panes.reload(&self.config, false);
                     return true;
                 }
-                _ => todo!("no action defined while pressing CTRL"),
+                _ => {
+                    log::debug!("unhandled Ctrl+{:?}", key.code);
+                    return false;
+                }
             }
         }
         false
@@ -109,7 +122,11 @@ impl App {
                     self.panes.reload(&self.config, false);
                     return true;
                 }
-                _ => unimplemented!("SHIFT key {} not yet implemented.", key.code),
+                KeyCode::Char('G') => self.panes.goto_last(),
+                _ => {
+                    log::debug!("unhandled Shift+{:?}", key.code);
+                    return false;
+                }
             }
         }
         false
@@ -139,6 +156,7 @@ impl App {
                     _ => {}
                 }
             }
+            KeyCode::Char('g') => self.panes.goto_first(),
             KeyCode::Char('x') => self.panes.get_active_pane_mut().toggle_select(),
             KeyCode::Char('q') => self.exit = true,
             KeyCode::Char('h') => self.panes.set_active_pane(ActivePane::Left),
@@ -171,7 +189,8 @@ impl App {
                                 !self.ui_config.active_preview_popup;
                             self.preview = Some(PopupPreview::new(Some(e)));
                         }
-                        _ => todo!("Preview of non-files not implemented yet"),
+                        EntryKind::Parent => log::warn!("Cannot preview parent directory."),
+                        EntryKind::Unknown => log::warn!("Unknown file type - cannot preview"),
                     }
                 }
             }

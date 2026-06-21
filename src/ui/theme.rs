@@ -9,21 +9,21 @@ pub const DEFAULT_THEME_DIR: &str = "themes";
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Colors {
-    pub background: String,
-    pub foreground: String,
-    pub primary: String,
-    pub secondary: String,
-    pub success: String,
-    pub warning: String,
-    pub error: String,
-    pub info: String,
-    pub muted: String,
-    pub border: String,
-    pub surface: String,
-    pub highlight: String,
-    pub accent1: String,
-    pub accent2: String,
-    pub accent3: String,
+    background: String,
+    foreground: String,
+    primary: String,
+    secondary: String,
+    success: String,
+    warning: String,
+    error: String,
+    info: String,
+    muted: String,
+    border: String,
+    surface: String,
+    highlight: String,
+    accent1: String,
+    accent2: String,
+    accent3: String,
 }
 
 trait ColorExt {

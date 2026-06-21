@@ -514,21 +514,18 @@ impl Panes {
     }
 
     pub fn goto_next(&mut self, direction: MoveDirection) {
-        if self.active_pane == ActivePane::Left {
-            let next = Self::next_index(
-                &self.pane_left.paths.len(),
-                self.pane_left.state.selected(),
-                direction,
-            );
-            self.pane_left.state.select(Some(next));
-        } else {
-            let next = Self::next_index(
-                &self.pane_right.paths.len(),
-                self.pane_right.state.selected(),
-                direction,
-            );
-            self.pane_right.state.select(Some(next));
-        }
+        let pane = self.get_active_pane_mut();
+        let next = Self::next_index(&pane.paths.len(), pane.state.selected(), direction);
+
+        pane.state.select(Some(next));
+    }
+
+    pub fn goto_first(&mut self) {
+        self.get_active_pane_mut().state.select_first();
+    }
+
+    pub fn goto_last(&mut self) {
+        self.get_active_pane_mut().state.select_last();
     }
 }
 

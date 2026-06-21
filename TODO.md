@@ -70,34 +70,34 @@ These are small, self-contained fixes with high impact-to-effort ratio. Do them 
 > Goal: Stop crashing. Remove dead code. Make existing features work correctly.
 > Dependencies: None. Everything here can start immediately.
 
-- [ ] **0.1 Fix crash: unknown Ctrl keys call `todo!()` → PANIC**
+- [x] **0.1 Fix crash: unknown Ctrl keys call `todo!()` → PANIC**
   - **P0** | **Files:** `src/ui/input.rs:75` | **Hints:** Replace `_ => todo!("no action defined while pressing CTRL")` with `_ => return false`. Unknown Ctrl combos should be a no-op, not a crash. Use `log::debug!("unhandled Ctrl+{:?}", key.code)`. | **Effort:** S
 
-- [ ] **0.2 Fix crash: unknown Shift keys call `unimplemented!()` → PANIC**
+- [x] **0.2 Fix crash: unknown Shift keys call `unimplemented!()` → PANIC**
   - **P0** | **Files:** `src/ui/input.rs:112` | **Hints:** Replace `_ => unimplemented!("SHIFT key {} not yet implemented.", key.code)` with `_ => return false`. Log the unhandled key. | **Effort:** S
 
-- [ ] **0.3 Fix crash: preview of non-file items calls `todo!()` → PANIC**
+- [x] **0.3 Fix crash: preview of non-file items calls `todo!()` → PANIC**
   - **P0** | **Files:** `src/ui/input.rs:170` | **Hints:** Replace `_ => todo!("Preview of non-files not implemented yet")` with graceful handling. For `EntryKind::Parent`, show "Cannot preview parent directory". For `EntryKind::Unknown`, show "Unknown file type — cannot preview". Use `log::warn!`. | **Effort:** S
 
-- [ ] **0.4 Fix `handle_popup_key` always returns `true` (consumes all keys when popup active)**
+- [x] **0.4 Fix `handle_popup_key` always returns `true` (consumes all keys when popup active)**
   - **P0** | **Files:** `src/ui/input.rs:38-65` | **Hints:** The fallthrough `true` at line 64 means ANY key when a popup is active gets consumed — including `Esc` after it was already handled. Change the final `true` to `false` (return false = didn't handle, let main handler try). Test with `Esc` in preview popup: it should close preview, not quit. | **Effort:** S
 
-- [ ] **0.5 Fix Enter on file does nothing (empty `FileOpened` arm)**
+- [x] **0.5 Fix Enter on file does nothing (empty `FileOpened` arm)**
   - **P0** | **Files:** `src/ui/input.rs:126` | **Hints:** (See also Quick Wins above — this is so critical it appears in both lists.) Spawn `$EDITOR` with the file path. On editor exit, reload pane to reflect any changes. Use `std::env::var("EDITOR").unwrap_or_else(|_| "vi".into())`. | **Effort:** S
 
 - [ ] **0.6 Fix footer: replace misleading keybindings with true ones**
   - **P0** | **Files:** `src/ui/footer.rs:18-24` | **Hints:** (See also Quick Wins above.) Current lies: `x Cut` (x=toggle select), `p Paste` (p=unbound), `SPACE select` (SPACE=preview), `? preview` (?=about). Replace with `h/j/k/l Move`, `Enter Open`, `Tab Switch`, `x Select`, `Space Preview`, `q Quit`, `? About`. Make Ctrl+h and Backspace visible too. | **Effort:** S
 
-- [ ] **0.7 Fix preview: `self.selected.as_ref().unwrap()` panics if selected is None at render time**
+- [x] **0.7 Fix preview: `self.selected.as_ref().unwrap()` panics if selected is None at render time**
   - **P1** | **Files:** `src/ui/popup_preview.rs:119` | **Hints:** If the entry was deleted between opening preview and rendering, the `unwrap()` crashes. Change to `let Some(entry) = self.selected.as_ref() else { return; };`. | **Effort:** S
 
-- [ ] **0.8 Document popup key precedence chain in `handle_popup_key`**
+- [x] **0.8 Document popup key precedence chain in `handle_popup_key`**
   - **P1** | **Files:** `src/ui/input.rs:38-77` | **Hints:** The current precedence order (popup keys → ctrl keys → shift keys → main keys) is correct. Ctrl+Up/Down in preview work because they return `true` before `handle_ctrl_key` runs. Add a comment at the top of `handle_popup_key` documenting the chain: "Keys checked in order: popup-specific → Ctrl-modified → Shift-modified → unmodified. Popup handler takes priority when any popup is active." | **Effort:** S
 
-- [ ] **0.9 Make popups dismissible with `q` and `Esc` consistently**
+- [x] **0.9 Make popups dismissible with `q` and `Esc` consistently**
   - **P1** | **Files:** `src/ui/input.rs:38-65,139-160` | **Hints:** In `handle_popup_key`, add `KeyCode::Char('q')` alongside `Esc` to close all popups. Mirror `Esc` behavior: if popups active, close them; otherwise quit. | **Effort:** S
 
-- [ ] **0.10 Add `g`/`G`/`gg` Vim-style jump navigation**
+- [x] **0.10 Add `g`/`G`/`gg` Vim-style jump navigation**
   - **P1** | **Files:** `src/ui/input.rs`, `src/ui/panes.rs` | **Hints:** `gg` = jump to top of file list, `G` = jump to bottom, `g` = prefix for other motions (future). Add `Pane::goto_first()` and `Pane::goto_last()` methods that set `self.state.select(Some(0))` and `self.state.select(Some(max))` respectively. In `handle_main_key`, match `KeyCode::Char('g')` — since `g` is a prefix, you'll need a small state machine: first `g` sets a flag, second `g` triggers `goto_first()`. Same for `G` (single key). | **Effort:** S
 
 - [ ] **0.11 Audit and tag all `.unwrap()` / `.expect()` calls for systematic replacement**
