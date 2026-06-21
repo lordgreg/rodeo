@@ -130,10 +130,19 @@ impl Theme {
 
     pub fn get_theme_list() -> Vec<String> {
         let mut themes: Vec<String> = Vec::new();
-        let entries = fs::read_dir(DEFAULT_THEME_DIR).unwrap();
+        let entries = match fs::read_dir(DEFAULT_THEME_DIR) {
+            Ok(rd) => rd,
+            Err(e) => {
+                log::warn!("cannot read theme directory {}: {}", DEFAULT_THEME_DIR, e);
+                return themes;
+            }
+        };
 
         for entry in entries {
-            let entry = entry.unwrap();
+            let entry = match entry {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
             let path = entry.path();
 
             if !path.extension().is_some_and(|ext| ext == "yaml") {

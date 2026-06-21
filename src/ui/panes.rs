@@ -136,7 +136,10 @@ impl Entry {
     }
 
     pub fn parent(dir: &str) -> Self {
-        let path = PathBuf::from(dir).join("..").canonicalize().unwrap();
+        let path = match PathBuf::from(dir).join("..").canonicalize() {
+            Ok(c) => c,
+            Err(_) => PathBuf::from(dir).join(".."),
+        };
 
         Self {
             kind: EntryKind::Parent,
@@ -260,7 +263,10 @@ impl Pane {
 
     pub fn to_parent(&mut self, current_path: String) -> OpenAction {
         if let Some(parent) = Path::new(&current_path).parent() {
-            self.path = parent.canonicalize().unwrap().to_string_lossy().to_string();
+            let resolved = parent
+                .canonicalize()
+                .unwrap_or_else(|_| parent.to_path_buf());
+            self.path = resolved.to_string_lossy().to_string();
 
             return OpenAction::DirectoryOpened;
         } else {
@@ -288,7 +294,7 @@ impl Pane {
                 self.path = entry
                     .path
                     .canonicalize()
-                    .unwrap()
+                    .unwrap_or_else(|_| entry.path.to_path_buf())
                     .to_string_lossy()
                     .to_string();
 
@@ -389,18 +395,21 @@ impl Pane {
 }
 
 fn read_entries(dir: &str, config: &Config) -> Vec<Entry> {
-    let mut entries: Vec<Entry> = fs::read_dir(dir)
-        .unwrap()
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .filter(|p| {
-            config.show_hidden
-                || !p
-                    .file_name()
-                    .is_some_and(|n| n.to_string_lossy().starts_with('.'))
-        })
-        .map(|p| Entry::new(p))
-        .collect();
+    let mut entries: Vec<Entry> = match fs::read_dir(dir) {
+        Ok(rd) => rd
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| {
+                config.show_hidden
+                    || !p
+                        .file_name()
+                        .is_some_and(|n| n.to_string_lossy().starts_with('.'))
+            })
+            .map(|p| Entry::new(p))
+            .collect(),
+
+        Err(_) => Vec::new(),
+    };
 
     entries.sort_by(|a, b| {
         let mut cmp = match config.sort_type {
