@@ -1,4 +1,7 @@
 use std::fs;
+use std::io;
+use std::io::Error;
+use std::io::ErrorKind;
 
 use log::info;
 use ratatui::style::Color;
@@ -110,7 +113,7 @@ pub struct Theme {
 }
 
 impl Theme {
-    pub fn load_theme(name: Option<&str>) -> Self {
+    pub fn load_theme(name: Option<&str>) -> io::Result<Self> {
         // 1. if name without yaml, we know its in themes directory,
         // 2. if name with yaml, we know its a path to a file
         // 3. if name is None, we load the default theme from themes directory
@@ -159,7 +162,7 @@ impl Theme {
         themes
     }
 
-    pub fn load_from_file(filename: &str) -> Self {
+    pub fn load_from_file(filename: &str) -> io::Result<Self> {
         let theme_str = match std::fs::read_to_string(filename) {
             Ok(s) => s,
             Err(e) => {
@@ -169,9 +172,10 @@ impl Theme {
             }
         };
 
-        let theme: Theme = yaml_serde::from_str(&theme_str).expect("Failed to parse theme file");
+        let theme: Theme = yaml_serde::from_str(&theme_str)
+            .map_err(|_| Error::new(ErrorKind::InvalidData, format!("cannot parse theme data.")))?;
 
         info!("Loaded theme {}", theme.name);
-        theme
+        Ok(theme)
     }
 }

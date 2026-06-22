@@ -26,7 +26,7 @@ fn main() -> io::Result<()> {
 
     println!("Config: {:?}", config);
 
-    let theme = Theme::load_theme(args.theme.as_deref());
+    let theme = Theme::load_theme(args.theme.as_deref())?;
 
     info!("Starting UI");
     ratatui::run(|terminal| App::new(theme, config).run(terminal))

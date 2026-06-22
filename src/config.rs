@@ -118,8 +118,12 @@ impl Config {
                 return Ok(config);
             }
         };
-        let config: Config =
-            yaml_serde::from_str(&config_str).expect("Failed to parse config file");
+        let config: Config = yaml_serde::from_str(&config_str).map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("Failed to parse config file"),
+            )
+        })?;
         Ok(config)
     }
 
