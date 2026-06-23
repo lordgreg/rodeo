@@ -106,28 +106,30 @@ These are small, self-contained fixes with high impact-to-effort ratio. Do them 
 - [ ] **0.12 Remove dead code: `active_keybind_popup` never activated**
   - **P1** | **Files:** See Quick Wins above. | **Hints:** (See also Quick Wins above.) Note: `active_keybind_popup` is only ever set to `false` in the codebase. The `?` key sets it to `false` (line 149), and Esc sets it to `false` (line 40). It is never set to `true` — so the popup can never appear. Either bind to key (recommend `F1` or `K`) with populated content, or remove: `uiconfig.rs:14`, `mod.rs:87-89`, `input.rs` references at lines 33,40,149,153,165. | **Effort:** S
 
-- [ ] **0.13 Remove dead code: `Config::read_only` never checked**
+- [x] **0.13 Remove dead code: `Config::read_only` never checked**
   - **P1** | **Files:** `src/config.rs:46`, `src/ui/input.rs` | **Hints:** (See also Quick Wins above.) Add getter. Check in `handle_main_key` before allowing: cut/copy/delete/rename (once implemented), toggle_select, Enter-on-file. Show a status message "Read-only mode — operation blocked" in footer. | **Effort:** S
 
-- [ ] **0.14 Fix config format mismatch: code uses YAML, README/planning docs say TOML**
+- [x] **0.14 Fix config format mismatch: code uses YAML, README/planning docs say TOML**
   - **P2** | **Files:** `src/config.rs`, `Cargo.toml` | **Hints:** Decision needed: YAML or TOML? (See Open Decisions.) If staying YAML: update README and planning docs. If switching to TOML: swap `yaml_serde` for `toml`, update `config.yaml` → `config.toml`, update `CONFIG_FILENAME`. TOML is more Rust-idiomatic and recommended by planning docs. | **Effort:** M (if switching)
 
-- [ ] **0.15 Fix `Entry::parent()`: `canonicalize().unwrap()` panics if parent doesn't exist or permissions deny**
+- [x] **0.15 Fix `Entry::parent()`: `canonicalize().unwrap()` panics if parent doesn't exist or permissions deny**
   - **P1** | **Files:** `src/ui/panes.rs:139` | **Hints:** `PathBuf::from(dir).join("..")` then `canonicalize()` — if at filesystem root, `..` is still root (no panic). But permission errors or deleted directories will crash. Use `.ok()?` fallback: return an Entry with `kind: Parent` and the joined path (canonicalization is a nice-to-have). | **Effort:** S
 
-- [ ] **0.16 Fix `read_entries()`: `fs::read_dir(dir).unwrap()` panics on permission denied or missing dir**
+- [x] **0.16 Fix `read_entries()`: `fs::read_dir(dir).unwrap()` panics on permission denied or missing dir**
   - **P1** | **Files:** `src/ui/panes.rs:393` | **Hints:** Use `match fs::read_dir(dir) { Ok(rd) => rd, Err(e) => { log::error!("Cannot read {}: {}", dir, e); return vec![Entry::parent(dir)]; }}`. | **Effort:** S
 
-- [ ] **0.17 Fix `Pane::open()` canonicalize unwrap can panic**
+- [x] **0.17 Fix `Pane::open()` canonicalize unwrap can panic**
   - **P1** | **Files:** `src/ui/panes.rs:291-292` | **Hints:** `entry.path.canonicalize().unwrap()` — permissions or broken symlinks crash. Use `match entry.path.canonicalize() { Ok(p) => ..., Err(e) => { log::error!(...); return OpenAction::Nothing; }}`. | **Effort:** S
 
-- [ ] **0.18 Check `handle_main_key` `Esc` logic: quits app if no popups active**
+- [x] **0.18 Check `handle_main_key` `Esc` logic: quits app if no popups active**
   - **P1** | **Files:** `src/ui/input.rs:152-160` | **Hints:** This means `Esc` without any popup quits the app. MC tradition uses `F10` or `q` for quit. This is a design choice — confirm it's intentional. Recommendation: make Esc a no-op when no popups are open, to prevent accidental exits. Only `q` (and `:q`) should quit. | **Effort:** S
 
-- [ ] **0.19 Prevent preview of `..` (parent entry)**
+- [x] **0.19 Prevent preview of `..` (parent entry)**
   - **P2** | **Files:** `src/ui/input.rs:161-173` | **Hints:** Currently `Space` on `..` tries to preview — `EntryKind::Parent` falls into the `todo!()` crash in 0.3. After fixing 0.3, still show a "Cannot preview parent directory" message rather than an error. | **Effort:** S
 
 - [ ] **0.20 Add runtime dependency documentation**
+  - TODO: replace cat with syntect
+  - TODO: replace file with???
   - **P1** | **Files:** `README.md` | **Hints:** Document that `bat` and `file` commands must be installed for preview to work. Previews silently degrade without them. At startup, check `which bat` and `which file`; if missing, show a one-time warning in the footer. Previews silently fail without bat. | **Effort:** S
 
 - [ ] **0.21 Sanitize header directory display for very long paths**

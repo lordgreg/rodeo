@@ -1,12 +1,19 @@
-use ansi_to_tui::IntoText as _;
+use ansi_to_tui::IntoText;
 use ratatui_image::{Image, Resize, picker::Picker};
+use std::io;
+use std::io::BufRead;
+use std::ops::Add;
 use std::process::Command;
+use syntect::highlighting;
+use syntect::parsing::SyntaxSet;
+use syntect::util::as_24_bit_terminal_escaped;
+use syntect::{easy::HighlightFile, highlighting::Highlighter};
 
 use ratatui::{
     Frame,
     layout::{Rect, Size},
     style::Style,
-    text::Text,
+    text::{Line, Text},
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
 };
 
@@ -81,36 +88,70 @@ impl PopupPreview {
         }
     }
 
+    fn syntect_style_to_ratatui(s: highlighting::Style) -> ratatui::style::Style {
+        use ratatui::style::{Color, Modifier, Style};
+        let mut style = Style::default()
+            .fg(Color::Rgb(s.foreground.r, s.foreground.g, s.foreground.b))
+            .bg(Color::Rgb(s.background.r, s.background.g, s.background.b));
+        if s.font_style.contains(highlighting::FontStyle::BOLD) {
+            style = style.add_modifier(Modifier::BOLD);
+        }
+        if s.font_style.contains(highlighting::FontStyle::ITALIC) {
+            style = style.add_modifier(Modifier::ITALIC);
+        }
+        if s.font_style.contains(highlighting::FontStyle::UNDERLINE) {
+            style = style.add_modifier(Modifier::UNDERLINED);
+        }
+        style
+    }
     fn get_file_content(path: &str) -> PreviewContent {
         match Self::get_file_type(path) {
             FileType::ASCII => {
-                let Ok(cmd) = Command::new("bat")
-                    .args(["--plain", "--color=always", "--theme=ansi", path])
-                    .output()
-                else {
-                    return PreviewContent::Error("failed to run execution command".into());
-                };
+                let ss = SyntaxSet::load_defaults_newlines();
+                let ts = highlighting::ThemeSet::load_defaults();
+                let mut highlighter =
+                    HighlightFile::new(path, &ss, &ts.themes["base16-ocean.dark"]).unwrap();
+                let mut line = String::new();
+                let mut lines: Vec<Line> = Vec::new();
+                let mut ansi_string = String::new();
 
-                match (
-                    cmd.status.success(),
-                    cmd.stdout.into_text(),
-                    cmd.stderr.into_text(),
-                ) {
-                    (true, Ok(text), _) => PreviewContent::Text(text),
-                    (false, _, Ok(text)) => PreviewContent::Text(text),
-                    _ => PreviewContent::Error(
-                        "ambigious output producted by execution command".into(),
-                    ),
+                loop {
+                    match highlighter.reader.read_line(&mut line) {
+                        Ok(0) => break,
+                        Ok(_) => {}
+                        Err(_) => break,
+                    }
+
+                    let regions = match highlighter.highlight_lines.highlight_line(&line, &ss) {
+                        Ok(r) => r,
+                        // cannot parse the line, fallback to non-parsed line
+                        Err(_) => {
+                            lines.push(Line::from(line.clone()));
+                            line.clear();
+                            continue;
+                        }
+                    };
+
+                    ansi_string.push_str(&as_24_bit_terminal_escaped(&regions[..], true));
+                    line.clear();
                 }
 
-                // if cmd.status.success() {
-                //     PreviewContent::Text(match cmd.stdout.into_text() {
-                //         Ok(text) => text,
-                //         Err(err) => PreviewContent::Error(err.into()),
-                //     })
-                // } else {
-                //     PreviewContent::Text(cmd.stderr.into_text())
+                // while highlighter.reader.read_line(&mut line) > 0 {
+                //     {
+                //         let regions: Vec<(highlighting::Style, &str)> = highlighter
+                //             .highlight_lines
+                //             .highlight_line(&line, &ss)
+                //             .unwrap();
+                //         ansi_string.push_str(&as_24_bit_terminal_escaped(&regions[..], true));
+                //         // print!("{}", as_24_bit_terminal_escaped(&regions[..], true));
+                //     } // until NLL this scope is needed so we can clear the buffer after
+                //     line.clear(); // read_line appends so we need to clear between lines
                 // }
+
+                match ansi_string.into_text() {
+                    Ok(t) => PreviewContent::Text(t),
+                    Err(_) => PreviewContent::Error("cannot convert string to tui text".into()),
+                }
             }
             FileType::Binary => PreviewContent::NotImplemented("BINARY".to_string()),
             FileType::Image => PreviewContent::Image(path.to_string()),

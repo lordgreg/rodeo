@@ -14,10 +14,6 @@ use crate::ui::{
 pub const CONFIG_FILENAME: &str = "config.yaml";
 pub const CONFIG_DIR: &str = "rodeo";
 
-fn default_read_only() -> bool {
-    false
-}
-
 fn default_theme() -> String {
     "light".to_string()
 }
@@ -47,8 +43,6 @@ fn default_editor() -> String {
 ////
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Config {
-    #[serde(default = "default_read_only")]
-    read_only: bool,
     #[serde(default = "default_theme")]
     theme: String,
     #[serde(default = "default_initial_directory")]
@@ -72,7 +66,6 @@ pub struct Config {
 impl Config {
     fn default() -> Self {
         Self {
-            read_only: default_read_only(),
             theme: default_theme(),
             initial_directory_left: default_initial_directory(),
             initial_directory_right: default_initial_directory(),
@@ -121,7 +114,7 @@ impl Config {
         let config: Config = yaml_serde::from_str(&config_str).map_err(|e| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
-                format!("Failed to parse config file"),
+                format!("Failed to parse config file: {}", e),
             )
         })?;
         Ok(config)

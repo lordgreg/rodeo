@@ -290,16 +290,13 @@ impl Pane {
 
                 self.to_parent(previous)
             }
-            EntryKind::Directory => {
-                self.path = entry
-                    .path
-                    .canonicalize()
-                    .unwrap_or_else(|_| entry.path.to_path_buf())
-                    .to_string_lossy()
-                    .to_string();
-
-                OpenAction::Reload
-            }
+            EntryKind::Directory => match entry.path.canonicalize() {
+                Ok(_) => return OpenAction::Reload,
+                Err(e) => {
+                    log::error!("cannot open directory {}", e);
+                    return OpenAction::Nothing;
+                }
+            },
             _ => OpenAction::Nothing,
         }
         // OpenAction::Nothing
@@ -408,7 +405,11 @@ fn read_entries(dir: &str, config: &Config) -> Vec<Entry> {
             .map(|p| Entry::new(p))
             .collect(),
 
-        Err(_) => Vec::new(),
+        Err(e) => {
+            log::error!("cannot read {}: {}", dir, e);
+
+            vec![Entry::parent(dir)]
+        }
     };
 
     entries.sort_by(|a, b| {

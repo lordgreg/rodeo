@@ -8,7 +8,7 @@ Rodeo is a modern terminal file manager inspired by Norton and Midnight Commande
 
 - [x] Project scaffolding with Cargo workspaces
 - [x] Input handling with Clap
-- [x] Load config from `~/.config/rodeo/config.toml` using Serde and Derive
+- [x] Load config from `~/.config/rodeo/config.yaml` using Serde and Derive
 - [x] Basic terminal UI setup with Ratatui
 - [x] CLI parameters: --left, --right, --theme, --config, --search, --regex, /
 
