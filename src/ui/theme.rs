@@ -1,11 +1,14 @@
 use std::fs;
 use std::io;
+use std::io::Cursor;
 use std::io::Error;
 use std::io::ErrorKind;
 
 use log::info;
 use ratatui::style::Color;
 use serde::{Deserialize, Serialize};
+use syntect::highlighting::Theme as SynTheme;
+use syntect::highlighting::ThemeSet;
 
 pub const DEFAULT_THEME_FILENAME: &str = "default.yaml";
 pub const DEFAULT_THEME_DIR: &str = "themes";
@@ -113,6 +116,294 @@ pub struct Theme {
 }
 
 impl Theme {
+    pub fn to_syntect_theme(&self) -> SynTheme {
+        let colors = &self.colors;
+
+        let output = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+    <dict>
+        <key>name</key>
+        <string>{name}</string>
+        <key>author</key>
+        <string>rodeo</string>
+        <key>settings</key>
+        <array>
+            <dict>
+                <key>settings</key>
+                <dict>
+                    <key>background</key>
+                    <string>{bg}</string>
+                    <key>foreground</key>
+                    <string>{fg}</string>
+                </dict>
+            </dict>
+            <dict>
+                <key>name</key>
+                <string>Text</string>
+                <key>scope</key>
+                <string>source, text, variable, variable.other, variable.other.member,
+                    variable.function, punctuation.definition, punctuation.section,
+                    punctuation.terminator, punctuation.accessor</string>
+                <key>settings</key>
+                <dict>
+                    <key>foreground</key>
+                    <string>{fg}</string>
+                </dict>
+            </dict>
+            <dict>
+                <key>name</key>
+                <string>Comment</string>
+                <key>scope</key>
+                <string>comment, comment.line, comment.line.double-slash,
+                    comment.line.double-dash, comment.line.number-sign, comment.block,
+                    comment.block.documentation, punctuation.definition.comment,
+                    meta.documentation</string>
+                <key>settings</key>
+                <dict>
+                    <key>foreground</key>
+                    <string>{muted}</string>
+                    <key>fontStyle</key>
+                    <string>italic</string>
+                </dict>
+            </dict>
+            <dict>
+                <key>name</key>
+                <string>Punctuation</string>
+                <key>scope</key>
+                <string>punctuation.separator, punctuation.separator.comma,
+                    punctuation.separator.colon, punctuation.separator.semicolon,
+                    punctuation.separator.dot-access, markup.quote,
+                    markup.link.url</string>
+                <key>settings</key>
+                <dict>
+                    <key>foreground</key>
+                    <string>{muted}</string>
+                </dict>
+            </dict>
+            <dict>
+                <key>name</key>
+                <string>Keyword</string>
+                <key>scope</key>
+                <string>keyword, keyword.other, keyword.other.unit</string>
+                <key>settings</key>
+                <dict>
+                    <key>foreground</key>
+                    <string>{primary}</string>
+                </dict>
+            </dict>
+            <dict>
+                <key>name</key>
+                <string>Keyword Control</string>
+                <key>scope</key>
+                <string>keyword.control, keyword.control.flow, keyword.control.conditional,
+                    keyword.control.import, keyword.control.exception,
+                    keyword.control.return</string>
+                <key>settings</key>
+                <dict>
+                    <key>foreground</key>
+                    <string>{primary}</string>
+                    <key>fontStyle</key>
+                    <string>bold</string>
+                </dict>
+            </dict>
+            <dict>
+                <key>name</key>
+                <string>Operator</string>
+                <key>scope</key>
+                <string>keyword.operator, keyword.operator.assignment,
+                    keyword.operator.arithmetic, keyword.operator.logical,
+                    keyword.operator.comparison, entity.name.tag,
+                    entity.name.label</string>
+                <key>settings</key>
+                <dict>
+                    <key>foreground</key>
+                    <string>{secondary}</string>
+                </dict>
+            </dict>
+            <dict>
+                <key>name</key>
+                <string>String</string>
+                <key>scope</key>
+                <string>string, string.quoted, string.quoted.double, string.quoted.single,
+                    string.quoted.triple, string.quoted.raw, string.regexp, string.other,
+                    markup.raw, markup.raw.block, markup.inserted</string>
+                <key>settings</key>
+                <dict>
+                    <key>foreground</key>
+                    <string>{success}</string>
+                </dict>
+            </dict>
+            <dict>
+                <key>name</key>
+                <string>Storage Modifier</string>
+                <key>scope</key>
+                <string>storage, storage.modifier, storage.modifier.lifetime,
+                    storage.modifier.mut</string>
+                <key>settings</key>
+                <dict>
+                    <key>foreground</key>
+                    <string>{warning}</string>
+                </dict>
+            </dict>
+            <dict>
+                <key>name</key>
+                <string>Storage Type</string>
+                <key>scope</key>
+                <string>storage.type, storage.type.class, storage.type.struct,
+                    storage.type.enum, storage.type.trait, storage.type.function</string>
+                <key>settings</key>
+                <dict>
+                    <key>foreground</key>
+                    <string>{warning}</string>
+                    <key>fontStyle</key>
+                    <string>bold</string>
+                </dict>
+            </dict>
+            <dict>
+                <key>name</key>
+                <string>Invalid</string>
+                <key>scope</key>
+                <string>invalid, invalid.illegal, invalid.deprecated, markup.deleted</string>
+                <key>settings</key>
+                <dict>
+                    <key>foreground</key>
+                    <string>{error}</string>
+                </dict>
+            </dict>
+            <dict>
+                <key>name</key>
+                <string>Support</string>
+                <key>scope</key>
+                <string>support.function, support.function.builtin, support.function.macro,
+                    support.type, support.type.builtin, support.class,
+                    support.class.builtin, support.module, support.constant, markup.link,
+                    markup.link.text, markup.list, markup.list.numbered,
+                    markup.list.unnumbered</string>
+                <key>settings</key>
+                <dict>
+                    <key>foreground</key>
+                    <string>{info}</string>
+                </dict>
+            </dict>
+            <dict>
+                <key>name</key>
+                <string>Entity</string>
+                <key>scope</key>
+                <string>entity.name.function, entity.name.section,
+                    entity.other.attribute-name, entity.other.inherited-class</string>
+                <key>settings</key>
+                <dict>
+                    <key>foreground</key>
+                    <string>{highlight}</string>
+                </dict>
+            </dict>
+            <dict>
+                <key>name</key>
+                <string>Entity Type</string>
+                <key>scope</key>
+                <string>entity.name.type, entity.name.type.class, entity.name.type.struct,
+                    entity.name.type.enum, entity.name.type.trait,
+                    entity.name.type.interface, markup.heading, markup.heading.1,
+                    markup.heading.2, markup.heading.3, markup.heading.4,
+                    markup.heading.5, markup.heading.6</string>
+                <key>settings</key>
+                <dict>
+                    <key>foreground</key>
+                    <string>{highlight}</string>
+                    <key>fontStyle</key>
+                    <string>bold</string>
+                </dict>
+            </dict>
+            <dict>
+                <key>name</key>
+                <string>Constant</string>
+                <key>scope</key>
+                <string>constant.numeric, constant.numeric.float, constant.numeric.integer,
+                    constant.language, constant.language.boolean,
+                    variable.language</string>
+                <key>settings</key>
+                <dict>
+                    <key>foreground</key>
+                    <string>{accent1}</string>
+                </dict>
+            </dict>
+            <dict>
+                <key>name</key>
+                <string>Character</string>
+                <key>scope</key>
+                <string>constant.character, constant.character.escape, constant.other,
+                    constant.other.placeholder</string>
+                <key>settings</key>
+                <dict>
+                    <key>foreground</key>
+                    <string>{accent2}</string>
+                </dict>
+            </dict>
+            <dict>
+                <key>name</key>
+                <string>Parameter</string>
+                <key>scope</key>
+                <string>variable.parameter, variable.parameter.function,
+                    entity.name.function.preprocessor, meta.annotation,
+                    meta.annotation.identifier, meta.preprocessor</string>
+                <key>settings</key>
+                <dict>
+                    <key>foreground</key>
+                    <string>{accent3}</string>
+                </dict>
+            </dict>
+            <dict>
+                <key>name</key>
+                <string>Emphasis</string>
+                <key>scope</key>
+                <string>markup.italic, markup.underline, markup.strikethrough</string>
+                <key>settings</key>
+                <dict>
+                    <key>foreground</key>
+                    <string>{accent3}</string>
+                    <key>fontStyle</key>
+                    <string>italic</string>
+                </dict>
+            </dict>
+            <dict>
+                <key>name</key>
+                <string>Strong</string>
+                <key>scope</key>
+                <string>markup.bold</string>
+                <key>settings</key>
+                <dict>
+                    <key>foreground</key>
+                    <string>{accent3}</string>
+                    <key>fontStyle</key>
+                    <string>bold</string>
+                </dict>
+            </dict>
+        </array>
+    </dict>
+</plist>
+"#,
+            name = self.name,
+            bg = colors.background,
+            fg = colors.foreground,
+            muted = colors.muted,
+            primary = colors.primary,
+            secondary = colors.secondary,
+            success = colors.success,
+            warning = colors.warning,
+            error = colors.error,
+            info = colors.info,
+            highlight = colors.highlight,
+            accent1 = colors.accent1,
+            accent2 = colors.accent2,
+            accent3 = colors.accent3,
+        );
+
+        let mut cursor = Cursor::new(output);
+        ThemeSet::load_from_reader(&mut cursor).expect("failed to load generated theme")
+    }
+
     pub fn load_theme(name: Option<&str>) -> io::Result<Self> {
         // 1. if name without yaml, we know its in themes directory,
         // 2. if name with yaml, we know its a path to a file

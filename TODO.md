@@ -128,8 +128,8 @@ These are small, self-contained fixes with high impact-to-effort ratio. Do them 
   - **P2** | **Files:** `src/ui/input.rs:161-173` | **Hints:** Currently `Space` on `..` tries to preview — `EntryKind::Parent` falls into the `todo!()` crash in 0.3. After fixing 0.3, still show a "Cannot preview parent directory" message rather than an error. | **Effort:** S
 
 - [ ] **0.20 Add runtime dependency documentation**
-  - TODO: replace cat with syntect
-  - TODO: replace file with???
+  - TODO: replace cat with syntect - done.
+  - TODO: replace file with? - done.
   - **P1** | **Files:** `README.md` | **Hints:** Document that `bat` and `file` commands must be installed for preview to work. Previews silently degrade without them. At startup, check `which bat` and `which file`; if missing, show a one-time warning in the footer. Previews silently fail without bat. | **Effort:** S
 
 - [ ] **0.21 Sanitize header directory display for very long paths**

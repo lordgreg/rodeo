@@ -291,10 +291,13 @@ impl Pane {
                 self.to_parent(previous)
             }
             EntryKind::Directory => match entry.path.canonicalize() {
-                Ok(_) => return OpenAction::Reload,
+                Ok(p) => {
+                    self.path = p.to_string_lossy().to_string();
+                    OpenAction::Reload
+                }
                 Err(e) => {
                     log::error!("cannot open directory {}", e);
-                    return OpenAction::Nothing;
+                    OpenAction::Nothing
                 }
             },
             _ => OpenAction::Nothing,

@@ -44,7 +44,7 @@ fn default_editor() -> String {
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Config {
     #[serde(default = "default_theme")]
-    theme: String,
+    pub theme: String,
     #[serde(default = "default_initial_directory")]
     pub initial_directory_left: String,
     #[serde(default = "default_initial_directory")]

@@ -65,8 +65,14 @@ impl App {
             }
         } else if self.ui_config.active_preview_popup && key.modifiers.is_empty() {
             match key.code {
-                KeyCode::Up | KeyCode::Char('k') => self.panes.goto_next(MoveDirection::Up),
-                KeyCode::Down | KeyCode::Char('j') => self.panes.goto_next(MoveDirection::Down),
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.panes.goto_next(MoveDirection::Up);
+                    return true;
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    self.panes.goto_next(MoveDirection::Down);
+                    return true;
+                }
                 _ => {}
             }
         }

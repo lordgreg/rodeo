@@ -1,19 +1,19 @@
-use ansi_to_tui::IntoText;
 use ratatui_image::{Image, Resize, picker::Picker};
 use std::io;
 use std::io::BufRead;
-use std::ops::Add;
-use std::process::Command;
-use syntect::highlighting;
-use syntect::parsing::SyntaxSet;
-use syntect::util::as_24_bit_terminal_escaped;
-use syntect::{easy::HighlightFile, highlighting::Highlighter};
+use std::io::Read;
+use std::sync::OnceLock;
+use syntect::{
+    easy::HighlightLines,
+    highlighting::{self, Style as SynStyle},
+    parsing::SyntaxSet,
+};
 
 use ratatui::{
     Frame,
     layout::{Rect, Size},
-    style::Style,
-    text::{Line, Text},
+    style::{Color, Modifier, Style},
+    text::{Line, Span, Text},
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
 };
 
@@ -30,6 +30,7 @@ enum PreviewContent {
 pub struct PopupPreview {
     selected: Option<Entry>,
     row: u16,
+    syn_theme: Option<highlighting::Theme>,
 }
 
 #[derive(PartialEq, Debug)]
@@ -43,11 +44,29 @@ pub enum FileType {
     Directory,
 }
 
+static SYNTAX_SET: OnceLock<SyntaxSet> = OnceLock::new();
+
+fn syntect_style_to_ratatui(style: SynStyle) -> Style {
+    let mut s = Style::default()
+        .fg(Color::Rgb(style.foreground.r, style.foreground.g, style.foreground.b));
+    if style.font_style.contains(highlighting::FontStyle::BOLD) {
+        s = s.add_modifier(Modifier::BOLD);
+    }
+    if style.font_style.contains(highlighting::FontStyle::ITALIC) {
+        s = s.add_modifier(Modifier::ITALIC);
+    }
+    if style.font_style.contains(highlighting::FontStyle::UNDERLINE) {
+        s = s.add_modifier(Modifier::UNDERLINED);
+    }
+    s
+}
+
 impl PopupPreview {
     pub fn new(entry: Option<Entry>) -> Self {
         Self {
             selected: entry,
             row: 0,
+            syn_theme: None,
         }
     }
 
@@ -64,94 +83,78 @@ impl PopupPreview {
     }
 
     fn get_file_type(path: &str) -> FileType {
-        let Ok(output) = Command::new("file").arg(path).output() else {
-            return FileType::Unknown(String::new());
-        };
+        if let Ok(meta) = std::fs::symlink_metadata(path) {
+            if meta.is_dir() {
+                return FileType::Directory;
+            }
+            if meta.is_symlink() {
+                return FileType::Symlink;
+            }
+        }
 
-        let Ok(stdout) = String::from_utf8(output.stdout) else {
-            return FileType::Binary;
+        let mut buf = vec![0u8; 8192];
+        let n = match std::fs::File::open(path).and_then(|mut f| f.read(&mut buf)) {
+            Ok(n) => n,
+            Err(_) => return FileType::Unknown(String::new()),
         };
+        buf.truncate(n);
 
-        if stdout.contains("text") {
-            FileType::ASCII
-        } else if stdout.contains("directory") {
-            FileType::Directory
-        } else if stdout.contains("archive") {
-            FileType::Archive
-        } else if stdout.contains("image data") || stdout.to_ascii_lowercase().contains("web/p") {
-            FileType::Image
-        } else if stdout.contains("symbolic link") {
-            FileType::Symlink
-        } else {
-            FileType::Unknown(stdout)
-            // todo!("Not yet implemented. file cmd output: {}", stdout);
+        match infer::get(&buf).map(|t| t.matcher_type()) {
+            Some(infer::MatcherType::Image) => FileType::Image,
+            Some(infer::MatcherType::Archive) => FileType::Archive,
+            Some(infer::MatcherType::Text) => FileType::ASCII,
+            Some(_) => FileType::Binary,
+            None => {
+                if std::str::from_utf8(&buf).is_ok() {
+                    FileType::ASCII
+                } else {
+                    FileType::Binary
+                }
+            }
         }
     }
 
-    fn syntect_style_to_ratatui(s: highlighting::Style) -> ratatui::style::Style {
-        use ratatui::style::{Color, Modifier, Style};
-        let mut style = Style::default()
-            .fg(Color::Rgb(s.foreground.r, s.foreground.g, s.foreground.b))
-            .bg(Color::Rgb(s.background.r, s.background.g, s.background.b));
-        if s.font_style.contains(highlighting::FontStyle::BOLD) {
-            style = style.add_modifier(Modifier::BOLD);
-        }
-        if s.font_style.contains(highlighting::FontStyle::ITALIC) {
-            style = style.add_modifier(Modifier::ITALIC);
-        }
-        if s.font_style.contains(highlighting::FontStyle::UNDERLINE) {
-            style = style.add_modifier(Modifier::UNDERLINED);
-        }
-        style
-    }
-    fn get_file_content(path: &str) -> PreviewContent {
+    fn get_file_content(path: &str, syn_theme: &highlighting::Theme) -> PreviewContent {
         match Self::get_file_type(path) {
             FileType::ASCII => {
-                let ss = SyntaxSet::load_defaults_newlines();
-                let ts = highlighting::ThemeSet::load_defaults();
-                let mut highlighter =
-                    HighlightFile::new(path, &ss, &ts.themes["base16-ocean.dark"]).unwrap();
-                let mut line = String::new();
+                let ss = SYNTAX_SET.get_or_init(|| SyntaxSet::load_defaults_newlines());
+                let syntax = ss
+                    .find_syntax_for_file(path)
+                    .ok()
+                    .flatten()
+                    .unwrap_or_else(|| ss.find_syntax_plain_text());
+                let mut highlighter = HighlightLines::new(syntax, syn_theme);
+
+                let file = match std::fs::File::open(path) {
+                    Ok(f) => f,
+                    Err(e) => return PreviewContent::Error(format!("Cannot open file: {e}")),
+                };
+
+                let reader = io::BufReader::new(file);
                 let mut lines: Vec<Line> = Vec::new();
-                let mut ansi_string = String::new();
 
-                loop {
-                    match highlighter.reader.read_line(&mut line) {
-                        Ok(0) => break,
-                        Ok(_) => {}
+                for line_result in reader.lines() {
+                    let line = match line_result {
+                        Ok(l) => l,
                         Err(_) => break,
-                    }
-
-                    let regions = match highlighter.highlight_lines.highlight_line(&line, &ss) {
+                    };
+                    let regions = match highlighter.highlight_line(&line, ss) {
                         Ok(r) => r,
-                        // cannot parse the line, fallback to non-parsed line
                         Err(_) => {
-                            lines.push(Line::from(line.clone()));
-                            line.clear();
+                            lines.push(Line::from(Span::raw(line)));
                             continue;
                         }
                     };
-
-                    ansi_string.push_str(&as_24_bit_terminal_escaped(&regions[..], true));
-                    line.clear();
+                    let spans: Vec<Span> = regions
+                        .iter()
+                        .map(|(style, text)| {
+                            Span::styled(text.to_string(), syntect_style_to_ratatui(*style))
+                        })
+                        .collect();
+                    lines.push(Line::from(spans));
                 }
 
-                // while highlighter.reader.read_line(&mut line) > 0 {
-                //     {
-                //         let regions: Vec<(highlighting::Style, &str)> = highlighter
-                //             .highlight_lines
-                //             .highlight_line(&line, &ss)
-                //             .unwrap();
-                //         ansi_string.push_str(&as_24_bit_terminal_escaped(&regions[..], true));
-                //         // print!("{}", as_24_bit_terminal_escaped(&regions[..], true));
-                //     } // until NLL this scope is needed so we can clear the buffer after
-                //     line.clear(); // read_line appends so we need to clear between lines
-                // }
-
-                match ansi_string.into_text() {
-                    Ok(t) => PreviewContent::Text(t),
-                    Err(_) => PreviewContent::Error("cannot convert string to tui text".into()),
-                }
+                PreviewContent::Text(Text::from(lines))
             }
             FileType::Binary => PreviewContent::NotImplemented("BINARY".to_string()),
             FileType::Image => PreviewContent::Image(path.to_string()),
@@ -190,7 +193,10 @@ impl Component for PopupPreview {
         let inner_area = block.inner(popup_area);
         frame.render_widget(block, popup_area);
 
-        let content = Self::get_file_content(&path);
+        let syn_theme = self
+            .syn_theme
+            .get_or_insert_with(|| theme.to_syntect_theme());
+        let content = Self::get_file_content(&path, syn_theme);
 
         if !matches!(content, PreviewContent::Image(_)) {
             let bg_fill = Block::default().style(Style::default().bg(theme.colors.background()));
