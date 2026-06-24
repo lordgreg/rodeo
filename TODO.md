@@ -1,6 +1,6 @@
 # rodeo — Development TODO
 
-> **Last updated:** 2026-06-19
+> **Last updated:** 2026-06-24
 > **Current state:** Dual-pane navigation + preview + theming + git header. No file operations, no search, no tests.
 
 | Phase | README Milestone | Focus |
@@ -27,8 +27,9 @@ These are small, self-contained fixes with high impact-to-effort ratio. Do them 
 - [ ] **Fix `FileOpened` empty match arm (Also tracked as 0.5):** Enter on a file returns `FileOpened(_entry)` but the match arm at `input.rs:126` is empty `{}`. Open the file with `$EDITOR`/`$VISUAL`.
   - **P0** | **Files:** `src/ui/input.rs:126` | **Hints:** `std::process::Command::new(env::var("EDITOR").unwrap_or("vim".into())).arg(&entry.path).status()`. Need `use std::env;`. | **Effort:** S
 
-- [ ] **Fix `ReadOnly` config unused (Also tracked as 0.13):** `config.read_only` field parsed from YAML but never checked. Gate file operations (cut/copy/delete/rename) behind it.
+- [x] **Fix `ReadOnly` config unused (Also tracked as 0.13):** `config.read_only` field parsed from YAML but never checked. Gate file operations (cut/copy/delete/rename) behind it.
   - **P1** | **Files:** `src/config.rs:46` (field), `src/ui/input.rs` (check before ops) | **Hints:** Add `pub fn is_read_only(&self) -> bool` to `Config`. Check in `handle_main_key` before allowing destructive operations (once implemented). | **Effort:** S
+  - The ReadOnly option was removed. Will be maybe re-added if there's a need for it.
 
 - [ ] **Remove `color-eyre` from Cargo.toml or use it:** Dependency declared but never imported. Either integrate it (replace `env_logger` with `color-eyre` + `tracing`) or drop it to reduce compile times.
   - **P1** | **Files:** `Cargo.toml:10` | **Hints:** If keeping, add `color_eyre::install()?;` at top of `main()`. If dropping, change `io::Result<()>` to use `eyre::Result` separately. See Phase 5 for full error handling plan. | **Effort:** S
@@ -100,13 +101,13 @@ These are small, self-contained fixes with high impact-to-effort ratio. Do them 
 - [x] **0.10 Add `g`/`G`/`gg` Vim-style jump navigation**
   - **P1** | **Files:** `src/ui/input.rs`, `src/ui/panes.rs` | **Hints:** `gg` = jump to top of file list, `G` = jump to bottom, `g` = prefix for other motions (future). Add `Pane::goto_first()` and `Pane::goto_last()` methods that set `self.state.select(Some(0))` and `self.state.select(Some(max))` respectively. In `handle_main_key`, match `KeyCode::Char('g')` — since `g` is a prefix, you'll need a small state machine: first `g` sets a flag, second `g` triggers `goto_first()`. Same for `G` (single key). | **Effort:** S
 
-- [x] **0.11 Audit and tag all `.unwrap()` / `.expect()` calls for systematic replacement**
+- [x] **0.11 Audit and tag all `.unwrap()` / `.expect()` calls for systematic replacement** — all `.unwrap()` removed. 2 intentional `.expect()` remain: `config.rs:128` (XDG path, unrecoverable), `theme.rs:404` (generated theme parse, unrecoverable).
   - **P1** | **Files:** `src/config.rs:105, 114, 123, 128, 131, 133, 134, 136, 140`, `src/ui/panes.rs:139,263,291,393`, `src/ui/popup_preview.rs:89,92,94,147,153-154`, `src/ui/theme.rs:133,136,163` | **Hints:** Count: ~22 unwrap/expect sites. Tag each with `// TODO(#error-handling):`. Replace with `?` operator after converting functions to return `Result`. Most panics happen on: filesystem errors (permissions, missing files), `file` command failures, image decode failures. | **Effort:** M
 
 - [ ] **0.12 Remove dead code: `active_keybind_popup` never activated**
   - **P1** | **Files:** See Quick Wins above. | **Hints:** (See also Quick Wins above.) Note: `active_keybind_popup` is only ever set to `false` in the codebase. The `?` key sets it to `false` (line 149), and Esc sets it to `false` (line 40). It is never set to `true` — so the popup can never appear. Either bind to key (recommend `F1` or `K`) with populated content, or remove: `uiconfig.rs:14`, `mod.rs:87-89`, `input.rs` references at lines 33,40,149,153,165. | **Effort:** S
 
-- [x] **0.13 Remove dead code: `Config::read_only` never checked**
+- [ ] **0.13 Remove dead code: `Config::read_only` never checked — NOT YET IMPLEMENTED**
   - **P1** | **Files:** `src/config.rs:46`, `src/ui/input.rs` | **Hints:** (See also Quick Wins above.) Add getter. Check in `handle_main_key` before allowing: cut/copy/delete/rename (once implemented), toggle_select, Enter-on-file. Show a status message "Read-only mode — operation blocked" in footer. | **Effort:** S
 
 - [x] **0.14 Fix config format mismatch: code uses YAML, README/planning docs say TOML**
@@ -128,9 +129,10 @@ These are small, self-contained fixes with high impact-to-effort ratio. Do them 
   - **P2** | **Files:** `src/ui/input.rs:161-173` | **Hints:** Currently `Space` on `..` tries to preview — `EntryKind::Parent` falls into the `todo!()` crash in 0.3. After fixing 0.3, still show a "Cannot preview parent directory" message rather than an error. | **Effort:** S
 
 - [x] **0.20 Add runtime dependency documentation**
-  - TODO: replace cat with syntect - done.
-  - TODO: replace file with? - done.
-  - **P1** | **Files:** `README.md` | **Hints:** Document that `bat` and `file` commands must be installed for preview to work. Previews silently degrade without them. At startup, check `which bat` and `which file`; if missing, show a one-time warning in the footer. Previews silently fail without bat. | **Effort:** S
+  - bat replaced with syntect (pure Rust) — done.
+  - file command replaced with infer crate (pure Rust) — done.
+  - No runtime dependencies remain for preview.
+  - **P1** | **Files:** `README.md` | **Hints:** README still needs updating to reflect the removal of bat/file runtime deps. Update README to note preview works without external binaries. | **Effort:** S
 
 - [x] **0.21 Sanitize header directory display for very long paths**
   - **P2** | **Files:** `src/ui/panes.rs:383` | **Hints:** `self.path.to_string()` is used as pane title. Very long paths overflow the pane border. Truncate with `...` prefix: `format!("...{}", &path[path.len().saturating_sub(width)..])`. | **Effort:** S
@@ -262,13 +264,13 @@ These are small, self-contained fixes with high impact-to-effort ratio. Do them 
 
 ### 3.1 Syntax Highlighting — Replace `bat` with `syntect`
 
-- [ ] **3.1.1 Add `syntect` to dependencies**
+- [x] **3.1.1 Add `syntect` to dependencies**
   - **P0** | **Files:** `Cargo.toml` | **Hints:** `syntect = { version = "5", default-features = false, features = ["default-fancy"] }`. Sublime Text grammars bundled at compile time. No external binary needed. | **Effort:** S
 
-- [ ] **3.1.2 Implement syntax-highlighted text preview with syntect**
+- [x] **3.1.2 Implement syntax-highlighted text preview with syntect**
   - **P0** | **Files:** `src/ui/popup_preview.rs` | **Hints:** Use `syntect::easy::HighlightLines` which outputs `Vec<(Style, &str)>` directly — more efficient than HTML round-trip. Create a `SyntaxSet` and `ThemeSet` once (lazy_static or load at startup). For each file, detect language via extension using `SyntaxSet::find_syntax_by_extension`, then iterate `HighlightLines` to produce styled spans for ratatui. Fall back to plain text. This removes the `bat` runtime dependency entirely. | **Effort:** M
 
-- [ ] **3.1.3 Add theme-aware syntax highlighting**
+- [x] **3.1.3 Add theme-aware syntax highlighting**
   - **P1** | **Files:** `src/ui/popup_preview.rs`, `src/ui/theme.rs` | **Hints:** Map syntect's theme colors to rodeo's current theme. Or bundle a rodeo-specific Sublime Text theme. Use background/fg colors that work with the active rodeo theme. | **Effort:** M
 
 - [ ] **3.1.4 Implement runtime theme switching**
