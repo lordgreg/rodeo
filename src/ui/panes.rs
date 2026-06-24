@@ -371,6 +371,14 @@ impl Pane {
             })
             .collect();
 
+        let width = (area.width as usize).saturating_sub_signed(8);
+
+        let path = if self.path.len() > width {
+            format!("...{}", &self.path[self.path.len().saturating_sub(width)..])
+        } else {
+            self.path.clone()
+        };
+
         let table = Table::new(rows, self.constraints)
             .header(header)
             .column_spacing(1)
@@ -385,7 +393,7 @@ impl Pane {
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .title(self.path.to_string())
+                    .title(path)
                     .border_style(color_border)
                     .title_style(Style::new().fg(theme.colors.primary())),
             );

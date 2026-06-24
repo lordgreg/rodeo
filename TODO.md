@@ -100,7 +100,7 @@ These are small, self-contained fixes with high impact-to-effort ratio. Do them 
 - [x] **0.10 Add `g`/`G`/`gg` Vim-style jump navigation**
   - **P1** | **Files:** `src/ui/input.rs`, `src/ui/panes.rs` | **Hints:** `gg` = jump to top of file list, `G` = jump to bottom, `g` = prefix for other motions (future). Add `Pane::goto_first()` and `Pane::goto_last()` methods that set `self.state.select(Some(0))` and `self.state.select(Some(max))` respectively. In `handle_main_key`, match `KeyCode::Char('g')` — since `g` is a prefix, you'll need a small state machine: first `g` sets a flag, second `g` triggers `goto_first()`. Same for `G` (single key). | **Effort:** S
 
-- [ ] **0.11 Audit and tag all `.unwrap()` / `.expect()` calls for systematic replacement**
+- [x] **0.11 Audit and tag all `.unwrap()` / `.expect()` calls for systematic replacement**
   - **P1** | **Files:** `src/config.rs:105, 114, 123, 128, 131, 133, 134, 136, 140`, `src/ui/panes.rs:139,263,291,393`, `src/ui/popup_preview.rs:89,92,94,147,153-154`, `src/ui/theme.rs:133,136,163` | **Hints:** Count: ~22 unwrap/expect sites. Tag each with `// TODO(#error-handling):`. Replace with `?` operator after converting functions to return `Result`. Most panics happen on: filesystem errors (permissions, missing files), `file` command failures, image decode failures. | **Effort:** M
 
 - [ ] **0.12 Remove dead code: `active_keybind_popup` never activated**
@@ -127,12 +127,12 @@ These are small, self-contained fixes with high impact-to-effort ratio. Do them 
 - [x] **0.19 Prevent preview of `..` (parent entry)**
   - **P2** | **Files:** `src/ui/input.rs:161-173` | **Hints:** Currently `Space` on `..` tries to preview — `EntryKind::Parent` falls into the `todo!()` crash in 0.3. After fixing 0.3, still show a "Cannot preview parent directory" message rather than an error. | **Effort:** S
 
-- [ ] **0.20 Add runtime dependency documentation**
+- [x] **0.20 Add runtime dependency documentation**
   - TODO: replace cat with syntect - done.
   - TODO: replace file with? - done.
   - **P1** | **Files:** `README.md` | **Hints:** Document that `bat` and `file` commands must be installed for preview to work. Previews silently degrade without them. At startup, check `which bat` and `which file`; if missing, show a one-time warning in the footer. Previews silently fail without bat. | **Effort:** S
 
-- [ ] **0.21 Sanitize header directory display for very long paths**
+- [x] **0.21 Sanitize header directory display for very long paths**
   - **P2** | **Files:** `src/ui/panes.rs:383` | **Hints:** `self.path.to_string()` is used as pane title. Very long paths overflow the pane border. Truncate with `...` prefix: `format!("...{}", &path[path.len().saturating_sub(width)..])`. | **Effort:** S
 
 ---
