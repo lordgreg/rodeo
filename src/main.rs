@@ -1,7 +1,6 @@
 use std::io;
 
 use clap::Parser;
-use env_logger::Env;
 use log::info;
 use ui::App;
 use ui::theme::Theme;
@@ -10,11 +9,11 @@ use crate::config::Config;
 
 mod cli;
 mod config;
+mod logging;
 mod ui;
 
 fn main() -> io::Result<()> {
-    // env_logger::init();
-    env_logger::Builder::from_env(Env::default().default_filter_or("warn")).init();
+    logging::init();
 
     let args = cli::Args::parse();
 
@@ -24,7 +23,7 @@ fn main() -> io::Result<()> {
         config.set_initial_dir(args.left, args.right);
     }
 
-    println!("Config: {:?}", config);
+    log::debug!("Config: {:?}", config);
 
     let theme_name = args.theme.as_deref().or(Some(config.theme.as_str()));
     let theme = Theme::load_theme(theme_name)?;
