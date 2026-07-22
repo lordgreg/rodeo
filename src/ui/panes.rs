@@ -66,6 +66,14 @@ pub enum EntryKind {
     Unknown,
 }
 
+#[derive(Debug, Default, Clone, Copy)]
+pub struct PaneStats {
+    pub files: usize,
+    pub dirs: usize,
+    pub selected: usize,
+    pub hidden: usize,
+}
+
 #[derive(Debug)]
 pub struct EntryHeader {
     pub name: String,
@@ -163,6 +171,7 @@ pub struct Pane {
     pub state: TableState,
     pub path: String,
     paths: Vec<Entry>,
+    hidden_count: usize,
     constraints: [Constraint; 4],
     sort_type: SortType,
     sort_order: SortOrder,
@@ -171,7 +180,7 @@ pub struct Pane {
 impl Pane {
     pub fn new(config: &Config, path: &str) -> Self {
         let path = path.to_string();
-        let paths = read_entries(&path, config);
+        let (paths, hidden_count) = read_entries(&path, config);
         let sort_order = config.sort_order;
         let sort_type = config.sort_type;
 
@@ -179,6 +188,7 @@ impl Pane {
             state: TableState::default(),
             path,
             paths,
+            hidden_count,
             constraints: [
                 Constraint::Max(1),
                 Constraint::Fill(1),
@@ -200,6 +210,27 @@ impl Pane {
         let selected = self.state.selected()?;
 
         self.paths.get(selected).cloned()
+    }
+
+    pub fn stats(&self) -> PaneStats {
+        let mut stats = PaneStats {
+            hidden: self.hidden_count,
+            ..Default::default()
+        };
+
+        for entry in &self.paths {
+            match entry.kind {
+                EntryKind::Parent => {}
+                EntryKind::Directory => stats.dirs += 1,
+                _ => stats.files += 1,
+            }
+
+            if entry.selected {
+                stats.selected += 1;
+            }
+        }
+
+        stats
     }
 
     pub fn entries_to_rows(&self) -> Vec<[String; 4]> {
@@ -245,7 +276,7 @@ impl Pane {
             self.clear_selections();
         }
 
-        self.paths = read_entries(&self.path, config);
+        (self.paths, self.hidden_count) = read_entries(&self.path, config);
 
         if !clear_selection {
             for entry in &mut self.paths {
@@ -402,16 +433,21 @@ impl Pane {
     }
 }
 
-fn read_entries(dir: &str, config: &Config) -> Vec<Entry> {
+fn read_entries(dir: &str, config: &Config) -> (Vec<Entry>, usize) {
+    let mut hidden_count = 0;
+
     let mut entries: Vec<Entry> = match fs::read_dir(dir) {
         Ok(rd) => rd
             .filter_map(|e| e.ok())
             .map(|e| e.path())
             .filter(|p| {
-                config.show_hidden
-                    || !p
-                        .file_name()
-                        .is_some_and(|n| n.to_string_lossy().starts_with('.'))
+                let is_hidden = p
+                    .file_name()
+                    .is_some_and(|n| n.to_string_lossy().starts_with('.'));
+                if is_hidden {
+                    hidden_count += 1;
+                }
+                config.show_hidden || !is_hidden
             })
             .map(|p| Entry::new(p))
             .collect(),
@@ -449,7 +485,7 @@ fn read_entries(dir: &str, config: &Config) -> Vec<Entry> {
     });
 
     entries.insert(0, Entry::parent(dir));
-    entries
+    (entries, hidden_count)
 }
 
 #[derive(PartialEq)]

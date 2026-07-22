@@ -8,7 +8,7 @@ use ratatui::{
     widgets::{Block, Padding, Paragraph},
 };
 
-use crate::ui::{component::Component, theme::Theme, uiconfig::UiConfig};
+use crate::ui::{component::Component, panes::PaneStats, theme::Theme, uiconfig::UiConfig};
 
 #[derive(Default, Debug, Clone)]
 struct GitStatus {
@@ -60,18 +60,43 @@ impl GitStatus {
 
 #[derive(Debug, Default)]
 pub struct Header {
-    pub info: String,
     pub directory: String,
+    stats: Option<PaneStats>,
     git_status: Option<GitStatus>,
 }
 
 impl Header {
-    pub fn new(info: impl Into<String>, directory: impl Into<String>) -> Self {
+    pub fn new(directory: impl Into<String>) -> Self {
         Self {
-            info: info.into(),
             directory: directory.into(),
+            stats: None,
             git_status: None,
         }
+    }
+
+    pub fn set_stats(&mut self, stats: PaneStats) {
+        self.stats = Some(stats);
+    }
+
+    fn stats_to_line(&self, theme: &Theme) -> Line<'static> {
+        let Some(s) = &self.stats else {
+            return Line::from(vec![]);
+        };
+
+        let mut spans: Vec<Span<'static>> = vec![];
+
+        if s.selected > 0 {
+            spans.push(Span::from(format!("●{}  ", s.selected)).style(theme.colors.primary()));
+        }
+
+        spans.push(Span::from(format!("{} files  ", s.files)).style(theme.colors.muted()));
+        spans.push(Span::from(format!("{} dirs", s.dirs)).style(theme.colors.muted()));
+
+        if s.hidden > 0 {
+            spans.push(Span::from(format!("  {} hidden", s.hidden)).style(theme.colors.warning()));
+        }
+
+        Line::from(spans)
     }
 
     pub fn update(&mut self, directory: String) {
@@ -125,7 +150,7 @@ impl Component for Header {
             .split(inner_area);
 
         frame.render_widget(
-            Paragraph::new(&*self.info)
+            Paragraph::new(self.stats_to_line(theme))
                 .block(Block::default().padding(Padding::horizontal(1)))
                 .style(Style::default().fg(theme.colors.foreground())),
             layout[0],

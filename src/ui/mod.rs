@@ -49,7 +49,7 @@ impl App {
 
         let current_directory = config.get_initial_dir();
 
-        let header = Header::new("~info one", current_directory);
+        let header = Header::new(current_directory);
         Self {
             exit: false,
             theme,
@@ -89,6 +89,8 @@ impl App {
             .constraints([Constraint::Max(1), Constraint::Fill(1), Constraint::Max(1)])
             .split(frame.area());
 
+        let stats = self.panes.get_active_pane().stats();
+        self.header.set_stats(stats);
         self.header
             .render(frame, &self.theme, &self.ui_config, outer_layout[0]);
         self.panes
