@@ -184,7 +184,7 @@ impl Pane {
         let sort_order = config.sort_order;
         let sort_type = config.sort_type;
 
-        Self {
+        let mut pane = Self {
             state: TableState::default(),
             path,
             paths,
@@ -197,7 +197,10 @@ impl Pane {
             ],
             sort_order,
             sort_type,
-        }
+        };
+
+        pane.state.select(Some(0));
+        pane
     }
 
     pub fn clear_selections(&mut self) {
@@ -455,7 +458,7 @@ fn read_entries(dir: &str, config: &Config) -> (Vec<Entry>, usize) {
         Err(e) => {
             log::error!("cannot read {}: {}", dir, e);
 
-            vec![Entry::parent(dir)]
+            vec![]
         }
     };
 

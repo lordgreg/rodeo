@@ -140,7 +140,7 @@ impl App {
 
     fn handle_main_key(&mut self, key: &KeyEvent) {
         match key.code {
-            KeyCode::Enter => match self.panes.get_active_pane_mut().open() {
+            KeyCode::Enter | KeyCode::F(4) => match self.panes.get_active_pane_mut().open() {
                 OpenAction::DirectoryOpened | OpenAction::Reload => {
                     self.panes.reload(&self.config, true);
                     self.header
@@ -164,7 +164,7 @@ impl App {
             }
             KeyCode::Char('g') => self.panes.goto_first(),
             KeyCode::Char('x') => self.panes.get_active_pane_mut().toggle_select(),
-            KeyCode::Char('q') => self.exit = true,
+            KeyCode::Char('q') | KeyCode::F(10) => self.exit = true,
             KeyCode::Char('h') => self.panes.set_active_pane(ActivePane::Left),
             KeyCode::Char('l') => self.panes.set_active_pane(ActivePane::Right),
             KeyCode::Tab => {
@@ -175,6 +175,10 @@ impl App {
             KeyCode::Char('?') => {
                 self.ui_config.active_keybind_popup = false;
                 self.ui_config.active_about_popup = !self.ui_config.active_about_popup;
+            }
+            KeyCode::F(1) => {
+                self.ui_config.active_about_popup = false;
+                self.ui_config.active_keybind_popup = !self.ui_config.active_keybind_popup;
             }
             KeyCode::Esc => {
                 if self.ui_config.active_keybind_popup {

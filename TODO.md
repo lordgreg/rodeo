@@ -18,10 +18,11 @@
 
 These are small, self-contained fixes with high impact-to-effort ratio. Do them first to build momentum.
 
-- [ ] **Fix footer lies (Also tracked as 0.6):** Replace "x Cut"/"p Paste" with actual bindings ("x Select", "Space Preview", "Tab Switch", "q Quit", "? About")
+- [x] **Fix footer lies (Also tracked as 0.6):** Replace "x Cut"/"p Paste" with actual bindings ("x Select", "Space Preview", "Tab Switch", "q Quit", "? About")
   - **P0** | **Files:** `src/ui/footer.rs:18-24` | **Hints:** Change the `keymaps` vec strings to match real bindings in `input.rs`. | **Effort:** S
 
-- [ ] **Remove `active_keybind_popup` dead code (Also tracked as 0.12):** Flag is never set to `true` — popup can never appear. Either wire it to a keybinding or delete the field + render call.
+- [x] **Remove `active_keybind_popup` dead code (Also tracked as 0.12):** Flag is never set to `true` — popup can never appear. Either wire it to a keybinding or delete the field + render call.
+  - Resolved: wired to `F1`, popup populated with the real binding list.
   - **P1** | **Files:** `src/ui/uiconfig.rs:14`, `src/ui/mod.rs:87-89`, `src/ui/input.rs:33,40,149,153,165` | **Hints:** If keeping, bind `F1` or `K` to toggle it. If removing, delete the field, the render block in `mod.rs`, and all references in `input.rs`. | **Effort:** S
 
 - [ ] **Fix `FileOpened` empty match arm (Also tracked as 0.5):** Enter on a file returns `FileOpened(_entry)` but the match arm at `input.rs:126` is empty `{}`. Open the file with `$EDITOR`/`$VISUAL`.
@@ -37,7 +38,7 @@ These are small, self-contained fixes with high impact-to-effort ratio. Do them 
 - [ ] **Populate About popup:** Currently renders an empty titled block. Add app name, version, author, and repository link.
   - **P2** | **Files:** `src/ui/popup_about.rs` | **Hints:** Add a `Paragraph` inside the block with app info. Use `env!("CARGO_PKG_VERSION")` for version. Center-text align inside the block. | **Effort:** S
 
-- [ ] **Populate Keybinds popup:** Currently renders an empty titled block. List actual keybindings from `input.rs`.
+- [x] **Populate Keybinds popup:** Currently renders an empty titled block. List actual keybindings from `input.rs`.
   - **P2** | **Files:** `src/ui/popup_keybinds.rs` | **Hints:** Create a static `&[(&str, &str)]` mapping key to description. Render as a two-column table or list. Wire popup toggle to a keybinding (e.g., `F1` or `K`) if keeping `active_keybind_popup`. | **Effort:** S
 
 - [ ] **Fix header info placeholder:** Header hardcodes `"~info one"` in `App::new()`. Show active pane name or total file count.
@@ -86,7 +87,8 @@ These are small, self-contained fixes with high impact-to-effort ratio. Do them 
 - [x] **0.5 Fix Enter on file does nothing (empty `FileOpened` arm)**
   - **P0** | **Files:** `src/ui/input.rs:126` | **Hints:** (See also Quick Wins above — this is so critical it appears in both lists.) Spawn `$EDITOR` with the file path. On editor exit, reload pane to reflect any changes. Use `std::env::var("EDITOR").unwrap_or_else(|_| "vi".into())`. | **Effort:** S
 
-- [ ] **0.6 Fix footer: replace misleading keybindings with true ones**
+- [x] **0.6 Fix footer: replace misleading keybindings with true ones**
+  - Footer shows: F1 Keys, Space Preview, F4 Edit, Tab Panes, x Select, ^h Hidden, ? About, F10 Quit. mc-style F-row roadmap: F2 Rename (1.2.4), F3 Search (2.2), F5 Copy (1.2.1), F6 Move (1.2.2), F7 Mkdir (1.2.5), F8 Delete (1.2.3) — each joins the footer only once implemented.
   - **P0** | **Files:** `src/ui/footer.rs:18-24` | **Hints:** (See also Quick Wins above.) Current lies: `x Cut` (x=toggle select), `p Paste` (p=unbound), `SPACE select` (SPACE=preview), `? preview` (?=about). Replace with `h/j/k/l Move`, `Enter Open`, `Tab Switch`, `x Select`, `Space Preview`, `q Quit`, `? About`. Make Ctrl+h and Backspace visible too. | **Effort:** S
 
 - [x] **0.7 Fix preview: `self.selected.as_ref().unwrap()` panics if selected is None at render time**
@@ -104,7 +106,7 @@ These are small, self-contained fixes with high impact-to-effort ratio. Do them 
 - [x] **0.11 Audit and tag all `.unwrap()` / `.expect()` calls for systematic replacement** — all `.unwrap()` removed. 2 intentional `.expect()` remain: `config.rs:128` (XDG path, unrecoverable), `theme.rs:404` (generated theme parse, unrecoverable).
   - **P1** | **Files:** `src/config.rs:105, 114, 123, 128, 131, 133, 134, 136, 140`, `src/ui/panes.rs:139,263,291,393`, `src/ui/popup_preview.rs:89,92,94,147,153-154`, `src/ui/theme.rs:133,136,163` | **Hints:** Count: ~22 unwrap/expect sites. Tag each with `// TODO(#error-handling):`. Replace with `?` operator after converting functions to return `Result`. Most panics happen on: filesystem errors (permissions, missing files), `file` command failures, image decode failures. | **Effort:** M
 
-- [ ] **0.12 Remove dead code: `active_keybind_popup` never activated**
+- [x] **0.12 Remove dead code: `active_keybind_popup` never activated** — wired to `F1`.
   - **P1** | **Files:** See Quick Wins above. | **Hints:** (See also Quick Wins above.) Note: `active_keybind_popup` is only ever set to `false` in the codebase. The `?` key sets it to `false` (line 149), and Esc sets it to `false` (line 40). It is never set to `true` — so the popup can never appear. Either bind to key (recommend `F1` or `K`) with populated content, or remove: `uiconfig.rs:14`, `mod.rs:87-89`, `input.rs` references at lines 33,40,149,153,165. | **Effort:** S
 
 - [ ] **0.13 Remove dead code: `Config::read_only` never checked — NOT YET IMPLEMENTED**
@@ -168,10 +170,10 @@ These are small, self-contained fixes with high impact-to-effort ratio. Do them 
   - **P0** | **Files:** `src/ui/input.rs`, `src/ui/panes.rs` | **Hints:** Vim binding: `d` cuts (moves path to clipboard buffer), `p` pastes. Non-modal: `F6`. Implementation: `std::fs::rename(src, dst)`. Falls back to copy+delete for cross-device moves. Show confirmation. | **Effort:** M
 
 - [ ] **1.2.3 Implement file delete (single file, to trash)**
-  - **P0** | **Files:** `src/ui/input.rs`, `Cargo.toml` | **Hints:** Use `trash` crate. Add `trash = "5"` to Cargo.toml. Binding: `dd` (or `Delete` key). Show confirmation dialog: "Move 'filename' to trash?". If trash fails (e.g., on some filesystems), offer permanent delete as fallback with extra confirmation. | **Effort:** M
+  - **P0** | **Files:** `src/ui/input.rs`, `Cargo.toml` | **Hints:** Use `trash` crate. Add `trash = "5"` to Cargo.toml. Binding: `dd` (or `Delete` key, or `F8` mc-style). Show confirmation dialog: "Move 'filename' to trash?". If trash fails (e.g., on some filesystems), offer permanent delete as fallback with extra confirmation. Add `F8 Delete` to the footer when implemented. | **Effort:** M
 
 - [ ] **1.2.4 Implement file rename (inline or dialog)**
-  - **P0** | **Files:** `src/ui/input.rs`, `src/ui/dialog.rs` | **Hints:** Binding: `r` on a file. Open an input dialog pre-filled with the current filename. On confirm, `std::fs::rename(old, new)`. Reload pane afterward. Handle errors: name collision, invalid chars, permissions. | **Effort:** M
+  - **P0** | **Files:** `src/ui/input.rs`, `src/ui/dialog.rs` | **Hints:** Binding: `r` and `F2` (mc-style) on a file. Open an input dialog pre-filled with the current filename. On confirm, `std::fs::rename(old, new)`. Reload pane afterward. Handle errors: name collision, invalid chars, permissions. Add `F2 Rename` to the footer when implemented. | **Effort:** M
 
 - [ ] **1.2.5 Implement mkdir**
   - **P0** | **Files:** `src/ui/input.rs`, `src/ui/dialog.rs` | **Hints:** Binding: `F7` or `Ctrl+N`. Open input dialog with prompt "Directory name:". Create with `std::fs::create_dir()`. Reload pane. Handle errors: already exists, permission denied. | **Effort:** S
@@ -237,8 +239,8 @@ These are small, self-contained fixes with high impact-to-effort ratio. Do them 
 - [ ] **2.1 Add `nucleo` for fuzzy matching**
   - **P0** | **Files:** `Cargo.toml` | **Hints:** `nucleo = "0.5"`. Lightweight, no large deps. Alternative: `skim` (fzf-compatible but heavier). Planning docs recommend `nucleo`. | **Effort:** S
 
-- [ ] **2.2 Implement fuzzy file finder (`/` key)**
-  - **P0** | **Files:** `src/ui/input.rs`, `src/ui/search.rs` (new), `src/ui/mod.rs` | **Hints:** Press `/` to open a search bar at bottom of the active pane (or as a popup). Type to fuzzy-filter entries in the current directory. Results update in real-time as you type. `Esc` to cancel, `Enter` to select top match. Use `nucleo::Matcher` with the file names. The pane should highlight matching characters in filenames. | **Effort:** M
+- [ ] **2.2 Implement fuzzy file finder (`/` and `F3` keys)**
+  - **P0** | **Files:** `src/ui/input.rs`, `src/ui/search.rs` (new), `src/ui/mod.rs` | **Hints:** Press `/` or `F3` (mc-style, decided in 0.6) to open a search bar at bottom of the active pane (or as a popup). Type to fuzzy-filter entries in the current directory. Results update in real-time as you type. `Esc` to cancel, `Enter` to select top match. Use `nucleo::Matcher` with the file names. The pane should highlight matching characters in filenames. Add `F3 Search` to the footer when implemented. | **Effort:** M
 
 - [ ] **2.3 Implement regex filter (`Ctrl+F`)**
   - **P0** | **Files:** `src/ui/input.rs`, `src/ui/search.rs` | **Hints:** Press `Ctrl+F` to open a regex input bar. Type a regex pattern to filter directory listing. Only files matching the regex are shown. Invalid regex shows error in the bar. Use the `regex` crate: `regex = "1"`. Add to `Cargo.toml`. | **Effort:** M

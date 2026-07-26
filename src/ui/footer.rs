@@ -16,11 +16,14 @@ impl Default for Footer {
     fn default() -> Self {
         Self {
             keymaps: vec![
-                "x Cut".to_string(),
-                "p Paste".to_string(),
-                "TAB switch".to_string(),
-                "SPACE select".to_string(),
-                "? preview".to_string(),
+                "F1 Keys".to_string(),
+                "Space Preview".to_string(),
+                "F4 Edit".to_string(),
+                "Tab Panes".to_string(),
+                "x Select".to_string(),
+                "^h Hidden".to_string(),
+                "? About".to_string(),
+                "F10 Quit".to_string(),
             ],
         }
     }
