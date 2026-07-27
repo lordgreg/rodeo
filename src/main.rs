@@ -1,5 +1,3 @@
-use std::io;
-
 use clap::Parser;
 use log::info;
 use ui::App;
@@ -12,7 +10,8 @@ mod config;
 mod logging;
 mod ui;
 
-fn main() -> io::Result<()> {
+fn main() -> color_eyre::Result<()> {
+    color_eyre::install()?;
     logging::init();
 
     let args = cli::Args::parse();
@@ -29,5 +28,6 @@ fn main() -> io::Result<()> {
     let theme = Theme::load_theme(theme_name)?;
 
     info!("Starting UI");
-    ratatui::run(|terminal| App::new(theme, config).run(terminal))
+    ratatui::run(|terminal| App::new(theme, config).run(terminal))?;
+    Ok(())
 }

@@ -18,7 +18,7 @@ struct GitStatus {
 }
 
 impl GitStatus {
-    pub fn try_from_path(path: &String) -> Option<Self> {
+    pub fn try_from_path(path: &str) -> Option<Self> {
         Command::new("git")
             .args(["-C", path, "rev-parse", "--is-inside-work-tree"])
             .output()
@@ -105,7 +105,7 @@ impl Header {
         self.git_status = self.update_git(&self.directory);
     }
 
-    fn update_git(&self, path: &String) -> Option<GitStatus> {
+    fn update_git(&self, path: &str) -> Option<GitStatus> {
         GitStatus::try_from_path(path)
     }
 

@@ -37,7 +37,7 @@ pub struct PopupPreview {
 pub enum FileType {
     Unknown(String),
     Binary,
-    ASCII,
+    Ascii,
     Image,
     Archive,
     Symlink,
@@ -47,15 +47,21 @@ pub enum FileType {
 static SYNTAX_SET: OnceLock<SyntaxSet> = OnceLock::new();
 
 fn syntect_style_to_ratatui(style: SynStyle) -> Style {
-    let mut s = Style::default()
-        .fg(Color::Rgb(style.foreground.r, style.foreground.g, style.foreground.b));
+    let mut s = Style::default().fg(Color::Rgb(
+        style.foreground.r,
+        style.foreground.g,
+        style.foreground.b,
+    ));
     if style.font_style.contains(highlighting::FontStyle::BOLD) {
         s = s.add_modifier(Modifier::BOLD);
     }
     if style.font_style.contains(highlighting::FontStyle::ITALIC) {
         s = s.add_modifier(Modifier::ITALIC);
     }
-    if style.font_style.contains(highlighting::FontStyle::UNDERLINE) {
+    if style
+        .font_style
+        .contains(highlighting::FontStyle::UNDERLINE)
+    {
         s = s.add_modifier(Modifier::UNDERLINED);
     }
     s
@@ -102,11 +108,11 @@ impl PopupPreview {
         match infer::get(&buf).map(|t| t.matcher_type()) {
             Some(infer::MatcherType::Image) => FileType::Image,
             Some(infer::MatcherType::Archive) => FileType::Archive,
-            Some(infer::MatcherType::Text) => FileType::ASCII,
+            Some(infer::MatcherType::Text) => FileType::Ascii,
             Some(_) => FileType::Binary,
             None => {
                 if std::str::from_utf8(&buf).is_ok() {
-                    FileType::ASCII
+                    FileType::Ascii
                 } else {
                     FileType::Binary
                 }
@@ -116,8 +122,8 @@ impl PopupPreview {
 
     fn get_file_content(path: &str, syn_theme: &highlighting::Theme) -> PreviewContent {
         match Self::get_file_type(path) {
-            FileType::ASCII => {
-                let ss = SYNTAX_SET.get_or_init(|| SyntaxSet::load_defaults_newlines());
+            FileType::Ascii => {
+                let ss = SYNTAX_SET.get_or_init(SyntaxSet::load_defaults_newlines);
                 let syntax = ss
                     .find_syntax_for_file(path)
                     .ok()

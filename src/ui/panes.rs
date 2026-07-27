@@ -18,6 +18,8 @@ use crate::{
     config::Config,
     ui::{
         component::Component,
+        git::{self, GitEntryStatus},
+        search::FilterSpec,
         theme::Theme,
         uiconfig::{ActivePane, UiConfig},
     },
@@ -96,6 +98,7 @@ pub struct Entry {
     pub selected: bool,
     pub raw_size: u64,
     pub raw_modified: SystemTime,
+    pub git_status: Option<GitEntryStatus>,
 }
 
 impl Entry {
@@ -140,6 +143,7 @@ impl Entry {
             selected: false,
             raw_size,
             raw_modified,
+            git_status: None,
         }
     }
 
@@ -158,6 +162,7 @@ impl Entry {
             raw_size: 0,
             selected: false,
             size: String::from("-"),
+            git_status: None,
         }
     }
 
@@ -171,6 +176,8 @@ pub struct Pane {
     pub state: TableState,
     pub path: String,
     paths: Vec<Entry>,
+    all_paths: Vec<Entry>,
+    filter: Option<FilterSpec>,
     hidden_count: usize,
     constraints: [Constraint; 4],
     sort_type: SortType,
@@ -187,7 +194,9 @@ impl Pane {
         let mut pane = Self {
             state: TableState::default(),
             path,
+            all_paths: paths.clone(),
             paths,
+            filter: None,
             hidden_count,
             constraints: [
                 Constraint::Max(1),
@@ -203,9 +212,78 @@ impl Pane {
         pane
     }
 
-    pub fn clear_selections(&mut self) {
-        for path in self.paths.iter_mut() {
-            path.selected = false;
+    pub fn filter(&self) -> Option<&FilterSpec> {
+        self.filter.as_ref()
+    }
+
+    /// Narrows the visible entries by the given filter. The parent entry (`..`)
+    /// always stays pinned on top. Fuzzy matches are ranked best-first; regex
+    /// matches keep their listing order. An invalid regex is returned as an
+    /// error and leaves the current filter untouched.
+    pub fn set_filter(&mut self, filter: FilterSpec) -> Result<(), regex::Error> {
+        match &filter {
+            FilterSpec::Fuzzy(pattern) => {
+                if pattern.is_empty() {
+                    self.paths = self.all_paths.clone();
+                } else {
+                    let parsed = nucleo::pattern::Pattern::parse(
+                        pattern,
+                        nucleo::pattern::CaseMatching::Smart,
+                        nucleo::pattern::Normalization::Smart,
+                    );
+                    let mut matcher = nucleo::Matcher::new(nucleo::Config::DEFAULT);
+                    let mut buf = Vec::new();
+                    self.apply_rank(|name| {
+                        parsed.score(nucleo::Utf32Str::new(name, &mut buf), &mut matcher)
+                    });
+                }
+            }
+            FilterSpec::Regex(pattern) => {
+                let re = regex::Regex::new(pattern)?;
+                self.apply_rank(|name| if re.is_match(name) { Some(1) } else { None });
+            }
+        }
+        self.filter = Some(filter);
+        Ok(())
+    }
+
+    pub fn clear_filter(&mut self) {
+        self.paths = self.all_paths.clone();
+        self.filter = None;
+        self.state.select(Some(0));
+    }
+
+    /// Rebuilds the visible entry list from `all_paths`, keeping entries the
+    /// rank function scores `Some` and ordering them best-first (stable).
+    fn apply_rank(&mut self, mut rank: impl FnMut(&str) -> Option<u32>) {
+        let (parents, rest): (Vec<&Entry>, Vec<&Entry>) = self
+            .all_paths
+            .iter()
+            .partition(|e| e.kind == EntryKind::Parent);
+
+        let mut scored: Vec<(u32, &Entry)> = rest
+            .iter()
+            .filter_map(|e| rank(&e.name).map(|s| (s, *e)))
+            .collect();
+        scored.sort_by_key(|(score, _)| std::cmp::Reverse(*score));
+
+        self.paths = parents
+            .iter()
+            .map(|e| (*e).clone())
+            .chain(scored.into_iter().map(|(_, e)| e.clone()))
+            .collect();
+
+        // Select the first real entry (after the pinned parent) if any.
+        self.state.select(Some(if self.paths.len() > parents.len() {
+            parents.len()
+        } else {
+            0
+        }));
+    }
+
+    pub fn select_by_path(&mut self, path: &Path) {
+        if let Some(i) = self.paths.iter().position(|e| e.path == path) {
+            self.state.select(Some(i));
         }
     }
 
@@ -236,18 +314,30 @@ impl Pane {
         stats
     }
 
-    pub fn entries_to_rows(&self) -> Vec<[String; 4]> {
+    fn entry_rows(&self, theme: &Theme) -> Vec<Row<'static>> {
         self.paths
             .iter()
-            .map(|p| {
-                let marker = if p.selected { "●" } else { "" };
-                let size = match p.kind {
+            .map(|e| {
+                let marker = if e.selected { "●" } else { "" };
+                let size = match e.kind {
                     EntryKind::Directory => String::from("DIR"),
                     EntryKind::Parent => String::from("UP"),
-                    _ => p.size.to_string(),
+                    _ => e.size.clone(),
                 };
 
-                [marker.to_string(), p.name.clone(), size, p.modified.clone()]
+                let name_cell = match e.git_status {
+                    Some(status) => {
+                        Cell::from(e.name.clone()).style(Style::new().fg(status.color(theme)))
+                    }
+                    None => Cell::from(e.name.clone()),
+                };
+
+                Row::new(vec![
+                    Cell::from(marker.to_string()).style(theme.colors.accent1()),
+                    name_cell,
+                    Cell::from(size),
+                    Cell::from(e.modified.clone()),
+                ])
             })
             .collect()
     }
@@ -260,29 +350,53 @@ impl Pane {
             return;
         };
 
-        if path.kind != EntryKind::File {
+        if !matches!(
+            path.kind,
+            EntryKind::File | EntryKind::Directory | EntryKind::Symlink
+        ) {
             return;
         }
 
         path.toggle_selected();
+
+        // Keep the full listing in sync — `paths` entries are clones.
+        let selected = path.selected;
+        let path_buf = path.path.clone();
+        if let Some(entry) = self.all_paths.iter_mut().find(|e| e.path == path_buf) {
+            entry.selected = selected;
+        }
+    }
+
+    /// All entries currently marked as selected (via `x`).
+    pub fn selected_entries(&self) -> Vec<Entry> {
+        self.paths.iter().filter(|e| e.selected).cloned().collect()
+    }
+
+    pub fn has_selections(&self) -> bool {
+        self.all_paths.iter().any(|e| e.selected)
+    }
+
+    pub fn clear_selections(&mut self) {
+        for entry in &mut self.all_paths {
+            entry.selected = false;
+        }
+        for entry in &mut self.paths {
+            entry.selected = false;
+        }
     }
 
     pub fn reload(&mut self, config: &Config, clear_selection: bool) {
         let selected_paths: Vec<PathBuf> = self
-            .paths
+            .all_paths
             .iter()
             .filter(|p| p.selected)
             .map(|p| p.path.clone())
             .collect();
 
-        if clear_selection {
-            self.clear_selections();
-        }
-
-        (self.paths, self.hidden_count) = read_entries(&self.path, config);
+        (self.all_paths, self.hidden_count) = read_entries(&self.path, config);
 
         if !clear_selection {
-            for entry in &mut self.paths {
+            for entry in &mut self.all_paths {
                 if selected_paths.contains(&entry.path) {
                     entry.selected = true
                 }
@@ -291,20 +405,28 @@ impl Pane {
 
         self.sort_order = config.sort_order;
         self.sort_type = config.sort_type;
+
+        // Re-apply the active filter on the fresh listing.
+        if let Some(filter) = self.filter.clone() {
+            let _ = self.set_filter(filter);
+        } else {
+            self.paths = self.all_paths.clone();
+        }
+
         self.state = TableState::default();
         self.state.select(Some(0));
     }
 
-    pub fn to_parent(&mut self, current_path: String) -> OpenAction {
-        if let Some(parent) = Path::new(&current_path).parent() {
+    pub fn go_to_parent(&mut self, current_path: &str) -> OpenAction {
+        if let Some(parent) = Path::new(current_path).parent() {
             let resolved = parent
                 .canonicalize()
                 .unwrap_or_else(|_| parent.to_path_buf());
             self.path = resolved.to_string_lossy().to_string();
 
-            return OpenAction::DirectoryOpened;
+            OpenAction::DirectoryOpened
         } else {
-            return OpenAction::Nothing;
+            OpenAction::Nothing
         }
     }
 
@@ -322,7 +444,7 @@ impl Pane {
             EntryKind::Parent => {
                 let previous = self.path.clone();
 
-                self.to_parent(previous)
+                self.go_to_parent(&previous)
             }
             EntryKind::Directory => match entry.path.canonicalize() {
                 Ok(p) => {
@@ -344,7 +466,7 @@ impl Pane {
         current_sort_type: SortType,
         current_sort_order: SortOrder,
     ) -> Cell<'_> {
-        let mut name = format!("{}", header.name);
+        let mut name = header.name.to_string();
         let mut cell = Cell::from(name);
 
         if current_sort_type == header.kind {
@@ -371,7 +493,7 @@ impl Pane {
         theme: &Theme,
         _ui: &UiConfig,
     ) {
-        let entries = self.entries_to_rows();
+        let rows = self.entry_rows(theme);
 
         let color_border = if active {
             theme.colors.secondary()
@@ -379,12 +501,12 @@ impl Pane {
             theme.colors.border()
         };
 
-        let mut headers = Vec::new();
-
-        headers.push(EntryHeader::new("".to_string(), SortType::Flagged));
-        headers.push(EntryHeader::new("Name".to_string(), SortType::Name));
-        headers.push(EntryHeader::new("Size".to_string(), SortType::Size));
-        headers.push(EntryHeader::new("Modify Time".to_string(), SortType::Time));
+        let headers = [
+            EntryHeader::new("".to_string(), SortType::Flagged),
+            EntryHeader::new("Name".to_string(), SortType::Name),
+            EntryHeader::new("Size".to_string(), SortType::Size),
+            EntryHeader::new("Modify Time".to_string(), SortType::Time),
+        ];
 
         let header = Row::new(
             headers
@@ -392,18 +514,6 @@ impl Pane {
                 .map(|f| Self::header_to_cell(f, self.sort_type, self.sort_order)),
         )
         .style(Style::new().fg(theme.colors.highlight()));
-
-        let rows: Vec<Row> = entries
-            .iter()
-            .map(|e| {
-                Row::new(vec![
-                    Cell::from(e[0].to_string()).style(theme.colors.accent1()),
-                    Cell::from(e[1].to_string()),
-                    Cell::from(e[2].to_string()),
-                    Cell::from(e[3].to_string()),
-                ])
-            })
-            .collect();
 
         let width = (area.width as usize).saturating_sub_signed(8);
 
@@ -452,7 +562,7 @@ fn read_entries(dir: &str, config: &Config) -> (Vec<Entry>, usize) {
                 }
                 config.show_hidden || !is_hidden
             })
-            .map(|p| Entry::new(p))
+            .map(Entry::new)
             .collect(),
 
         Err(e) => {
@@ -488,6 +598,13 @@ fn read_entries(dir: &str, config: &Config) -> (Vec<Entry>, usize) {
     });
 
     entries.insert(0, Entry::parent(dir));
+
+    if let Some(statuses) = git::status_map(Path::new(dir)) {
+        for entry in &mut entries {
+            entry.git_status = statuses.get(&entry.name).copied();
+        }
+    }
+
     (entries, hidden_count)
 }
 
@@ -537,6 +654,14 @@ impl Panes {
             &self.pane_left
         } else {
             &self.pane_right
+        }
+    }
+
+    pub fn get_inactive_pane(&self) -> &Pane {
+        if self.active_pane == ActivePane::Left {
+            &self.pane_right
+        } else {
+            &self.pane_left
         }
     }
 
@@ -610,5 +735,329 @@ impl Component for Panes {
             theme,
             ui,
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use std::time::Duration;
+
+    mod format_size {
+        use super::*;
+
+        #[test]
+        fn zero_bytes() {
+            assert_eq!(format_size(0), "0 B");
+        }
+
+        #[test]
+        fn bytes_below_one_kb_stay_in_bytes() {
+            assert_eq!(format_size(1023), "1023 B");
+        }
+
+        #[test]
+        fn one_kb() {
+            assert_eq!(format_size(1024), "1.0 KB");
+        }
+
+        #[test]
+        fn one_mb() {
+            assert_eq!(format_size(1048576), "1.0 MB");
+        }
+
+        #[test]
+        fn one_gb() {
+            assert_eq!(format_size(1073741824), "1.0 GB");
+        }
+
+        #[test]
+        fn one_tb() {
+            assert_eq!(format_size(1099511627776), "1.0 TB");
+        }
+
+        #[test]
+        fn beyond_tb_stays_in_tb() {
+            assert_eq!(format_size(1099511627776 * 1024), "1024.0 TB");
+        }
+
+        #[test]
+        fn fractional_units_round_to_one_decimal() {
+            assert_eq!(format_size(1536), "1.5 KB");
+        }
+    }
+
+    mod format_date {
+        use super::*;
+
+        #[test]
+        fn unix_epoch() {
+            assert_eq!(format_date(SystemTime::UNIX_EPOCH), "1970-01-01 00:00");
+        }
+
+        #[test]
+        fn known_utc_timestamp() {
+            // 2024-01-15 12:30:00 UTC
+            let t = SystemTime::UNIX_EPOCH + Duration::from_secs(1705321800);
+            assert_eq!(format_date(t), "2024-01-15 12:30");
+        }
+    }
+
+    mod entry_new {
+        use super::*;
+
+        #[test]
+        fn file_entry() {
+            let mut tmp = tempfile::NamedTempFile::new().unwrap();
+            write!(tmp, "hello").unwrap();
+
+            let entry = Entry::new(tmp.path().to_path_buf());
+
+            assert_eq!(entry.kind, EntryKind::File);
+            assert_eq!(
+                entry.name,
+                tmp.path().file_name().unwrap().to_string_lossy()
+            );
+            assert!(entry.raw_size > 0);
+            assert!(!entry.selected);
+        }
+
+        #[test]
+        fn directory_entry() {
+            let tmp = tempfile::tempdir().unwrap();
+
+            let entry = Entry::new(tmp.path().to_path_buf());
+
+            assert_eq!(entry.kind, EntryKind::Directory);
+            assert_eq!(
+                entry.name,
+                tmp.path().file_name().unwrap().to_string_lossy()
+            );
+        }
+
+        #[test]
+        fn nonexistent_path_is_unknown() {
+            let entry = Entry::new(PathBuf::from("/definitely/does/not/exist/rodeo-test"));
+
+            assert_eq!(entry.kind, EntryKind::Unknown);
+            assert_eq!(entry.size, "-");
+            assert_eq!(entry.modified, "-");
+            assert_eq!(entry.raw_size, 0);
+            assert_eq!(entry.raw_modified, SystemTime::UNIX_EPOCH);
+        }
+    }
+
+    mod filter {
+        use super::*;
+
+        /// Builds a pane over a temp dir containing: a.rs, ab.rs, b.txt, sub/
+        /// (plus the synthesized `..` parent entry).
+        fn test_pane() -> (tempfile::TempDir, Pane) {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::File::create(dir.path().join("a.rs")).unwrap();
+            std::fs::File::create(dir.path().join("ab.rs")).unwrap();
+            std::fs::File::create(dir.path().join("b.txt")).unwrap();
+            std::fs::create_dir(dir.path().join("sub")).unwrap();
+
+            let config = Config::default();
+            let pane = Pane::new(&config, dir.path().to_str().unwrap());
+            (dir, pane)
+        }
+
+        fn names(pane: &Pane) -> Vec<&str> {
+            pane.paths.iter().map(|e| e.name.as_str()).collect()
+        }
+
+        #[test]
+        fn fuzzy_filter_matches_subsequence() {
+            let (_dir, mut pane) = test_pane();
+            pane.set_filter(FilterSpec::Fuzzy("ab".to_string()))
+                .unwrap();
+
+            assert_eq!(names(&pane), vec!["..", "ab.rs"]);
+            assert_eq!(pane.paths[0].kind, EntryKind::Parent);
+            // First real entry is selected.
+            assert_eq!(pane.state.selected(), Some(1));
+        }
+
+        #[test]
+        fn fuzzy_empty_pattern_shows_everything() {
+            let (_dir, mut pane) = test_pane();
+            pane.set_filter(FilterSpec::Fuzzy(String::new())).unwrap();
+
+            assert_eq!(pane.paths.len(), 5);
+        }
+
+        #[test]
+        fn regex_filter_matches_pattern() {
+            let (_dir, mut pane) = test_pane();
+            pane.set_filter(FilterSpec::Regex("^a".to_string()))
+                .unwrap();
+
+            assert_eq!(names(&pane), vec!["..", "a.rs", "ab.rs"]);
+        }
+
+        #[test]
+        fn invalid_regex_returns_error_and_keeps_listing() {
+            let (_dir, mut pane) = test_pane();
+            let result = pane.set_filter(FilterSpec::Regex("(".to_string()));
+
+            assert!(result.is_err());
+            assert_eq!(pane.paths.len(), 5);
+            assert_eq!(pane.filter(), None);
+        }
+
+        #[test]
+        fn clear_filter_restores_full_listing() {
+            let (_dir, mut pane) = test_pane();
+            pane.set_filter(FilterSpec::Regex("^a".to_string()))
+                .unwrap();
+            assert_eq!(pane.paths.len(), 3);
+
+            pane.clear_filter();
+            assert_eq!(pane.paths.len(), 5);
+            assert_eq!(pane.filter(), None);
+        }
+
+        #[test]
+        fn reload_reapplies_active_filter() {
+            let (dir, mut pane) = test_pane();
+            pane.set_filter(FilterSpec::Regex("^a".to_string()))
+                .unwrap();
+
+            std::fs::File::create(dir.path().join("ax.rs")).unwrap();
+            pane.reload(&Config::default(), false);
+
+            assert_eq!(names(&pane), vec!["..", "a.rs", "ab.rs", "ax.rs"]);
+        }
+
+        #[test]
+        fn select_by_path_moves_cursor() {
+            let (dir, mut pane) = test_pane();
+            let target = dir.path().join("b.txt");
+            pane.select_by_path(&target);
+
+            assert_eq!(
+                pane.get_selected_entry().map(|e| e.name),
+                Some("b.txt".to_string())
+            );
+        }
+    }
+
+    mod selection {
+        use super::*;
+
+        fn test_pane() -> (tempfile::TempDir, Pane) {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::File::create(dir.path().join("a.rs")).unwrap();
+            std::fs::File::create(dir.path().join("b.txt")).unwrap();
+            std::fs::create_dir(dir.path().join("sub")).unwrap();
+
+            let config = Config::default();
+            let pane = Pane::new(&config, dir.path().to_str().unwrap());
+            (dir, pane)
+        }
+
+        fn select_index(pane: &mut Pane, i: usize) {
+            pane.state.select(Some(i));
+            pane.toggle_select();
+        }
+
+        #[test]
+        fn file_can_be_selected_and_gathered() {
+            let (_dir, mut pane) = test_pane();
+            // Default sort (dirs on top): [.., sub, a.rs, b.txt]
+            select_index(&mut pane, 2);
+
+            let selected = pane.selected_entries();
+            assert_eq!(selected.len(), 1);
+            assert_eq!(selected[0].name, "a.rs");
+            assert!(pane.has_selections());
+        }
+
+        #[test]
+        fn directory_can_be_selected() {
+            let (_dir, mut pane) = test_pane();
+            select_index(&mut pane, 1); // sub
+
+            let selected = pane.selected_entries();
+            assert_eq!(selected.len(), 1);
+            assert_eq!(selected[0].kind, EntryKind::Directory);
+        }
+
+        #[test]
+        fn parent_cannot_be_selected() {
+            let (_dir, mut pane) = test_pane();
+            select_index(&mut pane, 0); // ..
+
+            assert!(pane.selected_entries().is_empty());
+            assert!(!pane.has_selections());
+        }
+
+        #[test]
+        fn clear_selections_unmarks_all() {
+            let (_dir, mut pane) = test_pane();
+            select_index(&mut pane, 1);
+            select_index(&mut pane, 2);
+            assert_eq!(pane.selected_entries().len(), 2);
+
+            pane.clear_selections();
+            assert!(pane.selected_entries().is_empty());
+            assert!(!pane.has_selections());
+        }
+
+        #[test]
+        fn selections_survive_reload() {
+            let (_dir, mut pane) = test_pane();
+            select_index(&mut pane, 2); // a.rs
+
+            pane.reload(&Config::default(), false);
+            let selected = pane.selected_entries();
+            assert_eq!(selected.len(), 1);
+            assert_eq!(selected[0].name, "a.rs");
+        }
+    }
+
+    mod next_index {
+        use super::*;
+
+        #[test]
+        fn down_wraps_from_last_to_first() {
+            assert_eq!(Panes::next_index(&3, Some(2), MoveDirection::Down), 0);
+        }
+
+        #[test]
+        fn down_moves_to_next() {
+            assert_eq!(Panes::next_index(&3, Some(0), MoveDirection::Down), 1);
+        }
+
+        #[test]
+        fn up_wraps_from_first_to_last() {
+            assert_eq!(Panes::next_index(&3, Some(0), MoveDirection::Up), 2);
+        }
+
+        #[test]
+        fn up_moves_to_previous() {
+            assert_eq!(Panes::next_index(&3, Some(2), MoveDirection::Up), 1);
+        }
+
+        #[test]
+        fn single_item_list_stays_at_zero() {
+            assert_eq!(Panes::next_index(&1, Some(0), MoveDirection::Down), 0);
+            assert_eq!(Panes::next_index(&1, Some(0), MoveDirection::Up), 0);
+        }
+
+        #[test]
+        fn empty_list_returns_zero() {
+            assert_eq!(Panes::next_index(&0, None, MoveDirection::Down), 0);
+            assert_eq!(Panes::next_index(&0, None, MoveDirection::Up), 0);
+        }
+
+        #[test]
+        fn none_selected_returns_zero() {
+            assert_eq!(Panes::next_index(&5, None, MoveDirection::Down), 0);
+            assert_eq!(Panes::next_index(&5, None, MoveDirection::Up), 0);
+        }
     }
 }

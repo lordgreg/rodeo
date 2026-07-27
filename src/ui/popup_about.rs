@@ -1,8 +1,8 @@
 use ratatui::{
     Frame,
-    layout::Rect,
+    layout::{Alignment, Rect},
     style::Style,
-    widgets::{Block, Borders, Clear},
+    widgets::{Block, Borders, Clear, Paragraph},
 };
 
 use crate::ui::{component::Component, theme::Theme, uiconfig::UiConfig};
@@ -26,12 +26,26 @@ impl Component for PopupAbout {
 
         frame.render_widget(Clear, popup_area);
 
+        let text = vec![
+            ratatui::text::Line::from(env!("CARGO_PKG_NAME")),
+            ratatui::text::Line::from(format!("v{}", env!("CARGO_PKG_VERSION"))),
+            ratatui::text::Line::from(""),
+            ratatui::text::Line::from("A modern terminal file manager"),
+            ratatui::text::Line::from(""),
+            ratatui::text::Line::from("Author: grepx"),
+            ratatui::text::Line::from("https://codeberg.org/grepx/rodeo"),
+        ];
+
         let block = Block::default().title("About").borders(Borders::ALL).style(
             Style::default()
                 .bg(theme.colors.surface())
                 .fg(theme.colors.foreground()),
         );
 
-        frame.render_widget(block, popup_area);
+        let paragraph = Paragraph::new(text)
+            .block(block)
+            .alignment(Alignment::Center);
+
+        frame.render_widget(paragraph, popup_area);
     }
 }

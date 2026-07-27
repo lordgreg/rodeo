@@ -98,14 +98,6 @@ impl Colors {
     pub fn accent1(&self) -> Color {
         Color::hex_to_color(&self.accent1)
     }
-
-    pub fn accent2(&self) -> Color {
-        Color::hex_to_color(&self.accent2)
-    }
-
-    pub fn accent3(&self) -> Color {
-        Color::hex_to_color(&self.accent3)
-    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -439,14 +431,14 @@ impl Theme {
             };
             let path = entry.path();
 
-            if !path.extension().is_some_and(|ext| ext == "yaml") {
+            if path.extension().is_none_or(|ext| ext != "yaml") {
                 continue;
             }
 
-            if let Some(stem) = path.file_stem() {
-                if let Some(name) = stem.to_str() {
-                    themes.push(name.to_string());
-                }
+            if let Some(stem) = path.file_stem()
+                && let Some(name) = stem.to_str()
+            {
+                themes.push(name.to_string());
             }
         }
 
@@ -463,8 +455,12 @@ impl Theme {
             }
         };
 
-        let theme: Theme = yaml_serde::from_str(&theme_str)
-            .map_err(|_| Error::new(ErrorKind::InvalidData, format!("cannot parse theme data.")))?;
+        let theme: Theme = yaml_serde::from_str(&theme_str).map_err(|_| {
+            Error::new(
+                ErrorKind::InvalidData,
+                "cannot parse theme data.".to_string(),
+            )
+        })?;
 
         info!("Loaded theme {}", theme.name);
         Ok(theme)

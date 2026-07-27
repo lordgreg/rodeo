@@ -10,7 +10,15 @@ use crate::ui::{component::Component, theme::Theme, uiconfig::UiConfig};
 
 const KEYBINDS: &[(&str, &str)] = &[
     ("F1", "This help"),
+    ("F2 / r", "Rename"),
+    ("/ or F3", "Fuzzy search"),
+    ("Ctrl+f", "Regex filter"),
     ("F4", "Edit file in $EDITOR"),
+    ("F5", "Copy to other pane"),
+    ("F6", "Move to other pane"),
+    ("F7", "Create directory"),
+    ("F8 / Del", "Move to trash"),
+    ("Ctrl+t", "Create empty file"),
     ("F10", "Quit"),
     ("Enter", "Open directory / edit file"),
     ("Backspace", "Parent directory"),
@@ -20,11 +28,13 @@ const KEYBINDS: &[(&str, &str)] = &[
     ("x", "Toggle select file"),
     ("Space", "Preview"),
     ("Ctrl+h", "Toggle hidden files"),
+    ("Ctrl+l", "Refresh panes / redraw"),
     ("Shift+Left/Right", "Change sort column"),
     ("Shift+O", "Reverse sort order"),
     ("Ctrl+j / Ctrl+k", "Scroll preview"),
     ("?", "About"),
-    ("q / Esc", "Quit / close popup"),
+    ("Esc", "Close popup / clear filter / quit"),
+    ("q", "Quit"),
 ];
 
 #[derive(Debug, Default)]

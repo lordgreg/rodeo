@@ -1,7 +1,7 @@
 # rodeo — Development TODO
 
-> **Last updated:** 2026-06-24
-> **Current state:** Dual-pane navigation + preview + theming + git header. No file operations, no search, no tests.
+> **Last updated:** 2026-07-26
+> **Current state:** Dual-pane navigation + preview + theming + git header + git-colored entries. Synchronous file ops (copy/move/delete/rename/mkdir/touch) with dialog confirmations and selection-aware batch mode. Fuzzy search + regex filter. 63 unit tests. Clippy-clean, fmt-normalized, CI workflow added.
 
 | Phase | README Milestone | Focus |
 |-------|-----------------|-------|
@@ -25,45 +25,43 @@ These are small, self-contained fixes with high impact-to-effort ratio. Do them 
   - Resolved: wired to `F1`, popup populated with the real binding list.
   - **P1** | **Files:** `src/ui/uiconfig.rs:14`, `src/ui/mod.rs:87-89`, `src/ui/input.rs:33,40,149,153,165` | **Hints:** If keeping, bind `F1` or `K` to toggle it. If removing, delete the field, the render block in `mod.rs`, and all references in `input.rs`. | **Effort:** S
 
-- [ ] **Fix `FileOpened` empty match arm (Also tracked as 0.5):** Enter on a file returns `FileOpened(_entry)` but the match arm at `input.rs:126` is empty `{}`. Open the file with `$EDITOR`/`$VISUAL`.
+- [x] **Fix `FileOpened` empty match arm (Also tracked as 0.5):** Enter on a file returns `FileOpened(_entry)` but the match arm at `input.rs:126` is empty `{}`. Open the file with `$EDITOR`/`$VISUAL`.
+  - Resolved: `FileOpened` sets `pending_editor_file`; the run loop spawns `config.editor` (defaults to `$EDITOR`, fallback `vi`) and reloads the pane on exit. `$VISUAL` support tracked in 4.6.
   - **P0** | **Files:** `src/ui/input.rs:126` | **Hints:** `std::process::Command::new(env::var("EDITOR").unwrap_or("vim".into())).arg(&entry.path).status()`. Need `use std::env;`. | **Effort:** S
 
 - [x] **Fix `ReadOnly` config unused (Also tracked as 0.13):** `config.read_only` field parsed from YAML but never checked. Gate file operations (cut/copy/delete/rename) behind it.
   - **P1** | **Files:** `src/config.rs:46` (field), `src/ui/input.rs` (check before ops) | **Hints:** Add `pub fn is_read_only(&self) -> bool` to `Config`. Check in `handle_main_key` before allowing destructive operations (once implemented). | **Effort:** S
   - The ReadOnly option was removed. Will be maybe re-added if there's a need for it.
 
-- [ ] **Remove `color-eyre` from Cargo.toml or use it:** Dependency declared but never imported. Either integrate it (replace `env_logger` with `color-eyre` + `tracing`) or drop it to reduce compile times.
+- [x] **Remove `color-eyre` from Cargo.toml or use it:** Dependency declared but never imported. Either integrate it (replace `env_logger` with `color-eyre` + `tracing`) or drop it to reduce compile times.
+  - Resolved: integrated. `color_eyre::install()?` at top of `main()`, `main()` now returns `color_eyre::Result<()>` (also resolves 5.3.2).
   - **P1** | **Files:** `Cargo.toml:10` | **Hints:** If keeping, add `color_eyre::install()?;` at top of `main()`. If dropping, change `io::Result<()>` to use `eyre::Result` separately. See Phase 5 for full error handling plan. | **Effort:** S
 
-- [ ] **Populate About popup:** Currently renders an empty titled block. Add app name, version, author, and repository link.
+- [x] **Populate About popup:** Currently renders an empty titled block. Add app name, version, author, and repository link.
+  - Resolved: renders name, `CARGO_PKG_VERSION`, description, author, and Codeberg link, centered.
   - **P2** | **Files:** `src/ui/popup_about.rs` | **Hints:** Add a `Paragraph` inside the block with app info. Use `env!("CARGO_PKG_VERSION")` for version. Center-text align inside the block. | **Effort:** S
 
 - [x] **Populate Keybinds popup:** Currently renders an empty titled block. List actual keybindings from `input.rs`.
   - **P2** | **Files:** `src/ui/popup_keybinds.rs` | **Hints:** Create a static `&[(&str, &str)]` mapping key to description. Render as a two-column table or list. Wire popup toggle to a keybinding (e.g., `F1` or `K`) if keeping `active_keybind_popup`. | **Effort:** S
 
-- [ ] **Fix header info placeholder:** Header hardcodes `"~info one"` in `App::new()`. Show active pane name or total file count.
+- [x] **Fix header info placeholder:** Header hardcodes `"~info one"` in `App::new()`. Show active pane name or total file count.
+  - Resolved: placeholder removed. Header now shows live `PaneStats` (selected/files/dirs/hidden) on the left and git status on the right.
   - **P2** | **Files:** `src/ui/mod.rs:49` | **Hints:** Replace with useful metric: total files in active directory, app version string, or remove the field entirely. The Header is a single shared widget (not per-pane), so pane-specific info belongs elsewhere. | **Effort:** S
 
-- [ ] **Add `README_ONLY` marker for config:** Add `read_only` getter to `Config` and document the field in the default config template.
-  - **P2** | **Files:** `src/config.rs` | **Hints:** `pub fn is_read_only(&self) -> bool { self.read_only }`. Add a comment in default config generation. | **Effort:** S
-
-- [ ] **Add `.unwrap()` audit comment markers:** Mark every `.unwrap()` / `.expect()` with `// TODO: proper error handling` for later systematic replacement.
-  - **P1** | **Files:** `src/**/*.rs` | **Hints:** `rg '\.unwrap\(\)' src/` shows ~16 instances. `rg '\.expect(' src/` shows ~6 more. | **Effort:** S
-
-- [ ] **Fix Cargo.toml edition:** `edition = "2024"` has been stable since Rust 1.85. Confirm minimum supported Rust version and adjust edition accordingly.
+- [x] **Fix Cargo.toml edition:** `edition = "2024"` has been stable since Rust 1.85. Confirm minimum supported Rust version and adjust edition accordingly.
+  - Resolved: keeping `edition = "2024"`. Toolchain is rustc 1.95.0 stable; edition 2024 is stable since 1.85. MSRV is effectively 1.85.
   - **P1** | **Files:** `Cargo.toml:4` | **Hints:** Check `rustup show`. If stable, change to `"2021"`. | **Effort:** S
 
-- [ ] **Fix `println!` debug statement in `main.rs:27`:** `println!("Config: {:?}", config);` leaks to terminal. Replace with `info!` or remove.
+- [x] **Fix `println!` debug statement in `main.rs:27`:** `println!("Config: {:?}", config);` leaks to terminal. Replace with `info!` or remove.
+  - Resolved: replaced with `log::debug!` (`main.rs:26`).
   - **P2** | **Files:** `src/main.rs:27` | **Hints:** `info!("Config: {:?}", config);` | **Effort:** S
 
-- [ ] **Add `.gitignore` entries:** Missing `*.swp`, `*.swo`, `.*.swp`, `*.log`, `/themes/*.swp`.
+- [x] **Add `.gitignore` entries:** Missing `*.swp`, `*.swo`, `.*.swp`, `*.log`, `/themes/*.swp`.
   - **P2** | **Files:** `.gitignore` | **Hints:** Standard Rust + editor ignore patterns. | **Effort:** S
 
-- [ ] **Bind `Ctrl+L` to manual redraw/refresh**
+- [x] **Bind `Ctrl+L` to manual redraw/refresh**
+  - Resolved: `Ctrl+l` reloads both panes; documented in the F1 keybinds popup.
   - **P2** | **Files:** `src/ui/input.rs:67-77` | **Hints:** In `handle_ctrl_key`, add `KeyCode::Char('l') => { self.panes.reload(&self.config, false); return true; }`. This forces a re-read of both panes' directories and a full terminal redraw. Essential when terminal state gets corrupted. | **Effort:** S
-
-- [ ] **Fix README M0 workspace claim**
-  - **P2** | **Files:** `README.md:9`, `Cargo.toml` | **Hints:** README M0 checklist says `[x] Project scaffolding with Cargo workspaces` but the project is a single crate (no `[workspace]` section). Either add a workspace to Cargo.toml (per planning docs' suggestion of `rodeo-core` + `rodeo-tui`) or update the README to say `single crate` instead of `workspaces`. | **Effort:** S
 
 ---
 
@@ -109,7 +107,8 @@ These are small, self-contained fixes with high impact-to-effort ratio. Do them 
 - [x] **0.12 Remove dead code: `active_keybind_popup` never activated** — wired to `F1`.
   - **P1** | **Files:** See Quick Wins above. | **Hints:** (See also Quick Wins above.) Note: `active_keybind_popup` is only ever set to `false` in the codebase. The `?` key sets it to `false` (line 149), and Esc sets it to `false` (line 40). It is never set to `true` — so the popup can never appear. Either bind to key (recommend `F1` or `K`) with populated content, or remove: `uiconfig.rs:14`, `mod.rs:87-89`, `input.rs` references at lines 33,40,149,153,165. | **Effort:** S
 
-- [ ] **0.13 Remove dead code: `Config::read_only` never checked — NOT YET IMPLEMENTED**
+- [x] **0.13 Remove dead code: `Config::read_only` never checked**
+  - Resolved: the `read_only` field was removed from `Config` entirely. May be re-added if a need arises.
   - **P1** | **Files:** `src/config.rs:46`, `src/ui/input.rs` | **Hints:** (See also Quick Wins above.) Add getter. Check in `handle_main_key` before allowing: cut/copy/delete/rename (once implemented), toggle_select, Enter-on-file. Show a status message "Read-only mode — operation blocked" in footer. | **Effort:** S
 
 - [x] **0.14 Fix config format mismatch: code uses YAML, README/planning docs say TOML**
@@ -149,42 +148,54 @@ These are small, self-contained fixes with high impact-to-effort ratio. Do them 
 
 ### 1.1 Confirmation Dialog Infrastructure
 
-- [ ] **1.1.1 Create `src/ui/dialog.rs` — generic confirmation popup module**
+- [x] **1.1.1 Create `src/ui/dialog.rs` — generic confirmation popup module**
+  - Resolved: `Dialog` with `DialogKind` + `DialogAction` (what to do on confirm) + `DialogResult`. Stored as `App.dialog: Option<Dialog>` (like `preview`) instead of `UiConfig` — avoids borrow conflicts.
   - **P0** | **Files:** `src/ui/dialog.rs` (new), `src/ui/mod.rs` | **Hints:** A modal dialog that displays a message (e.g., "Delete 3 files?") with Yes/No options. Take a title string, message string, and two callbacks or return a `ConfirmResult` enum. Render as centered block with borders, keyboard navigation (y/n or Enter/Esc). Add `active_dialog: Option<Dialog>` to `UiConfig`. | **Effort:** M
 
-- [ ] **1.1.2 Implement `Dialog` with actions: confirm, confirm_multi, input (for rename/mkdir)**
+- [x] **1.1.2 Implement `Dialog` with actions: confirm, confirm_multi, input (for rename/mkdir)**
+  - Resolved: three variants implemented — `Confirm { message }`, `Input { prompt, value }` (with cursor), `Message { text }`. All in live use: Input for mkdir/touch, Confirm for touch-overwrite, Message for op errors.
   - **P0** | **Files:** `src/ui/dialog.rs` | **Hints:** Three variants: `Confirm { title, message }`, `Input { title, prompt, value }`, `Message { title, text }`. Use an enum `DialogKind`. Render input dialogs with a cursor and single-line text field. | **Effort:** M
 
-- [ ] **1.1.3 Add dialog input handling in `App::handle_input`**
+- [x] **1.1.3 Add dialog input handling in `App::handle_input`**
+  - Resolved: dialog keys routed before all other handlers; Enter=confirm/submit, Esc=cancel, Backspace=delete char, text=append (plain + Shift).
   - **P0** | **Files:** `src/ui/input.rs`, `src/ui/mod.rs` | **Hints:** If dialog is active, route keys to dialog handler (Enter=confirm, Esc=cancel, for input dialogs: backspace=delete, text=append). Dialogs take priority over all other key handling. | **Effort:** M
 
-- [ ] **1.1.4 Add dialog rendering in `App::render`**
+- [x] **1.1.4 Add dialog rendering in `App::render`**
+  - Resolved: rendered last (on top of popups), centered clear+block+paragraph.
   - **P0** | **Files:** `src/ui/mod.rs:70-104` | **Hints:** After popups, render dialog as a centered clear+block+paragraph. Dialogs should render on top of everything. | **Effort:** M
 
 ### 1.2 File Operations — Synchronous (Phase 1a)
 
-- [ ] **1.2.1 Implement file copy (single file)**
+- [x] **1.2.1 Implement file copy (single file)**
+  - Resolved: `F5` copies the highlighted entry to the inactive pane's directory. Directories copied recursively (`copy_dir_recursive`). Overwrite Confirm dialog on name clash; guards against same-file copy and copy-into-own-subdirectory. Vim yank/paste (`y`/`p`) arrives with modal bindings in 1.3.3.
   - **P0** | **Files:** `src/ui/input.rs`, `src/ui/panes.rs` | **Hints:** Vim binding: `y` yanks (copies path to clipboard buffer), `p` pastes. Non-modal for now: `F5` or `Ctrl+C` copies. Implementation: `std::fs::copy(src, dst)`. Show confirmation if destination exists. Copy the `Entry` from active pane to inactive pane's directory. | **Effort:** M
 
-- [ ] **1.2.2 Implement file move (single file)**
+- [x] **1.2.2 Implement file move (single file)**
+  - Resolved: `F6` moves via `std::fs::rename`; on failure (e.g., cross-device EXDEV) falls back to copy + delete. Overwrite Confirm dialog on name clash.
   - **P0** | **Files:** `src/ui/input.rs`, `src/ui/panes.rs` | **Hints:** Vim binding: `d` cuts (moves path to clipboard buffer), `p` pastes. Non-modal: `F6`. Implementation: `std::fs::rename(src, dst)`. Falls back to copy+delete for cross-device moves. Show confirmation. | **Effort:** M
 
-- [ ] **1.2.3 Implement file delete (single file, to trash)**
+- [x] **1.2.3 Implement file delete (single file, to trash)**
+  - Resolved: `F8`/`Delete` → "Move to trash?" Confirm → `trash::delete`. On trash failure, second Confirm offers permanent delete (per Open Decision 9). `dd` binding deferred to 1.3.4 (needs key-sequence state). Added `F8 Delete` to footer.
   - **P0** | **Files:** `src/ui/input.rs`, `Cargo.toml` | **Hints:** Use `trash` crate. Add `trash = "5"` to Cargo.toml. Binding: `dd` (or `Delete` key, or `F8` mc-style). Show confirmation dialog: "Move 'filename' to trash?". If trash fails (e.g., on some filesystems), offer permanent delete as fallback with extra confirmation. Add `F8 Delete` to the footer when implemented. | **Effort:** M
 
-- [ ] **1.2.4 Implement file rename (inline or dialog)**
+- [x] **1.2.4 Implement file rename (inline or dialog)**
+  - Resolved: `r` and `F2` open an Input dialog pre-filled with the current name. Name-clash → overwrite Confirm; same name → no-op. Errors (permissions, invalid names) shown in a Message dialog. Added `F2 Rename` to footer.
   - **P0** | **Files:** `src/ui/input.rs`, `src/ui/dialog.rs` | **Hints:** Binding: `r` and `F2` (mc-style) on a file. Open an input dialog pre-filled with the current filename. On confirm, `std::fs::rename(old, new)`. Reload pane afterward. Handle errors: name collision, invalid chars, permissions. Add `F2 Rename` to the footer when implemented. | **Effort:** M
 
-- [ ] **1.2.5 Implement mkdir**
+- [x] **1.2.5 Implement mkdir**
+  - Resolved: bound to `F7`. Input dialog → `std::fs::create_dir()`, pane reload on success, Message dialog on error. Empty name rejected. Added to footer + keybinds popup.
   - **P0** | **Files:** `src/ui/input.rs`, `src/ui/dialog.rs` | **Hints:** Binding: `F7` or `Ctrl+N`. Open input dialog with prompt "Directory name:". Create with `std::fs::create_dir()`. Reload pane. Handle errors: already exists, permission denied. | **Effort:** S
 
-- [ ] **1.2.6 Implement touch (create empty file)**
+- [x] **1.2.6 Implement touch (create empty file)**
+  - Resolved: bound to `Ctrl+T`. Input dialog → `std::fs::File::create()`; if file exists, Confirm dialog asks before truncating. Note: `Ctrl+T` now taken — theme switching (3.1.4) must use another binding or `:theme`.
   - **P0** | **Files:** `src/ui/input.rs`, `src/ui/dialog.rs` | **Hints:** Binding: `Ctrl+T` or similar. Input dialog for filename. Create with `std::fs::File::create()`. Reload pane. | **Effort:** S
 
-- [ ] **1.2.7 Add selection-aware batch operations**
+- [x] **1.2.7 Add selection-aware batch operations**
+  - Resolved: copy/move/delete operate on all `x`-selected entries (falling back to the highlighted entry). Directories and symlinks are now selectable too. Batch delete asks "Move N items to trash?"; copy/move count name clashes in one overwrite confirm. `Esc` clears the selection (before quitting). Selection marks sync between the visible and full lists and survive reloads.
   - **P1** | **Files:** `src/ui/panes.rs`, `src/ui/input.rs` | **Hints:** When multiple files are selected (via `x`), operations apply to all selected files. For copy/move, the target is the other pane's directory. For delete, show "Delete N files?". Gather selected entries: `pane.paths.iter().filter(|e| e.selected).collect()`. | **Effort:** M
 
-- [ ] **1.2.8 Update footer to show contextual keybindings**
+- [x] **1.2.8 Update footer to show contextual keybindings**
+  - Resolved: when items are selected, the footer switches to `●N selected`, `F5 Copy`, `F6 Move`, `F8 Delete`, `Esc Unselect`; otherwise the full key list is shown. (Vim-mode bindings land with 1.3.)
   - **P1** | **Files:** `src/ui/footer.rs` | **Hints:** After implementing operations, show actual bindings: `y Yank`, `d Cut`, `p Paste`, `r Rename`, `dd Delete`, `Ctrl+n Mkdir`, `Ctrl+t Touch`, `x Select`. Make footer dynamic: when files are selected, show selection count and bulk-action hint. | **Effort:** S
 
 ### 1.3 Vim-Style Modal Keybindings (Phase 1b)
@@ -236,13 +247,16 @@ These are small, self-contained fixes with high impact-to-effort ratio. Do them 
 > Goal: Find files fast. Fuzzy search, regex filter, search file contents.
 > Depends on: Phase 0. Phase 1 is not strictly required but helps (command palette infrastructure).
 
-- [ ] **2.1 Add `nucleo` for fuzzy matching**
+- [x] **2.1 Add `nucleo` for fuzzy matching**
+  - Resolved: `nucleo = "0.5"` (via `nucleo::pattern::Pattern` + `Matcher`) and `regex = "1"` added.
   - **P0** | **Files:** `Cargo.toml` | **Hints:** `nucleo = "0.5"`. Lightweight, no large deps. Alternative: `skim` (fzf-compatible but heavier). Planning docs recommend `nucleo`. | **Effort:** S
 
-- [ ] **2.2 Implement fuzzy file finder (`/` and `F3` keys)**
+- [x] **2.2 Implement fuzzy file finder (`/` and `F3` keys)**
+  - Resolved: `/` or `F3` opens a search bar above the footer. Live fuzzy-filter with `nucleo` (smart case), results ranked best-first, `..` pinned on top, arrows navigate, `Enter` jumps cursor to the top match and drops the filter, `Esc` cancels. Match-character highlighting is 2.6. `F3 Search` added to footer.
   - **P0** | **Files:** `src/ui/input.rs`, `src/ui/search.rs` (new), `src/ui/mod.rs` | **Hints:** Press `/` or `F3` (mc-style, decided in 0.6) to open a search bar at bottom of the active pane (or as a popup). Type to fuzzy-filter entries in the current directory. Results update in real-time as you type. `Esc` to cancel, `Enter` to select top match. Use `nucleo::Matcher` with the file names. The pane should highlight matching characters in filenames. Add `F3 Search` to the footer when implemented. | **Effort:** M
 
-- [ ] **2.3 Implement regex filter (`Ctrl+F`)**
+- [x] **2.3 Implement regex filter (`Ctrl+F`)**
+  - Resolved: `Ctrl+F` opens the filter bar (pre-filled with the active pattern for editing). Live-filtered as you type; invalid regex shows the bar in the theme error color and keeps the last valid listing. `Enter` keeps the filter (bar stays visible read-only with pattern + hints); `Esc` in the bar cancels, `Esc` in main mode clears the filter before quitting. Filter re-applies automatically on pane reload. `regex = "1.13"` added.
   - **P0** | **Files:** `src/ui/input.rs`, `src/ui/search.rs` | **Hints:** Press `Ctrl+F` to open a regex input bar. Type a regex pattern to filter directory listing. Only files matching the regex are shown. Invalid regex shows error in the bar. Use the `regex` crate: `regex = "1"`. Add to `Cargo.toml`. | **Effort:** M
 
 - [ ] **2.4 Implement find-in-files (search file contents)**
@@ -276,7 +290,7 @@ These are small, self-contained fixes with high impact-to-effort ratio. Do them 
   - **P1** | **Files:** `src/ui/popup_preview.rs`, `src/ui/theme.rs` | **Hints:** Map syntect's theme colors to rodeo's current theme. Or bundle a rodeo-specific Sublime Text theme. Use background/fg colors that work with the active rodeo theme. | **Effort:** M
 
 - [ ] **3.1.4 Implement runtime theme switching**
-  - **P2** | **Files:** `src/ui/input.rs`, `src/ui/theme.rs`, `src/ui/mod.rs` | **Hints:** Add keybinding (e.g., `Ctrl+T` cycles themes, or `:theme <name>` via command palette). At minimum, use `get_theme_list()` to discover available themes, cycle through them on keypress. Reload the `Theme` struct and trigger a full redraw. Since `App` owns `Theme`, replacement is straightforward: `self.theme = Theme::load(theme_name)?`. | **Effort:** S
+  - **P2** | **Files:** `src/ui/input.rs`, `src/ui/theme.rs`, `src/ui/mod.rs` | **Hints:** Add keybinding — NOTE: `Ctrl+T` is taken by touch (1.2.6), use `:theme <name>` via command palette or another key. At minimum, use `get_theme_list()` to discover available themes, cycle through them on keypress. Reload the `Theme` struct and trigger a full redraw. Since `App` owns `Theme`, replacement is straightforward: `self.theme = Theme::load(theme_name)?`. | **Effort:** S
 
 ### 3.2 Archive Preview
 
@@ -332,7 +346,9 @@ These are small, self-contained fixes with high impact-to-effort ratio. Do them 
 - [ ] **4.2 Trash support with restore capability**
   - **P1** | **Files:** `src/fs/ops.rs`, `src/ui/input.rs` | **Hints:** Use `trash` crate's `delete` and `list` APIs. Add a "Trash" view accessible via `:trash` command or similar. Show trash contents in a pane. Allow restore (`p` from trash) and permanent delete (`Shift+dd` from trash). Cross-platform: freedesktop Trash spec on Linux, macOS Trash, Windows Recycle Bin. | **Effort:** L
 
-- [ ] **4.3 Git status column in file listing**
+- [ ] **4.3 Git status column in file listing (optional, mostly superseded)**
+  - Superseded by entry git-colors (2026-07-26): entry names are colored by status — modified=`warning`, added=`success`, deleted=`error`, untracked=`info`, ignored=`muted` — matching the header palette. Directories aggregate the most severe descendant status. Data: `git status --porcelain=v1 -z -uall --ignored=matching` parsed in `src/ui/git.rs`, refreshed on pane reload.
+  - Remaining value of this task: an opt-in one-char status column for staged-vs-unstaged distinction, which colors can't express. Low priority.
   - **P2** | **Files:** `src/ui/panes.rs` | **Hints:** Instead of just showing selected marker (`●`) in column 0, show git status: `M` modified, `A` added, `D` deleted, `?` untracked, `!` ignored, ` ` clean. Use `gix` crate (pure Rust) for git status parsing: `gix = "0.70"`. Cache git status per directory to avoid repeated `git status` calls. Update only when directory changes or on manual refresh. | **Effort:** L
 
 - [ ] **4.4 Directory size calculation**
@@ -362,16 +378,20 @@ These are small, self-contained fixes with high impact-to-effort ratio. Do them 
 
 ### 5.1 Testing
 
-- [ ] **5.1.1 Add unit tests for `format_size()`**
+- [x] **5.1.1 Add unit tests for `format_size()`**
+  - Resolved: 8 tests covering B/KB/MB/GB/TB boundaries, fractional rounding, beyond-TB saturation.
   - **P0** | **Files:** `src/ui/panes.rs` (add `#[cfg(test)] mod tests`) | **Hints:** Test cases: 0 → "0 B", 1023 → "1023 B", 1024 → "1.0 KB", 1048576 → "1.0 MB", 1073741824 → "1.0 GB". | **Effort:** S
 
-- [ ] **5.1.2 Add unit tests for `format_date()`**
+- [x] **5.1.2 Add unit tests for `format_date()`**
+  - Resolved: 2 tests (UNIX_EPOCH, known 2024-01-15 12:30 UTC timestamp). Format is UTC, so tests are timezone-independent.
   - **P0** | **Files:** `src/ui/panes.rs` | **Hints:** Test with known `SystemTime` values. | **Effort:** S
 
-- [ ] **5.1.3 Add unit tests for `Entry::new()`**
+- [x] **5.1.3 Add unit tests for `Entry::new()`**
+  - Resolved: 3 tests (temp file → File, temp dir → Directory, nonexistent → Unknown with "-" fallbacks). Added `tempfile` as dev-dependency.
   - **P0** | **Files:** `src/ui/panes.rs` | **Hints:** Test with a temp file: create tempfile, construct Entry, verify kind=File, name matches, size > 0. Test with temp dir: kind=Directory. Test with nonexistent path: kind=Unknown. | **Effort:** S
 
-- [ ] **5.1.4 Add unit tests for `Pane::next_index()`**
+- [x] **5.1.4 Add unit tests for `Pane::next_index()`**
+  - Resolved: 7 tests covering wrap-around both directions, single-item, empty list, None selected.
   - **P0** | **Files:** `src/ui/panes.rs` | **Hints:** Test wrap-around (last+down=0, first+up=last), single-item list, empty list (row_count=0), None selected → 0. | **Effort:** S
 
 - [ ] **5.1.5 Add unit tests for sort logic in `read_entries()`**
@@ -389,12 +409,14 @@ These are small, self-contained fixes with high impact-to-effort ratio. Do them 
 - [ ] **5.1.9 Add integration tests for file operations (requires temp dirs)**
   - **P2** | **Files:** `tests/file_ops.rs` (new) | **Hints:** Create temp directory with test files. Run copy/move/delete/rename. Assert filesystem state. Use `tempfile` crate. | **Effort:** L
 
-- [ ] **5.1.10 Add unit tests for dialog module (once created)**
+- [x] **5.1.10 Add unit tests for dialog module (once created)**
+  - Resolved: 11 tests — confirm y/n/Enter/Esc/stay-open, input typing/backspace/Shift/Ctrl-filtering/submit/cancel, message close keys.
   - **P1** | **Files:** `src/ui/dialog.rs` | **Hints:** Test confirm dialog returns correct result on y/n/Esc/Enter. Test input dialog buffers text correctly. | **Effort:** S
 
 ### 5.2 CI/CD
 
-- [ ] **5.2.1 Create GitHub Actions workflow: test, clippy, fmt**
+- [x] **5.2.1 Create GitHub Actions workflow: test, clippy, fmt**
+  - Resolved: `.github/workflows/ci.yml` — stable + beta matrix, `cargo check --all-targets`, `test --all`, `clippy --all-targets -- -D warnings`, `fmt --check`. All 17 pre-existing clippy warnings were fixed and the codebase was `cargo fmt`-normalized so the strict gates pass. NOTE: the project lives on Codeberg — this workflow needs a GitHub mirror (or a Forgejo/Woodpecker port) to actually run.
   - **P1** | **Files:** `.github/workflows/ci.yml` (new) | **Hints:** Matrix: stable + beta Rust. Steps: checkout, install Rust, cache cargo, `cargo test --all`, `cargo clippy -- -D warnings`, `cargo fmt --check`. Add `cargo check` for quick validation. | **Effort:** S
 
 - [ ] **5.2.2 Add `cargo-deny` to CI for license/security auditing**
@@ -411,7 +433,8 @@ These are small, self-contained fixes with high impact-to-effort ratio. Do them 
 - [ ] **5.3.1 Replace `env_logger` + `log` with `tracing` + `color-eyre`**
   - **P1** | **Files:** `Cargo.toml`, `src/main.rs`, all `log::` imports | **Hints:** Planning docs recommend `tracing` for structured logging and `color-eyre` for error reporting. `color-eyre` is already in Cargo.toml. Replace `log::info!` → `tracing::info!`, etc. Use `tracing-subscriber` for output. Add file-based logging with `tracing-appender`. | **Effort:** M
 
-- [ ] **5.3.2 Convert `main() -> io::Result<()>` to use `color_eyre::Result<()>`**
+- [x] **5.3.2 Convert `main() -> io::Result<()>` to use `color_eyre::Result<()>`**
+  - Resolved alongside the color-eyre quick win.
   - **P1** | **Files:** `src/main.rs` | **Hints:** `color_eyre::install()?;` at top. Change return type. This gives colorful, detailed error traces for all `?` propagations. | **Effort:** S
 
 - [ ] **5.3.3 Systematic `.unwrap()` / `.expect()` removal**
@@ -472,17 +495,21 @@ Phase 0 (Bug Fixes) ────────────────────
 
 | Crate | Version | Used? | Notes |
 |-------|---------|-------|-------|
-| `ansi-to-tui` | 8.0.1 | Yes | Converts bat ANSI output to ratatui Text |
 | `chrono` | 0.4.45 | Yes | File modification time formatting |
 | `clap` | 4.6.1 | Yes | CLI argument parsing |
-| `color-eyre` | 0.6.5 | **No** | Declared but never imported — dead dep |
+| `color-eyre` | 0.6.5 | Yes | Error reporting in `main()` |
 | `crossterm` | 0.29.0 | Yes | Terminal input events |
 | `env_logger` | 0.11.10 | Yes | Logging (to be replaced by `tracing`) |
 | `image` | 0.25.10 | Yes | Image preview decoding |
+| `infer` | 0.16 | Yes | File type detection (replaced `file` command) |
 | `log` | 0.4.31 | Yes | Log macros (to be replaced by `tracing`) |
+| `nucleo` | 0.5.0 | Yes | Fuzzy file matching |
 | `ratatui` | 0.30.0 | Yes | Core TUI framework |
 | `ratatui-image` | 11.0.4 | Yes | Terminal image rendering |
+| `regex` | 1.13.1 | Yes | Regex filter (find-in-files reuse planned) |
 | `serde` | 1.0.228 | Yes | Config/theme deserialization |
+| `syntect` | 5.3.0 | Yes | Syntax highlighting (replaced `bat`) |
+| `trash` | 5.2.6 | Yes | Delete to system trash (with permanent fallback) |
 | `xdg` | 3.0.0 | Yes | XDG base directories for config path |
 | `yaml_serde` | 0.10.4 | Yes | YAML config parsing (see Open Decisions) |
 
@@ -490,12 +517,8 @@ Phase 0 (Bug Fixes) ────────────────────
 
 | Crate | Version | Phase | Purpose |
 |-------|---------|-------|---------|
-| `trash` | 5 | Phase 1 | Safe delete to system trash |
 | `tokio` | 1 | Phase 1 | Async file operations + file watching |
-| `regex` | 1 | Phase 2 | Regex filter + find-in-files |
-| `nucleo` | 0.5 | Phase 2 | Fuzzy file matching |
 | `ignore` | 0.4 | Phase 2 | File tree walking (respects .gitignore) |
-| `syntect` | 5 | Phase 3 | Syntax highlighting (replace `bat`) |
 | `toml` | 0.8 | Phase 3 | Bookmark storage (and possibly config) |
 | `tar` | 0.4 | Phase 3 | Tar archive reading |
 | `zip` | 2 | Phase 3 | Zip archive reading |
@@ -517,8 +540,6 @@ Phase 0 (Bug Fixes) ────────────────────
 | `yaml_serde` | If switching config to TOML (use `toml` crate instead) |
 | `env_logger` | If switching to `tracing-subscriber` |
 | `log` | If switching to `tracing` (use `tracing` macros) |
-| `color-eyre` | If not used (otherwise integrate properly) |
-| `ansi-to-tui` | If replacing `bat` with `syntect` (syntect produces spans directly) |
 
 ---
 

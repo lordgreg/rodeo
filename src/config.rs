@@ -40,7 +40,6 @@ fn default_editor() -> String {
     std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string())
 }
 
-////
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Config {
     #[serde(default = "default_theme")]
@@ -64,7 +63,7 @@ pub struct Config {
 }
 
 impl Config {
-    fn default() -> Self {
+    pub fn default() -> Self {
         Self {
             theme: default_theme(),
             initial_directory_left: default_initial_directory(),
@@ -151,7 +150,10 @@ impl Config {
     pub fn load_config(filename: Option<&str>) -> io::Result<Config> {
         let config_path = Self::get_config_path(filename);
         let path = config_path.to_str().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::NotFound, format!("cannot get config path."))
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                "cannot get config path.".to_string(),
+            )
         })?;
         Self::load_config_from_file(path)
     }

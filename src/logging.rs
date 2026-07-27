@@ -8,15 +8,14 @@ const LOG_FILENAME: &str = "rodeo.log";
 
 /// Log to a file instead of stderr, so log output cannot corrupt the TUI.
 pub fn init() {
-    let log_path = match xdg::BaseDirectories::with_prefix(CONFIG_DIR)
-        .place_state_file(LOG_FILENAME)
-    {
-        Ok(path) => path,
-        Err(e) => {
-            eprintln!("Cannot determine log file path: {e}. Logging disabled.");
-            return;
-        }
-    };
+    let log_path =
+        match xdg::BaseDirectories::with_prefix(CONFIG_DIR).place_state_file(LOG_FILENAME) {
+            Ok(path) => path,
+            Err(e) => {
+                eprintln!("Cannot determine log file path: {e}. Logging disabled.");
+                return;
+            }
+        };
 
     let log_file = match File::options().create(true).append(true).open(&log_path) {
         Ok(file) => file,
