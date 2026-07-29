@@ -20,6 +20,9 @@ pub enum DialogAction {
     Touch {
         parent: PathBuf,
     },
+    Create {
+        parent: PathBuf,
+    },
     TouchOverwrite {
         path: PathBuf,
     },
@@ -41,6 +44,10 @@ pub enum DialogAction {
         dest_dir: PathBuf,
     },
     Move {
+        sources: Vec<PathBuf>,
+        dest_dir: PathBuf,
+    },
+    PasteMove {
         sources: Vec<PathBuf>,
         dest_dir: PathBuf,
     },
@@ -165,7 +172,8 @@ impl Component for Dialog {
             DialogKind::Message { text } => text.lines().map(Line::from).collect::<Vec<Line>>(),
         };
 
-        let height = content_lines.len() as u16 + 2; // +2 for borders
+        // +2 for borders; clamped so long content (e.g., `:!` output) stays on screen.
+        let height = (content_lines.len() as u16 + 2).min(area.height.saturating_sub(2));
         let width = area.width / 2;
         let popup_area = Rect {
             x: area.x + area.width / 4,
