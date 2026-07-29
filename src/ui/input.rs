@@ -8,16 +8,32 @@ use super::{
     panes::{EntryKind, MoveDirection, OpenAction, SortOrder, SortType},
     popup_preview::PopupPreview,
     search::{FilterSpec, Search, SearchKind},
+    textinput::TextInput,
     uiconfig::ActivePane,
 };
+use crate::config::Config;
+use crate::fs::ops;
+use crate::ui::theme::Theme;
 
 impl App {
     pub(crate) fn handle_input(&mut self) -> std::io::Result<()> {
         match event::read()? {
             Event::Key(key_event) if key_event.kind == KeyEventKind::Press => {
+                // A pending `d` (awaiting the second key of `dd`) is cancelled
+                // by any other key.
+                if self.pending_d && !matches!(key_event.code, KeyCode::Char('d')) {
+                    self.pending_d = false;
+                }
+
                 // Dialogs take priority over all other key handling.
                 if self.dialog.is_some() {
                     self.handle_dialog_key(&key_event);
+                    return Ok(());
+                }
+
+                // The command bar consumes keys while it is open.
+                if self.command.is_some() {
+                    self.handle_command_key(&key_event);
                     return Ok(());
                 }
 
@@ -153,6 +169,14 @@ impl App {
             (DialogAction::Touch { parent }, DialogResult::Submitted(name)) => {
                 self.touch(parent, name);
             }
+            (DialogAction::Create { parent }, DialogResult::Submitted(name)) => {
+                let name = name.trim();
+                if let Some(dir) = name.strip_suffix('/') {
+                    self.mkdir(parent, dir.to_string());
+                } else {
+                    self.touch(parent, name.to_string());
+                }
+            }
             (DialogAction::TouchOverwrite { path }, DialogResult::Confirmed) => {
                 self.create_file(&path);
             }
@@ -173,6 +197,11 @@ impl App {
             }
             (DialogAction::Move { sources, dest_dir }, DialogResult::Confirmed) => {
                 self.move_entries(sources, dest_dir);
+            }
+            (DialogAction::PasteMove { sources, dest_dir }, DialogResult::Confirmed) => {
+                self.move_entries(sources, dest_dir);
+                self.clipboard.clear();
+                self.clipboard_cut = false;
             }
             _ => {}
         }
@@ -316,7 +345,7 @@ impl App {
         }
 
         let message = if targets.len() == 1 {
-            format!("Move '{}' to trash?", file_name_of(&targets[0]))
+            format!("Move '{}' to trash?", ops::file_name_of(&targets[0]))
         } else {
             format!("Move {} items to trash?", targets.len())
         };
@@ -349,12 +378,7 @@ impl App {
 
     fn delete_permanent(&mut self, paths: Vec<PathBuf>) {
         for path in &paths {
-            let result = if path.is_dir() {
-                std::fs::remove_dir_all(path)
-            } else {
-                std::fs::remove_file(path)
-            };
-            if let Err(e) = result {
+            if let Err(e) = ops::delete_entry(path) {
                 self.dialog = Some(Dialog::message(
                     "Error",
                     format!("Cannot delete '{}': {e}", path.display()),
@@ -373,7 +397,7 @@ impl App {
 
         let dest_dir = PathBuf::from(&self.panes.get_inactive_pane().path);
         for src in &sources {
-            if let Err(msg) = check_transfer_paths(src, &dest_dir) {
+            if let Err(msg) = ops::check_transfer_paths(src, &dest_dir) {
                 self.dialog = Some(Dialog::message("Error", msg));
                 return;
             }
@@ -381,7 +405,7 @@ impl App {
 
         let conflicts = sources
             .iter()
-            .filter(|s| dest_dir.join(file_name_of(s)).exists())
+            .filter(|s| dest_dir.join(ops::file_name_of(s)).exists())
             .count();
 
         if conflicts > 0 {
@@ -395,15 +419,16 @@ impl App {
         }
     }
 
+    /// Transfers larger than this run in the background with a progress gauge.
+    const ASYNC_THRESHOLD_BYTES: u64 = 10 * 1024 * 1024;
+
     fn copy_entries(&mut self, sources: Vec<PathBuf>, dest_dir: PathBuf) {
+        if ops::total_size(&sources) > Self::ASYNC_THRESHOLD_BYTES {
+            self.start_transfer(sources, dest_dir, false);
+            return;
+        }
         for src in &sources {
-            let dst = dest_dir.join(file_name_of(src));
-            let result = if src.is_dir() {
-                copy_dir_recursive(src, &dst)
-            } else {
-                std::fs::copy(src, &dst).map(|_| ())
-            };
-            if let Err(e) = result {
+            if let Err(e) = ops::copy_entry(src, &dest_dir) {
                 self.dialog = Some(Dialog::message(
                     "Error",
                     format!("Cannot copy '{}': {e}", src.display()),
@@ -422,7 +447,7 @@ impl App {
 
         let dest_dir = PathBuf::from(&self.panes.get_inactive_pane().path);
         for src in &sources {
-            if let Err(msg) = check_transfer_paths(src, &dest_dir) {
+            if let Err(msg) = ops::check_transfer_paths(src, &dest_dir) {
                 self.dialog = Some(Dialog::message("Error", msg));
                 return;
             }
@@ -430,7 +455,7 @@ impl App {
 
         let conflicts = sources
             .iter()
-            .filter(|s| dest_dir.join(file_name_of(s)).exists())
+            .filter(|s| dest_dir.join(ops::file_name_of(s)).exists())
             .count();
 
         if conflicts > 0 {
@@ -445,39 +470,325 @@ impl App {
     }
 
     fn move_entries(&mut self, sources: Vec<PathBuf>, dest_dir: PathBuf) {
+        if ops::total_size(&sources) > Self::ASYNC_THRESHOLD_BYTES {
+            self.start_transfer(sources, dest_dir, true);
+            return;
+        }
         for src in &sources {
-            let dst = dest_dir.join(file_name_of(src));
-
-            if std::fs::rename(src, &dst).is_err() {
-                // Cross-device move (EXDEV) or similar: fall back to copy + delete.
-                let copied = if src.is_dir() {
-                    copy_dir_recursive(src, &dst)
-                } else {
-                    std::fs::copy(src, &dst).map(|_| ())
-                };
-                if let Err(e) = copied {
-                    self.dialog = Some(Dialog::message(
-                        "Error",
-                        format!("Cannot move '{}': {e}", src.display()),
-                    ));
-                    return;
-                }
-
-                let removed = if src.is_dir() {
-                    std::fs::remove_dir_all(src)
-                } else {
-                    std::fs::remove_file(src)
-                };
-                if let Err(e) = removed {
-                    self.dialog = Some(Dialog::message(
-                        "Error",
-                        format!("Copied but cannot remove source '{}': {e}", src.display()),
-                    ));
-                    return;
-                }
+            if let Err(e) = ops::move_entry(src, &dest_dir) {
+                self.dialog = Some(Dialog::message(
+                    "Error",
+                    format!("Cannot move '{}': {e}", src.display()),
+                ));
+                return;
             }
         }
         self.panes.reload(&self.config, false);
+    }
+
+    /// Starts a background copy (cut=false) or move (cut=true) with a progress
+    /// gauge. The transfer is cancellable with Esc.
+    fn start_transfer(&mut self, sources: Vec<PathBuf>, dest_dir: PathBuf, is_cut: bool) {
+        let total = ops::total_size(&sources);
+        let (rx, cancel) = ops::spawn_transfer(sources, dest_dir, is_cut);
+        self.progress = Some(super::Progress {
+            title: if is_cut {
+                "Moving…".to_string()
+            } else {
+                "Copying…".to_string()
+            },
+            total_bytes: total,
+            done_bytes: 0,
+            rx,
+            cancel,
+            is_cut,
+        });
+    }
+
+    /// Yanks the operation targets (selection or highlighted entry) into the
+    /// internal clipboard as a copy.
+    fn yank(&mut self) {
+        let targets = self.op_targets();
+        if targets.is_empty() {
+            return;
+        }
+        self.clipboard = targets;
+        self.clipboard_cut = false;
+    }
+
+    /// Pastes the clipboard into the active pane's directory. `cut` moves
+    /// instead of copying and clears the clipboard afterwards.
+    fn paste(&mut self, cut: bool) {
+        if self.clipboard.is_empty() {
+            return;
+        }
+
+        let sources = self.clipboard.clone();
+        let dest_dir = PathBuf::from(&self.panes.get_active_pane().path);
+
+        for src in &sources {
+            if let Err(msg) = ops::check_transfer_paths(src, &dest_dir) {
+                self.dialog = Some(Dialog::message("Error", msg));
+                return;
+            }
+        }
+
+        let conflicts = sources
+            .iter()
+            .filter(|s| dest_dir.join(ops::file_name_of(s)).exists())
+            .count();
+
+        if conflicts > 0 {
+            let action = if cut {
+                DialogAction::PasteMove { sources, dest_dir }
+            } else {
+                DialogAction::Copy { sources, dest_dir }
+            };
+            self.dialog = Some(Dialog::confirm(
+                "Overwrite?",
+                format!("{conflicts} item(s) exist here. Overwrite?"),
+                action,
+            ));
+            return;
+        }
+
+        if cut {
+            self.move_entries(sources, dest_dir);
+            self.clipboard.clear();
+            self.clipboard_cut = false;
+        } else {
+            self.copy_entries(sources, dest_dir);
+        }
+    }
+
+    fn handle_command_key(&mut self, key: &KeyEvent) {
+        let Some(input) = self.command.as_mut() else {
+            return;
+        };
+
+        match key.code {
+            KeyCode::Enter => {
+                if let Some(input) = self.command.take() {
+                    self.run_command(&input.value.clone());
+                }
+            }
+            KeyCode::Esc => {
+                self.command = None;
+            }
+            KeyCode::Tab => self.complete_command(),
+            KeyCode::Backspace => input.backspace(),
+            KeyCode::Left => input.left(),
+            KeyCode::Right => input.right(),
+            KeyCode::Char(c)
+                if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT =>
+            {
+                input.insert(c);
+            }
+            _ => {}
+        }
+    }
+
+    fn run_command(&mut self, cmdline: &str) {
+        let trimmed = cmdline.trim();
+        if trimmed.is_empty() {
+            return;
+        }
+
+        if let Some(shell_cmd) = trimmed.strip_prefix('!') {
+            self.run_shell_capture(shell_cmd.trim());
+            return;
+        }
+
+        let mut parts = trimmed.splitn(2, char::is_whitespace);
+        let cmd = parts.next().unwrap_or_default();
+        let arg = parts.next().unwrap_or("").trim();
+
+        match cmd {
+            "q" | "quit" => self.exit = true,
+            "w" | "write" => match Config::save_config(&self.config, None) {
+                Ok(()) => {
+                    self.dialog = Some(Dialog::message("Write", "Configuration saved."));
+                }
+                Err(e) => {
+                    self.dialog =
+                        Some(Dialog::message("Error", format!("Cannot save config: {e}")));
+                }
+            },
+            "e" | "cd" => self.navigate_to(arg),
+            "mkdir" => {
+                let parent = PathBuf::from(&self.panes.get_active_pane().path);
+                self.mkdir(parent, arg.to_string());
+            }
+            "touch" => {
+                let parent = PathBuf::from(&self.panes.get_active_pane().path);
+                self.touch(parent, arg.to_string());
+            }
+            "delete" => self.start_delete(),
+            "rename" => {
+                if let Some(entry) = self.panes.get_active_pane().get_selected_entry()
+                    && matches!(
+                        entry.kind,
+                        EntryKind::File | EntryKind::Directory | EntryKind::Symlink
+                    )
+                {
+                    self.rename(entry.path, arg.to_string());
+                }
+            }
+            "theme" => self.switch_theme(arg),
+            "help" => self.ui_config.active_keybind_popup = true,
+            "shell" => self.pending_shell = true,
+            _ => {
+                self.dialog = Some(Dialog::message(
+                    "Unknown command",
+                    format!("Unknown command: {cmd}  (try :help)"),
+                ));
+            }
+        }
+    }
+
+    fn complete_command(&mut self) {
+        const COMMANDS: &[&str] = &[
+            "q", "quit", "w", "write", "e", "cd", "mkdir", "touch", "delete", "rename", "theme",
+            "help", "shell",
+        ];
+
+        let Some(input) = self.command.as_mut() else {
+            return;
+        };
+        let text = input.value.clone();
+
+        // Argument completion: only theme names for now.
+        if let Some((first, rest)) = text.split_once(char::is_whitespace) {
+            if first == "theme" {
+                let rest = rest.trim_start();
+                let matches: Vec<String> = Theme::get_theme_list()
+                    .into_iter()
+                    .filter(|t| t.starts_with(rest))
+                    .collect();
+                if let Some(completion) = common_prefix(&matches)
+                    && completion.len() > rest.len()
+                {
+                    input.value = format!("{first} {completion}");
+                    input.cursor = input.value.chars().count();
+                }
+            }
+            return;
+        }
+
+        let matches: Vec<String> = COMMANDS
+            .iter()
+            .filter(|c| c.starts_with(text.as_str()))
+            .map(|s| s.to_string())
+            .collect();
+        if let Some(completion) = common_prefix(&matches)
+            && completion.len() > text.len()
+        {
+            input.value = completion;
+        }
+        if matches.len() == 1 {
+            input.value = format!("{} ", matches[0]);
+        }
+        input.cursor = input.value.chars().count();
+    }
+
+    fn navigate_to(&mut self, arg: &str) {
+        if arg.is_empty() {
+            return;
+        }
+
+        match PathBuf::from(arg).canonicalize() {
+            Ok(p) if p.is_dir() => {
+                self.panes.get_active_pane_mut().path = p.to_string_lossy().to_string();
+                self.panes.reload(&self.config, true);
+                self.header
+                    .update(self.panes.get_active_pane().path.to_string());
+            }
+            _ => {
+                self.dialog = Some(Dialog::message("Error", format!("Not a directory: {arg}")));
+            }
+        }
+    }
+
+    fn switch_theme(&mut self, name: &str) {
+        let known = Theme::get_theme_list();
+
+        if name.is_empty() {
+            self.dialog = Some(Dialog::message(
+                "Themes",
+                format!("Available themes:\n{}", known.join("\n")),
+            ));
+            return;
+        }
+
+        // Guard: load_from_file exits the process on unreadable files.
+        let is_path = name.ends_with(".yaml");
+        if !is_path && !known.iter().any(|t| t == name) {
+            self.dialog = Some(Dialog::message(
+                "Error",
+                format!("Unknown theme '{name}'. Available: {}", known.join(", ")),
+            ));
+            return;
+        }
+        if is_path && !Path::new(name).exists() {
+            self.dialog = Some(Dialog::message(
+                "Error",
+                format!("Theme file not found: {name}"),
+            ));
+            return;
+        }
+
+        match Theme::load_theme(Some(name)) {
+            Ok(theme) => {
+                self.theme = theme;
+                self.config.theme = name.to_string();
+            }
+            Err(e) => {
+                self.dialog = Some(Dialog::message(
+                    "Error",
+                    format!("Cannot load theme '{name}': {e}"),
+                ));
+            }
+        }
+    }
+
+    fn run_shell_capture(&mut self, cmd: &str) {
+        if cmd.is_empty() {
+            return;
+        }
+
+        match std::process::Command::new("sh").args(["-c", cmd]).output() {
+            Ok(out) => {
+                let mut text = String::from_utf8_lossy(&out.stdout).to_string();
+                if !out.stderr.is_empty() {
+                    if !text.is_empty() {
+                        text.push('\n');
+                    }
+                    text.push_str(&format!(
+                        "[stderr]\n{}",
+                        String::from_utf8_lossy(&out.stderr)
+                    ));
+                }
+                if text.trim().is_empty() {
+                    text = "(no output)".to_string();
+                }
+
+                let lines: Vec<&str> = text.lines().collect();
+                let text = if lines.len() > 30 {
+                    format!(
+                        "{}\n… ({} more lines)",
+                        lines[..30].join("\n"),
+                        lines.len() - 30
+                    )
+                } else {
+                    text
+                };
+
+                self.dialog = Some(Dialog::message(format!(":!{cmd}"), text));
+            }
+            Err(e) => {
+                self.dialog = Some(Dialog::message("Error", format!("Cannot run shell: {e}")));
+            }
+        }
     }
     // Keys checked in order: popup-specific → Ctrl-modified → Shift-modified → unmodified.
     // Popup handler takes priority when any popup is active.
@@ -503,6 +814,30 @@ impl App {
                 KeyCode::Up | KeyCode::Char('k') => {
                     if let Some(ref mut preview) = self.preview {
                         preview.row_prev();
+                    }
+                    return true;
+                }
+                KeyCode::Char('f') => {
+                    if let Some(ref mut preview) = self.preview {
+                        preview.page_down();
+                    }
+                    return true;
+                }
+                KeyCode::Char('b') => {
+                    if let Some(ref mut preview) = self.preview {
+                        preview.page_up();
+                    }
+                    return true;
+                }
+                KeyCode::Char('d') => {
+                    if let Some(ref mut preview) = self.preview {
+                        preview.half_page_down();
+                    }
+                    return true;
+                }
+                KeyCode::Char('u') => {
+                    if let Some(ref mut preview) = self.preview {
+                        preview.half_page_up();
                     }
                     return true;
                 }
@@ -656,7 +991,9 @@ impl App {
                 self.ui_config.active_keybind_popup = !self.ui_config.active_keybind_popup;
             }
             KeyCode::Esc => {
-                if self.ui_config.active_keybind_popup {
+                if let Some(p) = &self.progress {
+                    p.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                } else if self.ui_config.active_keybind_popup {
                     self.ui_config.active_keybind_popup = false;
                 } else if self.ui_config.active_about_popup {
                     self.ui_config.active_about_popup = false;
@@ -694,6 +1031,31 @@ impl App {
                 self.panes.get_active_pane_mut().clear_filter();
                 self.search = Some(Search::fuzzy());
             }
+            KeyCode::Char(':') => {
+                self.command = Some(TextInput::default());
+            }
+            KeyCode::Char('a') => {
+                let parent = PathBuf::from(&self.panes.get_active_pane().path);
+                self.dialog = Some(Dialog::input(
+                    "Create",
+                    "File name  (end with / for a directory):",
+                    "",
+                    DialogAction::Create { parent },
+                ));
+            }
+            KeyCode::Char('y') => {
+                self.yank();
+            }
+            KeyCode::Char('p') => self.paste(false),
+            KeyCode::Char('P') => self.paste(true),
+            KeyCode::Char('d') => {
+                if self.pending_d {
+                    self.pending_d = false;
+                    self.start_delete();
+                } else {
+                    self.pending_d = true;
+                }
+            }
             KeyCode::F(5) => self.start_copy(),
             KeyCode::F(6) => self.start_move(),
             KeyCode::Delete | KeyCode::F(8) => self.start_delete(),
@@ -702,95 +1064,42 @@ impl App {
     }
 }
 
-fn file_name_of(path: &Path) -> String {
-    path.file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default()
-}
-
-/// Rejects transfer when the destination is the source itself (would truncate
-/// the file on copy) or lies inside the source directory (infinite recursion).
-fn check_transfer_paths(src: &Path, dest_dir: &Path) -> Result<(), String> {
-    let (Ok(src_c), Ok(dest_c)) = (src.canonicalize(), dest_dir.canonicalize()) else {
-        return Ok(()); // cannot verify — let the fs operation surface any error
-    };
-
-    if src_c.parent() == Some(dest_c.as_path()) {
-        return Err("Source and destination are the same.".to_string());
-    }
-
-    if src.is_dir() && dest_c.starts_with(&src_c) {
-        return Err("Cannot copy a directory into itself.".to_string());
-    }
-
-    Ok(())
-}
-
-fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
-    std::fs::create_dir_all(dst)?;
-    for entry in std::fs::read_dir(src)? {
-        let entry = entry?;
-        let target = dst.join(entry.file_name());
-        if entry.path().is_dir() {
-            copy_dir_recursive(&entry.path(), &target)?;
-        } else {
-            std::fs::copy(entry.path(), &target)?;
+/// Longest common prefix of the given strings, or `None` when empty.
+fn common_prefix(strings: &[String]) -> Option<String> {
+    let first = strings.first()?;
+    let mut prefix = first.clone();
+    for s in &strings[1..] {
+        while !s.starts_with(&prefix) {
+            prefix.pop();
         }
     }
-    Ok(())
+    Some(prefix)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
 
     #[test]
-    fn copy_dir_recursive_copies_nested_tree() {
-        let src_dir = tempfile::tempdir().unwrap();
-        let dst_root = tempfile::tempdir().unwrap();
-
-        std::fs::create_dir(src_dir.path().join("sub")).unwrap();
-        let mut f = std::fs::File::create(src_dir.path().join("top.txt")).unwrap();
-        write!(f, "top").unwrap();
-        let mut f = std::fs::File::create(src_dir.path().join("sub").join("nested.txt")).unwrap();
-        write!(f, "nested").unwrap();
-
-        let dst = dst_root.path().join("copy");
-        copy_dir_recursive(src_dir.path(), &dst).unwrap();
-
-        assert_eq!(std::fs::read_to_string(dst.join("top.txt")).unwrap(), "top");
-        assert_eq!(
-            std::fs::read_to_string(dst.join("sub").join("nested.txt")).unwrap(),
-            "nested"
-        );
+    fn common_prefix_of_similar_strings() {
+        let strings = vec!["quit".to_string(), "quark".to_string()];
+        assert_eq!(common_prefix(&strings), Some("qu".to_string()));
     }
 
     #[test]
-    fn check_transfer_rejects_same_source_and_dest() {
-        let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("a.txt");
-        std::fs::File::create(&file).unwrap();
-
-        assert!(check_transfer_paths(&file, dir.path()).is_err());
+    fn common_prefix_single_string_is_itself() {
+        let strings = vec!["theme".to_string()];
+        assert_eq!(common_prefix(&strings), Some("theme".to_string()));
     }
 
     #[test]
-    fn check_transfer_rejects_dest_inside_source() {
-        let dir = tempfile::tempdir().unwrap();
-        let sub = dir.path().join("sub");
-        std::fs::create_dir(&sub).unwrap();
-
-        assert!(check_transfer_paths(dir.path(), &sub).is_err());
+    fn common_prefix_none_for_empty() {
+        assert_eq!(common_prefix(&[]), None);
     }
 
     #[test]
-    fn check_transfer_allows_normal_transfer() {
-        let src_root = tempfile::tempdir().unwrap();
-        let dst_root = tempfile::tempdir().unwrap();
-        let file = src_root.path().join("a.txt");
-        std::fs::File::create(&file).unwrap();
-
-        assert!(check_transfer_paths(&file, dst_root.path()).is_ok());
+    fn common_prefix_empty_when_no_overlap() {
+        let strings = vec!["abc".to_string(), "xyz".to_string()];
+        assert_eq!(common_prefix(&strings), Some(String::new()));
     }
 }
