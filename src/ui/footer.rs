@@ -11,6 +11,7 @@ use crate::ui::{component::Component, panes::PaneStats, theme::Theme, uiconfig::
 pub struct Footer {
     pub keymaps: Vec<String>,
     stats: Option<PaneStats>,
+    clipboard: Option<(usize, bool)>,
 }
 
 impl Default for Footer {
@@ -33,6 +34,7 @@ impl Default for Footer {
                 "F10 Quit".to_string(),
             ],
             stats: None,
+            clipboard: None,
         }
     }
 }
@@ -42,11 +44,17 @@ impl Footer {
         Self {
             keymaps,
             stats: None,
+            clipboard: None,
         }
     }
 
     pub fn set_stats(&mut self, stats: PaneStats) {
         self.stats = Some(stats);
+    }
+
+    /// Clipboard state: (entry count, cut?) — shown until the clipboard is empty.
+    pub fn set_clipboard(&mut self, clipboard: Option<(usize, bool)>) {
+        self.clipboard = clipboard;
     }
 
     /// Bindings relevant to the current context: bulk actions when files are
@@ -71,7 +79,15 @@ impl Component for Footer {
         let inner_area = bg_block.inner(area);
         frame.render_widget(bg_block, area);
 
-        let keymaps = self.visible_keymaps();
+        let mut keymaps = Vec::new();
+        if let Some((count, cut)) = self.clipboard {
+            keymaps.push(if cut {
+                format!("[{count} cut]")
+            } else {
+                format!("[{count} yanked]")
+            });
+        }
+        keymaps.extend(self.visible_keymaps());
 
         let constraints: Vec<Constraint> =
             std::iter::repeat_n(Constraint::Max(15), keymaps.len()).collect();
