@@ -10,6 +10,7 @@ use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Style, Stylize},
+    text::{Line, Span},
     widgets::{Block, Borders, Cell, Row, Table, TableState},
 };
 use serde::{Deserialize, Serialize};
@@ -25,7 +26,7 @@ use crate::{
     },
 };
 
-fn format_size(size: u64) -> String {
+pub(crate) fn format_size(size: u64) -> String {
     const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB"];
     let mut size = size as f64;
     let mut unit_idx = 0;
@@ -40,7 +41,7 @@ fn format_size(size: u64) -> String {
     }
 }
 
-fn format_date(t: SystemTime) -> String {
+pub(crate) fn format_date(t: SystemTime) -> String {
     let dt: chrono::DateTime<chrono::Utc> = t.into();
     dt.format("%Y-%m-%d %H:%M").to_string()
 }
@@ -99,18 +100,30 @@ pub struct Entry {
     pub raw_size: u64,
     pub raw_modified: SystemTime,
     pub git_status: Option<GitEntryStatus>,
+    pub is_symlink: bool,
+    pub link_target: Option<PathBuf>,
 }
 
 impl Entry {
     pub fn new(path: PathBuf) -> Self {
-        let kind = if path.is_file() {
-            EntryKind::File
-        } else if path.is_dir() {
-            EntryKind::Directory
-        } else if path.is_symlink() {
-            EntryKind::Symlink
-        } else {
-            EntryKind::Unknown
+        // symlink_metadata does not follow links: one call classifies most
+        // entries. Symlinks keep their *resolved* kind (File/Directory) so
+        // navigation and editing follow the link; only broken or
+        // non-file/non-dir targets stay EntryKind::Symlink.
+        let (is_symlink, link_target, kind) = match std::fs::symlink_metadata(&path) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                let resolved = if path.is_file() {
+                    EntryKind::File
+                } else if path.is_dir() {
+                    EntryKind::Directory
+                } else {
+                    EntryKind::Symlink
+                };
+                (true, std::fs::read_link(&path).ok(), resolved)
+            }
+            Ok(meta) if meta.is_dir() => (false, None, EntryKind::Directory),
+            Ok(meta) if meta.is_file() => (false, None, EntryKind::File),
+            _ => (false, None, EntryKind::Unknown),
         };
 
         let name = path
@@ -144,6 +157,8 @@ impl Entry {
             raw_size,
             raw_modified,
             git_status: None,
+            is_symlink,
+            link_target,
         }
     }
 
@@ -163,6 +178,8 @@ impl Entry {
             selected: false,
             size: String::from("-"),
             git_status: None,
+            is_symlink: false,
+            link_target: None,
         }
     }
 
@@ -325,11 +342,25 @@ impl Pane {
                     _ => e.size.clone(),
                 };
 
-                let name_cell = match e.git_status {
-                    Some(status) => {
-                        Cell::from(e.name.clone()).style(Style::new().fg(status.color(theme)))
+                let name_cell = {
+                    // Broken/special symlinks (kind stays Symlink) stand out
+                    // in the error color; git colors apply otherwise.
+                    let name_style = if e.kind == EntryKind::Symlink {
+                        Some(Style::new().fg(theme.colors.error()))
+                    } else {
+                        e.git_status.map(|s| Style::new().fg(s.color(theme)))
+                    };
+                    let mut spans = vec![match name_style {
+                        Some(style) => Span::styled(e.name.clone(), style),
+                        None => Span::from(e.name.clone()),
+                    }];
+                    if let Some(target) = &e.link_target {
+                        spans.push(Span::styled(
+                            format!(" -> {}", target.display()),
+                            Style::new().fg(theme.colors.muted()),
+                        ));
                     }
-                    None => Cell::from(e.name.clone()),
+                    Cell::from(Line::from(spans))
                 };
 
                 Row::new(vec![
@@ -374,6 +405,41 @@ impl Pane {
 
     pub fn has_selections(&self) -> bool {
         self.all_paths.iter().any(|e| e.selected)
+    }
+
+    /// Marks every selectable entry matching the wildcard pattern; returns
+    /// how many entries were (newly) selected.
+    pub fn select_matching(&mut self, pattern: &str) -> usize {
+        let mut count = 0;
+        let paths: Vec<PathBuf> = self
+            .all_paths
+            .iter_mut()
+            .filter(|e| {
+                matches!(
+                    e.kind,
+                    EntryKind::File | EntryKind::Directory | EntryKind::Symlink
+                ) && wildcard_match(pattern, &e.name)
+            })
+            .map(|e| {
+                if !e.selected {
+                    count += 1;
+                }
+                e.selected = true;
+                e.path.clone()
+            })
+            .collect();
+
+        for entry in &mut self.paths {
+            if paths.contains(&entry.path) {
+                entry.selected = true;
+            }
+        }
+        count
+    }
+
+    /// Marks all selectable entries; returns the number selected.
+    pub fn select_all(&mut self) -> usize {
+        self.select_matching("*")
     }
 
     pub fn clear_selections(&mut self) {
@@ -845,6 +911,62 @@ mod tests {
             assert_eq!(entry.modified, "-");
             assert_eq!(entry.raw_size, 0);
             assert_eq!(entry.raw_modified, SystemTime::UNIX_EPOCH);
+        }
+
+        #[cfg(unix)]
+        #[test]
+        fn symlink_to_file_resolves_kind_and_records_target() {
+            let dir = tempfile::tempdir().unwrap();
+            let file = dir.path().join("real.txt");
+            std::fs::File::create(&file).unwrap();
+            let link = dir.path().join("link.txt");
+            std::os::unix::fs::symlink(&file, &link).unwrap();
+
+            let entry = Entry::new(link.clone());
+
+            assert_eq!(entry.kind, EntryKind::File);
+            assert!(entry.is_symlink);
+            assert_eq!(entry.link_target, Some(file));
+        }
+
+        #[cfg(unix)]
+        #[test]
+        fn symlink_to_dir_resolves_to_directory() {
+            let dir = tempfile::tempdir().unwrap();
+            let sub = dir.path().join("sub");
+            std::fs::create_dir(&sub).unwrap();
+            let link = dir.path().join("linkdir");
+            std::os::unix::fs::symlink(&sub, &link).unwrap();
+
+            let entry = Entry::new(link);
+
+            assert_eq!(entry.kind, EntryKind::Directory);
+            assert!(entry.is_symlink);
+        }
+
+        #[cfg(unix)]
+        #[test]
+        fn broken_symlink_stays_symlink_kind() {
+            let dir = tempfile::tempdir().unwrap();
+            let link = dir.path().join("broken");
+            std::os::unix::fs::symlink(dir.path().join("missing"), &link).unwrap();
+
+            let entry = Entry::new(link);
+
+            assert_eq!(entry.kind, EntryKind::Symlink);
+            assert!(entry.is_symlink);
+            assert!(entry.link_target.is_some());
+        }
+
+        #[cfg(unix)]
+        #[test]
+        fn regular_file_is_not_marked_as_symlink() {
+            let tmp = tempfile::NamedTempFile::new().unwrap();
+
+            let entry = Entry::new(tmp.path().to_path_buf());
+
+            assert!(!entry.is_symlink);
+            assert_eq!(entry.link_target, None);
         }
     }
 
