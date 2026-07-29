@@ -1,7 +1,7 @@
 # rodeo — Development TODO
 
 > **Last updated:** 2026-07-26
-> **Current state:** Dual-pane navigation + preview + theming + git header + git-colored entries. Synchronous file ops (copy/move/delete/rename/mkdir/touch) with dialog confirmations and selection-aware batch mode. Fuzzy search + regex filter. 63 unit tests. Clippy-clean, fmt-normalized, CI workflow added.
+> **Current state:** Dual-pane navigation + preview + theming + git header + git-colored entries. **Phase 1 complete (M2).** Rich preview: syntax highlighting, images, archives (zip/tar/tgz), PDF, directory size, binary info+hexdump, symlink status — all cached per selection, with page/half-page scrolling (Ctrl+f/b/d/u). Symlinks render as `name -> target` (target muted; broken links in error color). `a` creates file-or-dir (trailing `/`). `:help` lists all commands. Fuzzy search + regex filter. 82 unit tests. Clippy-clean, fmt-normalized, CI workflow added.
 
 | Phase | README Milestone | Focus |
 |-------|-----------------|-------|
@@ -200,44 +200,56 @@ These are small, self-contained fixes with high impact-to-effort ratio. Do them 
 
 ### 1.3 Vim-Style Modal Keybindings (Phase 1b)
 
-- [ ] **1.3.1 Add mode state machine: Normal, Command, Visual**
+- [x] **1.3.1 Add mode state machine: Normal, Command, Visual**
+  - Resolved: implemented with a `Mode` enum + footer indicator, then **simplified away** (2026-07-26): after visual mode was removed (see 1.3.2), `Command` state was already tracked by `App.command`, so the enum was redundant and was deleted. No mode tracking remains — none is needed.
   - **P1** | **Files:** `src/ui/uiconfig.rs` or new `src/ui/mode.rs` | **Hints:** `enum Mode { Normal, Command, Visual, Insert }`. `Normal` is default (navigation). `Command` is `:` palette. `Visual` is selection mode (entered via `v`). Track in `UiConfig` or `App`. Render mode indicator in footer: `-- NORMAL --`, `-- VISUAL --`, `-- COMMAND --`. | **Effort:** M
 
-- [ ] **1.3.2 Implement `v` → enter visual (selection) mode**
+- [x] **1.3.2 ~~Implement `v` → enter visual (selection) mode~~ — REMOVED**
+  - Removed per user decision (2026-07-26): unnecessary — `x` selection + batch ops cover the use case with less state. `v` is unbound again; `Pane::mark_current` deleted.
   - **P1** | **Files:** `src/ui/input.rs` | **Hints:** In visual mode, `j`/`k` move cursor AND toggle selection of traversed files. `V` for line-wise (toggle all visible). `Esc` to exit visual mode. Operations (`d`, `y`, `r`) in visual mode operate on all selected files. | **Effort:** M
 
-- [ ] **1.3.3 Implement yank (`y`) and put (`p`) clipboard**
+- [x] **1.3.3 Implement yank (`y`) and put (`p`) clipboard**
+  - Resolved: `y` yanks selected-or-current into `App.clipboard: Vec<PathBuf>`; `p` pastes a copy into the *active* pane dir; `P` pastes as move and clears the clipboard. Overwrite → confirm dialog (`PasteMove` action). Footer shows `[N yanked]` / `[N cut]`. Cut state is armed via `P` at paste time, so no separate cut command needed.
   - **P1** | **Files:** `src/ui/input.rs`, `src/ui/panes.rs` | **Hints:** Internal clipboard: `Vec<PathBuf>` in `App` or `UiConfig`. `y` yanks selected (or current) file path to clipboard. `p` pastes (copies) from clipboard to current pane directory. `P` for move (cut+paste). Show clipboard count in footer: `"[2 files yanked]"`. | **Effort:** M
 
-- [ ] **1.3.4 Implement `dd` (delete current file or all selected)**
+- [x] **1.3.4 Implement `dd` (delete current file or all selected)**
+  - Resolved: pending-key state (`pending_d`); any other key cancels the chord. `dd` → trash-confirm on selected-or-current. (Visual-mode `d` variant removed with 1.3.2.)
   - **P1** | **Files:** `src/ui/input.rs` | **Hints:** In Normal mode, `dd` = delete current file (with confirmation). In Visual mode, `d` = delete all selected files (with confirmation). | **Effort:** M
 
-- [ ] **1.3.5 Implement `r` (rename current file)**
+- [x] **1.3.5 Implement `r` (rename current file)**
+  - Resolved: `r` already opened the rename dialog (1.2.4). Bulk rename of selections is Phase 4 task 4.1.
   - **P1** | **Files:** `src/ui/input.rs`, `src/ui/dialog.rs` | **Hints:** In Normal mode, `r` opens rename dialog for the currently highlighted file. In Visual mode, prompt whether to rename individually or enter bulk rename mode. | **Effort:** M
 
 ### 1.4 Command Palette
 
-- [ ] **1.4.1 Create command palette popup (`:` key)**
+- [x] **1.4.1 Create command palette popup (`:` key)**
+  - Resolved: `:` opens a command bar above the footer (reuses the input-bar layout + `TextInput` with cursor movement). Commands: `:q`/`:quit`, `:w`/`:write`, `:e`/`:cd <path>`, `:mkdir`, `:touch`, `:delete`, `:rename <new>`, `:theme [name]`, `:help`, `:shell`, `:!cmd`. Tab completes command names (common prefix) and theme names.
   - **P1** | **Files:** `src/ui/popup_cmd.rs` (new), `src/ui/mod.rs` | **Hints:** Press `:` to open a command input bar at bottom of screen (or centered popup). Model after Vim's command line. Commands: `:q` quit, `:w` save config, `:e <path>` navigate, `:mkdir <name>`, `:touch <name>`, `:delete`, `:rename <new>`, `:cd <path>`, `:theme <name>`, `:help`. Auto-complete commands with tab. | **Effort:** M
 
-- [ ] **1.4.2 Implement command parser and dispatcher**
+- [x] **1.4.2 Implement command parser and dispatcher**
+  - Resolved: `run_command` splits command/rest (multi-word args preserved for rename/mkdir), dispatches by name, shows "Unknown command" message dialog for unrecognized input. `:!` is intercepted before tokenizing so shell args keep their spacing.
   - **P1** | **Files:** `src/ui/popup_cmd.rs` | **Hints:** Parse `:command [args...]`. Use a match on the command name. Show "Unknown command: foo" for unrecognized input. Reference: `xplr` and `lf` command syntax. | **Effort:** M
 
-- [ ] **1.4.3 Add `:!<shell command>` runner**
+- [x] **1.4.3 Add `:!<shell command>` runner**
+  - Resolved: `:!cmd` runs `sh -c`, captures stdout+stderr, shows up to 30 lines in a Message dialog (truncation marker beyond that). `:shell` spawns an interactive `$SHELL` subshell (terminal suspend/resume like the editor flow) and reloads panes on exit.
   - **P2** | **Files:** `src/ui/popup_cmd.rs` | **Hints:** `:!ls -la` runs a shell command and shows output in a scrollable popup or preview pane. Use `std::process::Command::new("sh").args(["-c", cmd])`. Suspend UI during execution, capture stdout/stderr, display result. Add `:shell` to spawn an interactive subshell. | **Effort:** M
 
-### 1.5 Async Operations + Progress (Tokio-dependent)
+### 1.5 Async Operations + Progress (thread + channel, no tokio — see Open Decision 2)
 
-- [ ] **1.5.1 Add `tokio` to dependencies**
+- [x] **1.5.1 ~~Add `tokio` to dependencies~~ — not needed**
+  - Resolved differently: async transfers run on a worker thread with an `mpsc` progress channel; the main loop uses `crossterm::event::poll(50ms)` while a transfer is active. No tokio. See Open Decision 2.
   - **P1** | **Files:** `Cargo.toml` | **Hints:** `tokio = { version = "1", features = ["full"] }` or minimal: `["rt-multi-thread", "fs", "sync", "macros"]`. Only needed for progress bars + cancel support. | **Effort:** S
 
-- [ ] **1.5.2 Implement async file copy with progress bar**
+- [x] **1.5.2 Implement async file copy with progress bar**
+  - Resolved: transfers >10MB run in the background (`ops::spawn_transfer`): chunked 256KB copy reports bytes via channel, a `Gauge` dialog shows percent + "Esc to cancel". Esc sets the cancel flag; the worker removes the partial file and aborts. UI stays fully responsive during transfer.
   - **P1** | **Files:** `src/fs/ops.rs` (new), `src/ui/dialog.rs` | **Hints:** When copying large files (>10MB) or multiple files, spawn a dialog with a progress bar. Use `tokio::fs::copy` or stream chunks manually for progress tracking. Cancel via `Esc`. Progress = bytes_copied / total_bytes. Update bar at ~30fps via `tokio::select!` with `tokio::time::interval`. Realistic scope: integrating tokio into a previously synchronous codebase, streaming chunked copy, progress UI at 30fps, cancel support, and tokio-ratatui event loop integration is ~2-4 weeks for a first-time tokio integration. | **Effort:** XL
 
-- [ ] **1.5.3 Implement async file move with progress**
+- [x] **1.5.3 Implement async file move with progress**
+  - Resolved: same threshold path — `spawn_transfer(cut=true)` copies with progress, then deletes sources; clipboard clears on completion for cut-pastes. Small moves still use instant `rename`.
   - **P1** | **Files:** `src/fs/ops.rs` | **Hints:** Try `rename` first (instant). If `EXDEV` (cross-device), fall back to copy+delete with progress bar. | **Effort:** M
 
-- [ ] **1.5.4 Create `src/fs/mod.rs` and `src/fs/ops.rs` — extract file operation logic**
+- [x] **1.5.4 Create `src/fs/mod.rs` and `src/fs/ops.rs` — extract file operation logic**
+  - Resolved: `ops::copy_entry`, `move_entry` (rename + copy/delete fallback), `delete_entry`, `copy_dir_recursive`, `total_size`, `check_transfer_paths`, `file_name_of` + the async transfer workers. UI code calls these; tests live alongside.
   - **P1** | **Files:** `src/fs/mod.rs` (new), `src/fs/ops.rs` (new) | **Hints:** Move file operation implementations out of UI code. Functions: `copy_file(src, dst) -> Result`, `move_file(src, dst) -> Result`, `delete_file(path) -> Result`, `copy_dir(src, dst) -> Result` (recursive). Keep UI code thin. | **Effort:** M
 
 ---
@@ -262,13 +274,15 @@ These are small, self-contained fixes with high impact-to-effort ratio. Do them 
 - [ ] **2.4 Implement find-in-files (search file contents)**
   - **P1** | **Files:** `src/ui/input.rs`, `src/ui/search.rs` | **Hints:** Press `Ctrl+G` or similar to open "grep" mode. Enter search term. Walk directory tree with `ignore` crate (respects .gitignore). Search each file with `ripgrep`-style line matching. Show results in a new pane or popup: `filename:line: match`. Allow `Enter` on a result to open the file at that line. Add `ignore = "0.4"` to `Cargo.toml`. | **Effort:** L
 
-- [ ] **2.5 Add search history persistence**
+- [ ] **2.5 Add search history persistence — ON HOLD**
+  - On hold per user (2026-07-26): possibly unnecessary — fuzzy search is instant, retyping is cheap. Revisit only if it comes up again.
   - **P2** | **Files:** `src/ui/search.rs`, `src/config.rs` | **Hints:** Store last 100 search queries in config or a separate history file. Use `Up`/`Down` in search bar to cycle through history. Save on quit, load on startup. | **Effort:** S
 
 - [ ] **2.6 Highlight search matches in file listing**
   - **P1** | **Files:** `src/ui/panes.rs`, `src/ui/search.rs` | **Hints:** When filter is active, render matching filename characters with a highlight color (e.g., yellow background or bold). Use ratatui `Span` with style for matched portion of filename. | **Effort:** M
 
-- [ ] **2.7 Add `--search` and `--regex` CLI flags for headless use**
+- [ ] **2.7 Add `--search` and `--regex` CLI flags for headless use — ON HOLD**
+  - On hold per user (2026-07-26): possibly unnecessary — matters mainly for scripting, which nobody has asked for.
   - **P2** | **Files:** `src/cli.rs`, `src/main.rs` | **Hints:** `-s/--search <PATTERN>` opens with search pre-filled. `-r/--regex <PATTERN>` opens with regex filter pre-applied. Mentioned in README M0 checklist. | **Effort:** S
 
 ---
@@ -289,41 +303,40 @@ These are small, self-contained fixes with high impact-to-effort ratio. Do them 
 - [x] **3.1.3 Add theme-aware syntax highlighting**
   - **P1** | **Files:** `src/ui/popup_preview.rs`, `src/ui/theme.rs` | **Hints:** Map syntect's theme colors to rodeo's current theme. Or bundle a rodeo-specific Sublime Text theme. Use background/fg colors that work with the active rodeo theme. | **Effort:** M
 
-- [ ] **3.1.4 Implement runtime theme switching**
+- [x] **3.1.4 Implement runtime theme switching**
+  - Resolved via command palette (1.4): `:theme <name>` switches at runtime (`self.theme = Theme::load_theme(...)`), `:theme` alone lists available themes, Tab completes theme names. Guards against the `load_from_file` process-exit on unknown names by validating against `get_theme_list()` first.
   - **P2** | **Files:** `src/ui/input.rs`, `src/ui/theme.rs`, `src/ui/mod.rs` | **Hints:** Add keybinding — NOTE: `Ctrl+T` is taken by touch (1.2.6), use `:theme <name>` via command palette or another key. At minimum, use `get_theme_list()` to discover available themes, cycle through them on keypress. Reload the `Theme` struct and trigger a full redraw. Since `App` owns `Theme`, replacement is straightforward: `self.theme = Theme::load(theme_name)?`. | **Effort:** S
 
 ### 3.2 Archive Preview
 
-- [ ] **3.2.1 Add `tar` and `zip` crates**
+- [x] **3.2.1 Add `tar` and `zip` crates**
+  - Resolved: `tar 0.4.46`, `zip 8.6` (no-default-features + deflate), `flate2 1.1.9`.
   - **P1** | **Files:** `Cargo.toml` | **Hints:** `tar = "0.4"`, `zip = "2"`. For `.tar.gz` use `flate2 = "1"`. | **Effort:** S
 
-- [ ] **3.2.2 Implement archive contents preview in preview pane**
+- [x] **3.2.2 Implement archive contents preview in preview pane**
+  - Resolved: `.zip`/`.tar`/`.tar.gz`/`.tgz` list name + size in the preview (detected by extension with `infer` fallback), capped at 1000 entries. Preview content is now computed once per selection and cached (was re-read every frame).
   - **P1** | **Files:** `src/ui/popup_preview.rs` | **Hints:** When file type is Archive (detected by `file` command or extension), list archive contents instead of raw bytes. For `.zip`: iterate entries, show name + size + compressed size. For `.tar`/`.tar.gz`: iterate entries, show name + size + mode. Format as a table similar to the file listing. Limit to first 1000 entries to avoid hanging. | **Effort:** M
 
 - [ ] **3.2.3 Implement archive browsing as virtual directories (enter to descend into archive)**
-  - **P1** | **Files:** `src/ui/panes.rs`, `src/fs/archive.rs` (new) | **Hints:** When entering a `.zip`/`.tar`/`.tar.gz` file, treat it as a directory. Show archive contents in the pane. Allow navigating up via `..` (back to real directory). Show archive path in pane title: `/path/to/archive.zip::`. Read full archive into memory for small archives; stream for large ones. | **Effort:** L
+  - **P1** | **Files:** `src/ui/panes.rs`, `src/fs/archive.rs` (new) | **Hints:** When entering a `.zip`/`.tar`/`.tar.gz` file, treat it as a directory. Show archive contents in the pane. Allow navigating up via `..` (back to real directory). Show archive path in pane title: `/path/to/archive.zip::`. Read full archive into memory for small archives; stream for large ones. Design note (2026-07-26): needs a `PaneSource` enum (Filesystem | Archive{path, prefix}) so `read_entries` can list archive internals; mutating ops must be rejected while in archive mode; preview/editor inside archives out of scope. | **Effort:** L
 
 ### 3.3 PDF/Document Preview
 
-- [ ] **3.3.1 Add PDF text extraction**
+- [x] **3.3.1 Add PDF text extraction**
+  - Resolved: `pdf-extract 0.12` — `.pdf` files (by extension) extract to scrollable text in the preview.
   - **P2** | **Files:** `Cargo.toml`, `src/ui/popup_preview.rs` | **Hints:** Use `pdf_extract = "0.7"` or `lopdf` for PDF text extraction. For `.docx`, use `docx-rs`. Extract text content and display in preview pane. Fall back to "Binary file — cannot preview" if extraction fails. | **Effort:** M
 
-- [ ] **3.3.2 Improve unknown file type handling**
+- [x] **3.3.2 Improve unknown file type handling**
+  - Resolved: binary files show size, modification time, unix permissions (octal), MIME type (via `infer`), and a hex dump of the first 256 bytes. Symlinks show target path + broken-link detection.
   - **P1** | **Files:** `src/ui/popup_preview.rs:98-101` | **Hints:** Show more useful info for unknown/binary files: file size, MIME type, hex dump (first 256 bytes), file permissions, owner, modification time. Use `file` command output when available. | **Effort:** S
 
-### 3.4 Bookmarks & History
+- [x] **3.3.3 Directory preview with total size**
+  - Resolved (user request): directories preview to total recursive size, file/dir counts, and a children listing (dirs first, capped at 1000). Sizing uses `ops::total_size_capped` (50k-entry cap, shows "≥ X (partial)"); the walk never follows symlinks, so symlink cycles cannot hang it. Parent (`..`) and unknown-kind entries show a message instead of a filesystem preview.
+  - **P2** | **Files:** `src/ui/popup_preview.rs` | **Effort:** S
 
-- [ ] **3.4.1 Implement bookmark storage (TOML file)**
-  - **P1** | **Files:** `src/bookmarks.rs` (new), `Cargo.toml` | **Hints:** Store bookmarks in `~/.config/rodeo/bookmarks.toml`. Structure: `[[bookmarks]]\npath = "/home/user/projects"\nname = "Projects"\npinned = false`. Add `toml = "0.8"` and `serde` for serialization. | **Effort:** M
+### 3.4 ~~Bookmarks & History~~ — REMOVED
 
-- [ ] **3.4.2 Add bookmark keybindings: `m` to mark, `` ` `` to jump**
-  - **P1** | **Files:** `src/ui/input.rs`, `src/ui/popup_bookmarks.rs` (new) | **Hints:** `m` bookmarks the current directory. `` ` `` opens a bookmark list popup. Navigate with `j`/`k`, `Enter` to jump, `d` to delete bookmark. Show bookmark name as label in popup. | **Effort:** M
-
-- [ ] **3.4.3 Implement directory history (back/forward navigation)**
-  - **P1** | **Files:** `src/ui/panes.rs`, `src/ui/input.rs` | **Hints:** Store visited directories in a `Vec<String>` per pane. Bindings: `Ctrl+o` = go back, `Ctrl+i` = go forward (or `H`/`L` in Vim style). Max history: 100 entries. Persist across sessions (optional). | **Effort:** M
-
-- [ ] **3.4.4 Add recent-files tracking**
-  - **P2** | **Files:** `src/bookmarks.rs` | **Hints:** Automatically track recently opened/edited files. Show in a "Recent" section of the bookmark popup. Max 50 entries. | **Effort:** S
+Removed per user decision (2026-07-26): not needed. Tasks 3.4.1–3.4.4 (bookmark storage, bookmark keybindings, directory history, recent files) will not be implemented.
 
 ### 3.5 File Watching
 
@@ -500,35 +513,34 @@ Phase 0 (Bug Fixes) ────────────────────
 | `color-eyre` | 0.6.5 | Yes | Error reporting in `main()` |
 | `crossterm` | 0.29.0 | Yes | Terminal input events |
 | `env_logger` | 0.11.10 | Yes | Logging (to be replaced by `tracing`) |
+| `flate2` | 1.1.9 | Yes | Gzip decompression for `.tar.gz` preview |
 | `image` | 0.25.10 | Yes | Image preview decoding |
 | `infer` | 0.16 | Yes | File type detection (replaced `file` command) |
 | `log` | 0.4.31 | Yes | Log macros (to be replaced by `tracing`) |
 | `nucleo` | 0.5.0 | Yes | Fuzzy file matching |
+| `pdf-extract` | 0.12.0 | Yes | PDF text extraction for preview |
 | `ratatui` | 0.30.0 | Yes | Core TUI framework |
 | `ratatui-image` | 11.0.4 | Yes | Terminal image rendering |
 | `regex` | 1.13.1 | Yes | Regex filter (find-in-files reuse planned) |
 | `serde` | 1.0.228 | Yes | Config/theme deserialization |
 | `syntect` | 5.3.0 | Yes | Syntax highlighting (replaced `bat`) |
+| `tar` | 0.4.46 | Yes | Tar archive listing for preview |
 | `trash` | 5.2.6 | Yes | Delete to system trash (with permanent fallback) |
 | `xdg` | 3.0.0 | Yes | XDG base directories for config path |
 | `yaml_serde` | 0.10.4 | Yes | YAML config parsing (see Open Decisions) |
+| `zip` | 8.6.0 | Yes | Zip archive listing for preview (deflate only) |
 
 ### New Crates Needed (by priority)
 
 | Crate | Version | Phase | Purpose |
 |-------|---------|-------|---------|
-| `tokio` | 1 | Phase 1 | Async file operations + file watching |
 | `ignore` | 0.4 | Phase 2 | File tree walking (respects .gitignore) |
-| `toml` | 0.8 | Phase 3 | Bookmark storage (and possibly config) |
-| `tar` | 0.4 | Phase 3 | Tar archive reading |
-| `zip` | 2 | Phase 3 | Zip archive reading |
-| `flate2` | 1 | Phase 3 | Gzip decompression for `.tar.gz` |
+| `toml` | 0.8 | Phase 3 | Possibly config format switch (Open Decision 1) |
 | `notify` | 7 | Phase 3 | Filesystem event watching |
 | `tracing` | 0.1 | Phase 5 | Structured logging (replace `log`) |
 | `tracing-subscriber` | 0.3 | Phase 5 | Log output formatting |
 | `tracing-appender` | 0.2 | Phase 5 | File-based log rotation (optional) |
 | `gix` | 0.70 | Phase 4 | Pure-Rust git status (replace `git` CLI) |
-| `pdf-extract` | 0.7 | Phase 3 | PDF text extraction (optional) |
 | `tempfile` | 3 | Phase 5 | Test utilities |
 
 > **Note:** Crate versions above are current as of 2026-06-19. Check [crates.io](https://crates.io) for latest versions before adding. Use `cargo add <crate>` for automatic version resolution.
@@ -548,7 +560,7 @@ Phase 0 (Bug Fixes) ────────────────────
 | # | Question | Options | Impact | Recommendation |
 |---|----------|---------|--------|----------------|
 | 1 | **YAML vs TOML for config?** | YAML (current) or TOML (planning docs) | Affects `config.rs`, theme files, Cargo.toml deps, user-facing format | **TOML** — more Rust-idiomatic, serde support is first-class, no indentation issues, README and all planning docs assume TOML. However, 10 theme files already exist in YAML — migration script needed. |
-| 2 | **When to introduce async (tokio)?** | Phase 1.5 (M2) or Phase 3 (M4) | Affects architecture and error handling complexity | **Phase 1.5** — async progress bars for copy/move are a key UX differentiator. But keep core navigation synchronous. Use `tokio::task::spawn_blocking` for heavy FS work. |
+| 2 | ~~**When to introduce async (tokio)?**~~ → **DECIDED: no tokio** | Thread + channel vs tokio | — | **Thread + mpsc** (2026-07-26, supersedes earlier "Phase 1.5 tokio" note): async transfers run on a worker thread reporting bytes over an `mpsc` channel; the event loop polls with a timeout while transfers run. Delivers progress + cancel UX with zero new deps and no runtime. Re-evaluate tokio only if file watching (3.5) or many concurrent transfers need an executor — the channel protocol stays identical. |
 | 3 | **Vim-modal or modeless?** | Modal (Normal/Command/Visual) or single-mode with key combos | Fundamental UX design. Affects all keybinding code. | **Modal** — all three planning docs agree. Vim users are the target audience. Start modeless in Phase 1.2, introduce modes in 1.3. |
 | 4 | **`syntect` vs keep `bat`?** | `syntect` (pure Rust, bundled) vs `bat` (external binary) | Preview architecture, binary size, runtime deps | **`syntect`** — all planning docs recommend it. Removes external dependency, works offline, gives full control over theme mapping. `bat` was a quick prototype shortcut. |
 | 5 | **`gix` vs `git` CLI?** | `gix` (pure Rust) vs shelling out to `git` binary | Git status performance, binary size, portability | **`gix`** — removes runtime dependency on `git` binary, no shell overhead, consistent behavior. But lower priority: current `git` CLI approach works fine for header stats. |
