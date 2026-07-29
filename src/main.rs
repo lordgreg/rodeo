@@ -7,6 +7,7 @@ use crate::config::Config;
 
 mod cli;
 mod config;
+mod fs;
 mod logging;
 mod ui;
 
