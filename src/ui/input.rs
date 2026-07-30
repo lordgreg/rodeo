@@ -187,6 +187,10 @@ impl App {
                     self.touch(parent, name.to_string());
                 }
             }
+            (DialogAction::SelectGlob, DialogResult::Submitted(pattern)) => {
+                let count = self.panes.get_active_pane_mut().select_matching(&pattern);
+                self.ok_status(format!("{count} selected"));
+            }
             (DialogAction::TouchOverwrite { path }, DialogResult::Confirmed) => {
                 self.create_file(&path);
             }

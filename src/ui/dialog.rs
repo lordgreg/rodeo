@@ -23,6 +23,7 @@ pub enum DialogAction {
     Create {
         parent: PathBuf,
     },
+    SelectGlob,
     TouchOverwrite {
         path: PathBuf,
     },
