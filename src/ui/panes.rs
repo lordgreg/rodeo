@@ -102,6 +102,8 @@ pub struct Entry {
     pub git_status: Option<GitEntryStatus>,
     pub is_symlink: bool,
     pub link_target: Option<PathBuf>,
+    /// Cumulative size for directories, computed on demand (`S`).
+    pub dir_size: Option<String>,
 }
 
 impl Entry {
@@ -159,6 +161,7 @@ impl Entry {
             git_status: None,
             is_symlink,
             link_target,
+            dir_size: None,
         }
     }
 
@@ -180,6 +183,7 @@ impl Entry {
             git_status: None,
             is_symlink: false,
             link_target: None,
+            dir_size: None,
         }
     }
 
@@ -337,7 +341,9 @@ impl Pane {
             .map(|e| {
                 let marker = if e.selected { "●" } else { "" };
                 let size = match e.kind {
-                    EntryKind::Directory => String::from("DIR"),
+                    EntryKind::Directory => {
+                        e.dir_size.clone().unwrap_or_else(|| "DIR".to_string())
+                    }
                     EntryKind::Parent => String::from("UP"),
                     _ => e.size.clone(),
                 };
@@ -440,6 +446,44 @@ impl Pane {
     /// Marks all selectable entries; returns the number selected.
     pub fn select_all(&mut self) -> usize {
         self.select_matching("*")
+    }
+
+    /// Computes cumulative sizes for all directory entries (capped walk with
+    /// a shared entry budget so huge trees stay cheap). Returns how many
+    /// directory sizes were computed.
+    pub fn compute_dir_sizes(&mut self) -> usize {
+        const ENTRY_BUDGET: u64 = 200_000;
+        let mut budget = ENTRY_BUDGET;
+
+        let dir_paths: Vec<PathBuf> = self
+            .all_paths
+            .iter()
+            .filter(|e| e.kind == EntryKind::Directory)
+            .map(|e| e.path.clone())
+            .collect();
+
+        let mut computed = 0;
+        for path in dir_paths {
+            if budget == 0 {
+                break;
+            }
+            let est = crate::fs::ops::total_size_capped(std::slice::from_ref(&path), budget);
+            budget = budget.saturating_sub(est.entries);
+
+            let text = if est.truncated {
+                format!("≥{}", format_size(est.bytes))
+            } else {
+                format_size(est.bytes)
+            };
+            if let Some(e) = self.all_paths.iter_mut().find(|e| e.path == path) {
+                e.dir_size = Some(text.clone());
+            }
+            if let Some(e) = self.paths.iter_mut().find(|e| e.path == path) {
+                e.dir_size = Some(text);
+            }
+            computed += 1;
+        }
+        computed
     }
 
     pub fn clear_selections(&mut self) {

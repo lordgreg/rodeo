@@ -85,6 +85,8 @@ pub fn total_size(paths: &[PathBuf]) -> u64 {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SizeEstimate {
     pub bytes: u64,
+    /// Filesystem entries visited during the walk.
+    pub entries: u64,
     /// True when the walk hit the entry cap — the value is a lower bound.
     pub truncated: bool,
 }
@@ -99,7 +101,11 @@ pub fn total_size_capped(paths: &[PathBuf], max_entries: u64) -> SizeEstimate {
     for path in paths {
         entry_size_capped(path, &mut bytes, &mut entries, max_entries, &mut truncated);
     }
-    SizeEstimate { bytes, truncated }
+    SizeEstimate {
+        bytes,
+        entries,
+        truncated,
+    }
 }
 
 /// Progress reports from a background transfer worker.
