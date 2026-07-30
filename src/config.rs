@@ -37,7 +37,12 @@ fn default_active_pane() -> ActivePane {
     ActivePane::Left
 }
 fn default_editor() -> String {
-    std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string())
+    std::env::var("VISUAL")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .or_else(|| std::env::var("EDITOR").ok())
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| "vi".to_string())
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -62,8 +67,8 @@ pub struct Config {
     pub editor: String,
 }
 
-impl Config {
-    pub fn default() -> Self {
+impl Default for Config {
+    fn default() -> Self {
         Self {
             theme: default_theme(),
             initial_directory_left: default_initial_directory(),
@@ -76,6 +81,9 @@ impl Config {
             editor: default_editor(),
         }
     }
+}
+
+impl Config {
 
     pub fn set_initial_dir(&mut self, left: Option<String>, right: Option<String>) {
         if let Some(left) = left {
