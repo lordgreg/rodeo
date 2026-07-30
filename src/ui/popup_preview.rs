@@ -3,7 +3,8 @@ use std::io;
 use std::io::BufRead;
 use std::io::Read;
 use std::path::Path;
-use std::sync::OnceLock;
+use std::sync::{OnceLock, mpsc};
+use std::time::Instant;
 use syntect::{
     easy::HighlightLines,
     highlighting::{self, Style as SynStyle},
@@ -31,20 +32,25 @@ const LISTING_LIMIT: usize = 1000;
 /// Bytes shown in the binary hex dump.
 const HEX_DUMP_BYTES: usize = 256;
 
-#[derive(Debug)]
 enum PreviewContent {
     Text(Text<'static>),
     Image(String),
     Error(String),
+    /// Background thread is computing the content; spinner shown meanwhile.
+    Loading,
 }
 
-#[derive(Debug)]
 pub struct PopupPreview {
     selected: Option<Entry>,
+    title: Option<String>,
     row: u16,
     viewport_height: u16,
     syn_theme: Option<highlighting::Theme>,
     content: Option<PreviewContent>,
+    /// Receives content from a background thread for slow previews (e.g. PDF).
+    loading_rx: Option<mpsc::Receiver<PreviewContent>>,
+    /// When the background load started (drives spinner animation).
+    loading_started: Option<Instant>,
 }
 
 #[derive(PartialEq, Debug)]
@@ -100,11 +106,37 @@ impl PopupPreview {
 
         Self {
             selected: entry,
+            title: None,
             row: 0,
             viewport_height: 1,
             syn_theme: None,
             content,
+            loading_rx: None,
+            loading_started: None,
         }
+    }
+
+    /// A preview showing arbitrary text (e.g., `:!` shell output) instead of
+    /// an entry's content. Not bound to the selection: moving the cursor does
+    /// not replace it.
+    pub fn from_text(title: String, text: Text<'static>) -> Self {
+        Self {
+            selected: None,
+            title: Some(title),
+            row: 0,
+            viewport_height: 1,
+            syn_theme: None,
+            content: Some(PreviewContent::Text(text)),
+            loading_rx: None,
+            loading_started: None,
+        }
+    }
+
+    /// Returns `true` while a background thread is computing preview content.
+    /// The `App` run loop uses this to keep re-rendering at ~50 ms so the
+    /// spinner animates without waiting for a keypress.
+    pub fn is_loading(&self) -> bool {
+        matches!(self.content, Some(PreviewContent::Loading))
     }
 
     pub fn row_next(&mut self) {
@@ -465,28 +497,104 @@ impl Component for PopupPreview {
 
         frame.render_widget(Clear, popup_area);
 
-        let Some(entry) = self.selected.as_ref() else {
-            return;
+        let title = match (&self.title, &self.selected) {
+            (Some(t), _) => t.clone(),
+            (None, Some(entry)) => format!("Preview {}", entry.name),
+            (None, None) => return,
         };
 
         let block = Block::default()
-            .title(format!("Preview {}", entry.name))
+            .title(title)
             .borders(Borders::ALL)
             .border_style(Style::default().bg(theme.colors.background()))
             .style(Style::default().fg(theme.colors.foreground()));
-
-        let path = entry.path.as_os_str().to_string_lossy();
 
         let inner_area = block.inner(popup_area);
         self.viewport_height = inner_area.height.max(1);
         frame.render_widget(block, popup_area);
 
-        if self.content.is_none() {
-            let syn_theme = self
-                .syn_theme
-                .get_or_insert_with(|| theme.to_syntect_theme());
-            self.content = Some(Self::get_file_content(&path, syn_theme));
+        // Text previews from from_text are complete; entry previews resolve
+        // their content lazily from the filesystem.
+        if self.selected.is_none() {
+            if let Some(PreviewContent::Text(text)) = self.content.as_ref() {
+                let line_count = text.lines.len() as u16;
+                let max_row = line_count.saturating_sub(inner_area.height);
+                self.row = self.row.min(max_row);
+                frame.render_widget(
+                    Paragraph::new(text.clone()).scroll((self.row, 0)),
+                    inner_area,
+                );
+            }
+            return;
         }
+
+        let Some(entry) = self.selected.as_ref() else {
+            return;
+        };
+        let path = entry.path.as_os_str().to_string_lossy();
+
+        // First time: decide how to load content.
+        if self.content.is_none() {
+            let file_type = Self::get_file_type(&path);
+            match file_type {
+                FileType::Image => {
+                    // ratatui-image decodes the file lazily during render —
+                    // just storing the path is instant.
+                    self.content = Some(PreviewContent::Image(path.to_string()));
+                }
+                FileType::Binary | FileType::Symlink => {
+                    // These are always fast (256-byte hex dump / symlink read)
+                    // so there is no perceptible delay worth a spinner.
+                    let syn_theme = self
+                        .syn_theme
+                        .get_or_insert_with(|| theme.to_syntect_theme());
+                    self.content = Some(Self::get_file_content(&path, syn_theme));
+                }
+                _ => {
+                    // Text (syntax highlighting), archive listing, directory
+                    // size walk, and PDF extraction can all take noticeable
+                    // time on large inputs — offload every one of them so the
+                    // popup opens instantly with a spinner.
+                    let path_owned = path.to_string();
+                    let syn_theme = theme.to_syntect_theme();
+                    let (tx, rx) = mpsc::channel();
+                    std::thread::spawn(move || {
+                        let _ = tx.send(Self::get_file_content(&path_owned, &syn_theme));
+                    });
+                    self.loading_rx = Some(rx);
+                    self.loading_started = Some(Instant::now());
+                    self.content = Some(PreviewContent::Loading);
+                }
+            }
+        }
+
+        // If a background load is in progress, poll for completion.
+        if matches!(self.content, Some(PreviewContent::Loading))
+            && let Some(rx) = &self.loading_rx
+            && let Ok(ready) = rx.try_recv()
+        {
+            self.content = Some(ready);
+            self.loading_rx = None;
+            self.loading_started = None;
+        }
+
+        // Render spinner while loading.
+        if matches!(self.content, Some(PreviewContent::Loading)) {
+            const SPINNER: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+            let elapsed = self
+                .loading_started
+                .map(|s| s.elapsed().as_millis())
+                .unwrap_or(0);
+            let spin_frame = ((elapsed / 80) as usize) % SPINNER.len();
+            let spinner = SPINNER[spin_frame];
+            let bg_fill = Block::default().style(Style::default().bg(theme.colors.background()));
+            frame.render_widget(bg_fill, inner_area);
+            let msg = Paragraph::new(format!("{spinner} Loading preview…"))
+                .style(Style::default().fg(theme.colors.muted()));
+            frame.render_widget(msg, inner_area);
+            return;
+        }
+
         let Some(content) = self.content.as_ref() else {
             return;
         };
@@ -548,7 +656,28 @@ impl Component for PopupPreview {
                     inner_area,
                 );
             }
+            // Loading is handled above with an early return; unreachable here.
+            PreviewContent::Loading => {}
         }
+    }
+}
+
+impl std::fmt::Debug for PopupPreview {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let content_label = match &self.content {
+            None => "None",
+            Some(PreviewContent::Text(_)) => "Some(Text)",
+            Some(PreviewContent::Image(_)) => "Some(Image)",
+            Some(PreviewContent::Error(_)) => "Some(Error)",
+            Some(PreviewContent::Loading) => "Some(Loading)",
+        };
+        f.debug_struct("PopupPreview")
+            .field("selected", &self.selected)
+            .field("title", &self.title)
+            .field("row", &self.row)
+            .field("content", &content_label)
+            .field("is_loading", &self.is_loading())
+            .finish()
     }
 }
 
