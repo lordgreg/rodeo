@@ -1,21 +1,14 @@
 use clap::Parser;
 use log::info;
-use ui::App;
-use ui::theme::Theme;
-
-use crate::config::Config;
-
-mod cli;
-mod config;
-mod fs;
-mod logging;
-mod ui;
+use rodeo::config::Config;
+use rodeo::ui::App;
+use rodeo::ui::theme::Theme;
 
 fn main() -> color_eyre::Result<()> {
     color_eyre::install()?;
-    logging::init();
+    rodeo::logging::init();
 
-    let args = cli::Args::parse();
+    let args = rodeo::cli::Args::parse();
 
     let mut config = Config::load_config(args.config.as_deref())?;
 

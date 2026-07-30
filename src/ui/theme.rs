@@ -466,3 +466,52 @@ impl Theme {
         Ok(theme)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hex_to_color_parses_valid_hex() {
+        let color = Color::hex_to_color("#ff5733");
+        assert_eq!(color, Color::Rgb(255, 87, 51));
+    }
+
+    #[test]
+    fn hex_to_color_handles_no_hash() {
+        let color = Color::hex_to_color("89b4fa");
+        assert_eq!(color, Color::Rgb(137, 180, 250));
+    }
+
+    #[test]
+    fn deserialize_theme_from_yaml() {
+        let yaml = r"name: test-theme
+description: A test theme
+colors:
+  background: '#1e1e2e'
+  foreground: '#cdd6f4'
+  primary: '#89b4fa'
+  secondary: '#f38ba8'
+  accent1: '#f9e2af'
+  accent2: '#a6e3a1'
+  accent3: '#b4befe'
+  muted: '#6c7086'
+  border: '#45475a'
+  highlight: '#cba6f7'
+  surface: '#313244'
+  error: '#f38ba8'
+  warning: '#fab387'
+  info: '#94e2d5'
+  success: '#a6e3a1'
+";
+        let theme: Theme = yaml_serde::from_str(yaml).unwrap();
+        assert_eq!(theme.name, "test-theme");
+        assert_eq!(theme.colors.background(), Color::Rgb(30, 30, 46));
+        assert_eq!(theme.colors.primary(), Color::Rgb(137, 180, 250));
+    }
+
+    // Note: load_theme and get_theme_list tests are skipped because:
+    // 1. They read from the filesystem (themes/ directory)
+    // 2. load_from_file calls process::exit on error (can't test easily)
+    // 3. The themes directory may not exist in test environment
+}

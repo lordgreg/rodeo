@@ -6,7 +6,7 @@ use std::{
 };
 
 use crate::{
-    Config,
+    config::Config,
     fs::ops::ProgressMsg,
     ui::{footer::Footer, theme::Theme},
 };
