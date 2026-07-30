@@ -1352,4 +1352,139 @@ mod tests {
             assert_eq!(Panes::next_index(&5, None, MoveDirection::Up), 0);
         }
     }
+
+    mod sort_entries {
+        use super::*;
+
+        fn make_file(name: &str, size: u64) -> Entry {
+            Entry {
+                path: PathBuf::from(name),
+                name: name.to_string(),
+                kind: EntryKind::File,
+                size: format_size(size),
+                raw_size: size,
+                modified: String::new(),
+                raw_modified: SystemTime::UNIX_EPOCH,
+                selected: false,
+                git_status: None,
+                is_symlink: false,
+                link_target: None,
+                dir_size: None,
+            }
+        }
+
+        fn make_dir(name: &str) -> Entry {
+            let mut e = make_file(name, 0);
+            e.kind = EntryKind::Directory;
+            e
+        }
+
+        #[test]
+        fn sort_by_name_ascending() {
+            let mut entries = vec![
+                make_file("zebra.txt", 100),
+                make_file("alpha.txt", 100),
+                make_file("beta.txt", 100),
+            ];
+            let config = Config {
+                sort_type: SortType::Name,
+                sort_order: SortOrder::Ascending,
+                directories_on_top: false,
+                ..Config::default()
+            };
+            super::sort_entries(&mut entries, &config);
+
+            assert_eq!(entries[0].name, "alpha.txt");
+            assert_eq!(entries[1].name, "beta.txt");
+            assert_eq!(entries[2].name, "zebra.txt");
+        }
+
+        #[test]
+        fn sort_by_name_descending() {
+            let mut entries = vec![
+                make_file("alpha.txt", 100),
+                make_file("zebra.txt", 100),
+                make_file("beta.txt", 100),
+            ];
+            let config = Config {
+                sort_type: SortType::Name,
+                sort_order: SortOrder::Descending,
+                directories_on_top: false,
+                ..Config::default()
+            };
+            super::sort_entries(&mut entries, &config);
+
+            assert_eq!(entries[0].name, "zebra.txt");
+            assert_eq!(entries[1].name, "beta.txt");
+            assert_eq!(entries[2].name, "alpha.txt");
+        }
+
+        #[test]
+        fn sort_by_size_ascending() {
+            let mut entries = vec![
+                make_file("big.txt", 1000),
+                make_file("small.txt", 10),
+                make_file("medium.txt", 500),
+            ];
+            let config = Config {
+                sort_type: SortType::Size,
+                sort_order: SortOrder::Ascending,
+                directories_on_top: false,
+                ..Config::default()
+            };
+            super::sort_entries(&mut entries, &config);
+
+            assert_eq!(entries[0].name, "small.txt");
+            assert_eq!(entries[1].name, "medium.txt");
+            assert_eq!(entries[2].name, "big.txt");
+        }
+
+        #[test]
+        fn directories_on_top() {
+            let mut entries = vec![
+                make_file("aaa-file.txt", 100),
+                make_dir("zzz-dir"),
+                make_file("bbb-file.txt", 100),
+                make_dir("aaa-dir"),
+            ];
+            let config = Config {
+                sort_type: SortType::Name,
+                sort_order: SortOrder::Ascending,
+                directories_on_top: true,
+                ..Config::default()
+            };
+            super::sort_entries(&mut entries, &config);
+
+            // Directories should be first, then files, both alphabetically
+            assert_eq!(entries[0].name, "aaa-dir");
+            assert_eq!(entries[1].name, "zzz-dir");
+            assert_eq!(entries[2].name, "aaa-file.txt");
+            assert_eq!(entries[3].name, "bbb-file.txt");
+        }
+
+        #[test]
+        fn sort_by_flagged() {
+            let mut entries = vec![
+                make_file("a.txt", 100),
+                make_file("b.txt", 100),
+                make_file("c.txt", 100),
+            ];
+            entries[2].selected = true;
+            entries[0].selected = true;
+
+            let config = Config {
+                sort_type: SortType::Flagged,
+                sort_order: SortOrder::Descending,
+                directories_on_top: false,
+                ..Config::default()
+            };
+
+            super::sort_entries(&mut entries, &config);
+
+            // Descending: selected (true) comes before unselected (false)
+            assert!(entries[0].selected);
+            assert!(entries[1].selected);
+            assert!(!entries[2].selected);
+        }
+    }
 }
