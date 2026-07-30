@@ -161,6 +161,16 @@ impl App {
         self.panes.get_active_pane_mut().clear_filter();
     }
 
+    /// Transient footer notice for successful operations.
+    pub(crate) fn ok_status(&mut self, msg: String) {
+        self.footer.set_status(msg, false);
+    }
+
+    /// Transient footer notice for non-fatal errors.
+    pub(crate) fn err_status(&mut self, msg: String) {
+        self.footer.set_status(msg, true);
+    }
+
     fn dispatch_dialog(&mut self, dialog: Dialog, result: DialogResult) {
         match (dialog.action, result) {
             (DialogAction::Mkdir { parent }, DialogResult::Submitted(name)) => {
@@ -214,12 +224,12 @@ impl App {
         }
 
         match std::fs::create_dir(parent.join(name)) {
-            Ok(()) => self.panes.reload(&self.config, false),
+            Ok(()) => {
+                self.panes.reload(&self.config, false);
+                self.ok_status(format!("Created directory '{name}'"));
+            }
             Err(e) => {
-                self.dialog = Some(Dialog::message(
-                    "Error",
-                    format!("Cannot create directory '{name}': {e}"),
-                ));
+                self.err_status(format!("Cannot create directory '{name}': {e}"));
             }
         }
     }
@@ -244,12 +254,12 @@ impl App {
 
     fn create_file(&mut self, path: &Path) {
         match std::fs::File::create(path) {
-            Ok(_) => self.panes.reload(&self.config, false),
+            Ok(_) => {
+                self.panes.reload(&self.config, false);
+                self.ok_status(format!("Created file '{}'", path.display()));
+            }
             Err(e) => {
-                self.dialog = Some(Dialog::message(
-                    "Error",
-                    format!("Cannot create file '{}': {e}", path.display()),
-                ));
+                self.err_status(format!("Cannot create file '{}': {e}", path.display()));
             }
         }
     }
@@ -302,12 +312,12 @@ impl App {
 
     fn rename_path(&mut self, from: &Path, to: &Path) {
         match std::fs::rename(from, to) {
-            Ok(()) => self.panes.reload(&self.config, false),
+            Ok(()) => {
+                self.panes.reload(&self.config, false);
+                self.ok_status(format!("Renamed to '{}'", to.display()));
+            }
             Err(e) => {
-                self.dialog = Some(Dialog::message(
-                    "Error",
-                    format!("Cannot rename '{}': {e}", from.display()),
-                ));
+                self.err_status(format!("Cannot rename '{}': {e}", from.display()));
             }
         }
     }
@@ -374,19 +384,18 @@ impl App {
             }
         }
         self.panes.reload(&self.config, false);
+        self.ok_status("Moved to trash".to_string());
     }
 
     fn delete_permanent(&mut self, paths: Vec<PathBuf>) {
         for path in &paths {
             if let Err(e) = ops::delete_entry(path) {
-                self.dialog = Some(Dialog::message(
-                    "Error",
-                    format!("Cannot delete '{}': {e}", path.display()),
-                ));
+                self.err_status(format!("Cannot delete '{}': {e}", path.display()));
                 return;
             }
         }
         self.panes.reload(&self.config, false);
+        self.ok_status("Deleted permanently".to_string());
     }
 
     fn start_copy(&mut self) {
@@ -398,7 +407,7 @@ impl App {
         let dest_dir = PathBuf::from(&self.panes.get_inactive_pane().path);
         for src in &sources {
             if let Err(msg) = ops::check_transfer_paths(src, &dest_dir) {
-                self.dialog = Some(Dialog::message("Error", msg));
+                self.err_status(msg);
                 return;
             }
         }
@@ -429,14 +438,12 @@ impl App {
         }
         for src in &sources {
             if let Err(e) = ops::copy_entry(src, &dest_dir) {
-                self.dialog = Some(Dialog::message(
-                    "Error",
-                    format!("Cannot copy '{}': {e}", src.display()),
-                ));
+                self.err_status(format!("Cannot copy '{}': {e}", src.display()));
                 return;
             }
         }
         self.panes.reload(&self.config, false);
+        self.ok_status("Copied".to_string());
     }
 
     fn start_move(&mut self) {
@@ -448,7 +455,7 @@ impl App {
         let dest_dir = PathBuf::from(&self.panes.get_inactive_pane().path);
         for src in &sources {
             if let Err(msg) = ops::check_transfer_paths(src, &dest_dir) {
-                self.dialog = Some(Dialog::message("Error", msg));
+                self.err_status(msg);
                 return;
             }
         }
@@ -476,14 +483,12 @@ impl App {
         }
         for src in &sources {
             if let Err(e) = ops::move_entry(src, &dest_dir) {
-                self.dialog = Some(Dialog::message(
-                    "Error",
-                    format!("Cannot move '{}': {e}", src.display()),
-                ));
+                self.err_status(format!("Cannot move '{}': {e}", src.display()));
                 return;
             }
         }
         self.panes.reload(&self.config, false);
+        self.ok_status("Moved".to_string());
     }
 
     /// Starts a background copy (cut=false) or move (cut=true) with a progress
@@ -514,6 +519,7 @@ impl App {
         }
         self.clipboard = targets;
         self.clipboard_cut = false;
+        self.ok_status(format!("{} yanked", self.clipboard.len()));
     }
 
     /// Pastes the clipboard into the active pane's directory. `cut` moves
@@ -528,7 +534,7 @@ impl App {
 
         for src in &sources {
             if let Err(msg) = ops::check_transfer_paths(src, &dest_dir) {
-                self.dialog = Some(Dialog::message("Error", msg));
+                self.err_status(msg);
                 return;
             }
         }
@@ -606,13 +612,8 @@ impl App {
         match cmd {
             "q" | "quit" => self.exit = true,
             "w" | "write" => match Config::save_config(&self.config, None) {
-                Ok(()) => {
-                    self.dialog = Some(Dialog::message("Write", "Configuration saved."));
-                }
-                Err(e) => {
-                    self.dialog =
-                        Some(Dialog::message("Error", format!("Cannot save config: {e}")));
-                }
+                Ok(()) => self.ok_status("Configuration saved".to_string()),
+                Err(e) => self.err_status(format!("Cannot save config: {e}")),
             },
             "e" | "cd" => self.navigate_to(arg),
             "mkdir" => {
@@ -638,10 +639,7 @@ impl App {
             "help" => self.ui_config.active_keybind_popup = true,
             "shell" => self.pending_shell = true,
             _ => {
-                self.dialog = Some(Dialog::message(
-                    "Unknown command",
-                    format!("Unknown command: {cmd}  (try :help)"),
-                ));
+                self.err_status(format!("Unknown command: {cmd}  (try :help)"));
             }
         }
     }
@@ -704,7 +702,7 @@ impl App {
                     .update(self.panes.get_active_pane().path.to_string());
             }
             _ => {
-                self.dialog = Some(Dialog::message("Error", format!("Not a directory: {arg}")));
+                self.err_status(format!("Not a directory: {arg}"));
             }
         }
     }
@@ -723,17 +721,11 @@ impl App {
         // Guard: load_from_file exits the process on unreadable files.
         let is_path = name.ends_with(".yaml");
         if !is_path && !known.iter().any(|t| t == name) {
-            self.dialog = Some(Dialog::message(
-                "Error",
-                format!("Unknown theme '{name}'. Available: {}", known.join(", ")),
-            ));
+            self.err_status(format!("Unknown theme '{name}'. Available: {}", known.join(", ")));
             return;
         }
         if is_path && !Path::new(name).exists() {
-            self.dialog = Some(Dialog::message(
-                "Error",
-                format!("Theme file not found: {name}"),
-            ));
+            self.err_status(format!("Theme file not found: {name}"));
             return;
         }
 
@@ -741,12 +733,10 @@ impl App {
             Ok(theme) => {
                 self.theme = theme;
                 self.config.theme = name.to_string();
+                self.ok_status(format!("Theme: {name}"));
             }
             Err(e) => {
-                self.dialog = Some(Dialog::message(
-                    "Error",
-                    format!("Cannot load theme '{name}': {e}"),
-                ));
+                self.err_status(format!("Cannot load theme '{name}': {e}"));
             }
         }
     }
@@ -786,7 +776,7 @@ impl App {
                 self.dialog = Some(Dialog::message(format!(":!{cmd}"), text));
             }
             Err(e) => {
-                self.dialog = Some(Dialog::message("Error", format!("Cannot run shell: {e}")));
+                self.err_status(format!("Cannot run shell: {e}"));
             }
         }
     }

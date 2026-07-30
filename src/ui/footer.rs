@@ -1,3 +1,5 @@
+use std::time::{Duration, Instant};
+
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, HorizontalAlignment, Layout, Rect},
@@ -7,11 +9,22 @@ use ratatui::{
 
 use crate::ui::{component::Component, panes::PaneStats, theme::Theme, uiconfig::UiConfig};
 
+/// How long a status message stays visible.
+const STATUS_TTL: Duration = Duration::from_secs(3);
+
+#[derive(Debug)]
+struct StatusMsg {
+    text: String,
+    is_error: bool,
+    at: Instant,
+}
+
 #[derive(Debug)]
 pub struct Footer {
     pub keymaps: Vec<String>,
     stats: Option<PaneStats>,
     clipboard: Option<(usize, bool)>,
+    status: Option<StatusMsg>,
 }
 
 impl Default for Footer {
@@ -35,6 +48,7 @@ impl Default for Footer {
             ],
             stats: None,
             clipboard: None,
+            status: None,
         }
     }
 }
@@ -45,11 +59,21 @@ impl Footer {
             keymaps,
             stats: None,
             clipboard: None,
+            status: None,
         }
     }
 
     pub fn set_stats(&mut self, stats: PaneStats) {
         self.stats = Some(stats);
+    }
+
+    /// Shows a transient status message (auto-cleared after a few seconds).
+    pub fn set_status(&mut self, text: String, is_error: bool) {
+        self.status = Some(StatusMsg {
+            text,
+            is_error,
+            at: Instant::now(),
+        });
     }
 
     /// Clipboard state: (entry count, cut?) — shown until the clipboard is empty.
@@ -79,6 +103,11 @@ impl Component for Footer {
         let inner_area = bg_block.inner(area);
         frame.render_widget(bg_block, area);
 
+        // Expired status messages are dropped.
+        if self.status.as_ref().is_some_and(|s| s.at.elapsed() > STATUS_TTL) {
+            self.status = None;
+        }
+
         let mut keymaps = Vec::new();
         if let Some((count, cut)) = self.clipboard {
             keymaps.push(if cut {
@@ -107,6 +136,21 @@ impl Component for Footer {
                     cell_area,
                 );
             }
+        }
+
+        if let Some(status) = &self.status {
+            let style = if status.is_error {
+                Style::default().fg(theme.colors.error())
+            } else {
+                Style::default().fg(theme.colors.info())
+            };
+            frame.render_widget(
+                Paragraph::new(status.text.as_str())
+                    .style(style)
+                    .block(Block::default().padding(Padding::horizontal(1)))
+                    .alignment(HorizontalAlignment::Right),
+                inner_area,
+            );
         }
     }
 }

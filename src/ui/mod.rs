@@ -171,7 +171,9 @@ impl App {
             self.clipboard_cut = false;
         }
         if let Err(e) = result {
-            self.dialog = Some(Dialog::message("Transfer failed", e));
+            self.err_status(format!("Transfer failed: {e}"));
+        } else {
+            self.ok_status("Transfer complete".to_string());
         }
     }
 
