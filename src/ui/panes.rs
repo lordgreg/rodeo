@@ -335,6 +335,128 @@ impl Pane {
         stats
     }
 
+    /// Returns highlighted name spans for a given entry name based on active filter.
+    /// If no filter is active, returns the name with the given style.
+    fn highlight_name(&self, name: &str, base_style: Option<Style>, theme: &Theme) -> Vec<Span<'static>> {
+        let filter = match &self.filter {
+            Some(f) => f,
+            None => return vec![match base_style {
+                Some(style) => Span::styled(name.to_string(), style),
+                None => Span::from(name.to_string()),
+            }],
+        };
+
+        match filter {
+            FilterSpec::Fuzzy(pattern) => {
+                let parsed = nucleo::pattern::Pattern::parse(
+                    pattern,
+                    nucleo::pattern::CaseMatching::Smart,
+                    nucleo::pattern::Normalization::Smart,
+                );
+                let mut matcher = nucleo::Matcher::new(nucleo::Config::DEFAULT);
+                let mut buf = Vec::new();
+                let mut indices = Vec::new();
+                
+                // Try to get match indices
+                if parsed.score(nucleo::Utf32Str::new(name, &mut buf), &mut matcher).is_some() {
+                    parsed.indices(nucleo::Utf32Str::new(name, &mut buf), &mut matcher, &mut indices);
+                }
+
+                if indices.is_empty() {
+                    // No match or no indices, return unstyled
+                    return vec![match base_style {
+                        Some(style) => Span::styled(name.to_string(), style),
+                        None => Span::from(name.to_string()),
+                    }];
+                }
+
+                // Build spans with highlighted characters
+                let mut spans = Vec::new();
+                let chars: Vec<char> = name.chars().collect();
+                let mut last_idx = 0;
+
+                for &idx in &indices {
+                    let idx = idx as usize;
+                    if idx >= chars.len() {
+                        continue;
+                    }
+
+                    // Add non-matching segment before this match
+                    if idx > last_idx {
+                        let segment: String = chars[last_idx..idx].iter().collect();
+                        spans.push(match base_style {
+                            Some(style) => Span::styled(segment, style),
+                            None => Span::from(segment),
+                        });
+                    }
+
+                    // Add highlighted match character
+                    let ch: String = chars[idx..idx+1].iter().collect();
+                    let highlight_style = match base_style {
+                        Some(style) => style.bg(theme.colors.warning()),
+                        None => Style::new().bg(theme.colors.warning()),
+                    };
+                    spans.push(Span::styled(ch, highlight_style));
+                    last_idx = idx + 1;
+                }
+
+                // Add remaining non-matching segment
+                if last_idx < chars.len() {
+                    let segment: String = chars[last_idx..].iter().collect();
+                    spans.push(match base_style {
+                        Some(style) => Span::styled(segment, style),
+                        None => Span::from(segment),
+                    });
+                }
+
+                spans
+            }
+            FilterSpec::Regex(pattern) => {
+                // For regex, highlight the entire match
+                let Ok(re) = regex::Regex::new(pattern) else {
+                    return vec![match base_style {
+                        Some(style) => Span::styled(name.to_string(), style),
+                        None => Span::from(name.to_string()),
+                    }];
+                };
+
+                if let Some(m) = re.find(name) {
+                    let mut spans = Vec::new();
+                    
+                    // Before match
+                    if m.start() > 0 {
+                        spans.push(match base_style {
+                            Some(style) => Span::styled(name[..m.start()].to_string(), style),
+                            None => Span::from(name[..m.start()].to_string()),
+                        });
+                    }
+
+                    // Matched portion
+                    let highlight_style = match base_style {
+                        Some(style) => style.bg(theme.colors.warning()),
+                        None => Style::new().bg(theme.colors.warning()),
+                    };
+                    spans.push(Span::styled(m.as_str().to_string(), highlight_style));
+
+                    // After match
+                    if m.end() < name.len() {
+                        spans.push(match base_style {
+                            Some(style) => Span::styled(name[m.end()..].to_string(), style),
+                            None => Span::from(name[m.end()..].to_string()),
+                        });
+                    }
+
+                    spans
+                } else {
+                    vec![match base_style {
+                        Some(style) => Span::styled(name.to_string(), style),
+                        None => Span::from(name.to_string()),
+                    }]
+                }
+            }
+        }
+    }
+
     fn entry_rows(&self, theme: &Theme) -> Vec<Row<'static>> {
         self.paths
             .iter()
@@ -356,10 +478,8 @@ impl Pane {
                     } else {
                         e.git_status.map(|s| Style::new().fg(s.color(theme)))
                     };
-                    let mut spans = vec![match name_style {
-                        Some(style) => Span::styled(e.name.clone(), style),
-                        None => Span::from(e.name.clone()),
-                    }];
+                    
+                    let mut spans = self.highlight_name(&e.name, name_style, theme);
                     if let Some(target) = &e.link_target {
                         spans.push(Span::styled(
                             format!(" -> {}", target.display()),
