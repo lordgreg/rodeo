@@ -1,15 +1,15 @@
 # rodeo — Development TODO
 
-> **Last updated:** 2026-07-26
-> **Current state:** Dual-pane navigation + preview + theming + git header + git-colored entries. **Phase 1 complete (M2).** Rich preview: syntax highlighting, images, archives (zip/tar/tgz), PDF, directory size, binary info+hexdump, symlink status — all cached per selection, with page/half-page scrolling (Ctrl+f/b/d/u). Symlinks render as `name -> target` (target muted; broken links in error color). `a` creates file-or-dir (trailing `/`). `:help` lists all commands. Fuzzy search + regex filter. 82 unit tests. Clippy-clean, fmt-normalized, CI workflow added.
+> **Last updated:** 2026-07-30
+> **Current state:** Dual-pane navigation + rich preview + theming + git-colored entries + full file operations. **Phases 1–4 essentially complete.** Preview: syntax highlighting, images, archives (zip/tar/tgz), PDF, directory size, binary info+hexdump, symlink status — slow content is built on a worker thread behind a spinner, cached per selection, with page/half-page scrolling (Ctrl+f/b/d/u). Configurable keybindings (`keybindings:` in config.yaml), trash view (`:trash`), bulk rename (`B`), find-in-files (`Ctrl+g`), on-demand directory sizes (`S`), wildcard selection (`*`), live directory refresh via `notify`, transient footer status messages instead of modal error dialogs. Fuzzy search + regex filter with match highlighting. 119 unit tests + 7 integration tests. Clippy-clean, CI workflow added.
 
 | Phase | README Milestone | Focus |
 |-------|-----------------|-------|
 | Phase 0 (Stability) | — | Pre-M2 bug fixes, crash fixes, dead code removal |
 | Phase 1 (File Ops) | M2 | Copy, move, delete, rename, mkdir, dialogs, command palette |
 | Phase 2 (Search) | M3 | Fuzzy search, regex filter, find-in-files |
-| Phase 3 (Preview) | M4 | Syntax highlighting, archive preview, bookmarks, file watching |
-| Phase 4 (Power User) | M5 | Bulk rename, trash, git column, shell commands, directory sizes |
+| Phase 3 (Preview) | M4 | Syntax highlighting, archive preview, file watching |
+| Phase 4 (Power User) | M5 | Bulk rename, trash, shell commands, directory sizes |
 | Phase 5 (Infrastructure) | — | Tests, CI/CD, error handling, logging, docs |
 
 ---
@@ -201,24 +201,20 @@ These are small, self-contained fixes with high impact-to-effort ratio. Do them 
 ### 1.3 Vim-Style Modal Keybindings (Phase 1b)
 
 - [x] **1.3.1 Add mode state machine: Normal, Command, Visual**
-  - Resolved: implemented with a `Mode` enum + footer indicator, then **simplified away** (2026-07-26): after visual mode was removed (see 1.3.2), `Command` state was already tracked by `App.command`, so the enum was redundant and was deleted. No mode tracking remains — none is needed.
+  - Resolved: implemented with a `Mode` enum + footer indicator, then **simplified away** (2026-07-26): after visual mode was dropped, `Command` state was already tracked by `App.command`, so the enum was redundant and was deleted. No mode tracking remains — none is needed.
   - **P1** | **Files:** `src/ui/uiconfig.rs` or new `src/ui/mode.rs` | **Hints:** `enum Mode { Normal, Command, Visual, Insert }`. `Normal` is default (navigation). `Command` is `:` palette. `Visual` is selection mode (entered via `v`). Track in `UiConfig` or `App`. Render mode indicator in footer: `-- NORMAL --`, `-- VISUAL --`, `-- COMMAND --`. | **Effort:** M
-
-- [x] **1.3.2 ~~Implement `v` → enter visual (selection) mode~~ — REMOVED**
-  - Removed per user decision (2026-07-26): unnecessary — `x` selection + batch ops cover the use case with less state. `v` is unbound again; `Pane::mark_current` deleted.
-  - **P1** | **Files:** `src/ui/input.rs` | **Hints:** In visual mode, `j`/`k` move cursor AND toggle selection of traversed files. `V` for line-wise (toggle all visible). `Esc` to exit visual mode. Operations (`d`, `y`, `r`) in visual mode operate on all selected files. | **Effort:** M
 
 - [x] **1.3.3 Implement yank (`y`) and put (`p`) clipboard**
   - Resolved: `y` yanks selected-or-current into `App.clipboard: Vec<PathBuf>`; `p` pastes a copy into the *active* pane dir; `P` pastes as move and clears the clipboard. Overwrite → confirm dialog (`PasteMove` action). Footer shows `[N yanked]` / `[N cut]`. Cut state is armed via `P` at paste time, so no separate cut command needed.
   - **P1** | **Files:** `src/ui/input.rs`, `src/ui/panes.rs` | **Hints:** Internal clipboard: `Vec<PathBuf>` in `App` or `UiConfig`. `y` yanks selected (or current) file path to clipboard. `p` pastes (copies) from clipboard to current pane directory. `P` for move (cut+paste). Show clipboard count in footer: `"[2 files yanked]"`. | **Effort:** M
 
 - [x] **1.3.4 Implement `dd` (delete current file or all selected)**
-  - Resolved: pending-key state (`pending_d`); any other key cancels the chord. `dd` → trash-confirm on selected-or-current. (Visual-mode `d` variant removed with 1.3.2.)
-  - **P1** | **Files:** `src/ui/input.rs` | **Hints:** In Normal mode, `dd` = delete current file (with confirmation). In Visual mode, `d` = delete all selected files (with confirmation). | **Effort:** M
+  - Resolved: pending-key state (`pending_d`); any other key cancels the chord. `dd` → trash-confirm on selected-or-current.
+  - **P1** | **Files:** `src/ui/input.rs` | **Hints:** `dd` = delete the selected-or-highlighted entries (with confirmation). | **Effort:** M
 
 - [x] **1.3.5 Implement `r` (rename current file)**
   - Resolved: `r` already opened the rename dialog (1.2.4). Bulk rename of selections is Phase 4 task 4.1.
-  - **P1** | **Files:** `src/ui/input.rs`, `src/ui/dialog.rs` | **Hints:** In Normal mode, `r` opens rename dialog for the currently highlighted file. In Visual mode, prompt whether to rename individually or enter bulk rename mode. | **Effort:** M
+  - **P1** | **Files:** `src/ui/input.rs`, `src/ui/dialog.rs` | **Hints:** `r` opens the rename dialog for the currently highlighted file; bulk rename of a multi-selection is 4.1. | **Effort:** M
 
 ### 1.4 Command Palette
 
@@ -234,15 +230,11 @@ These are small, self-contained fixes with high impact-to-effort ratio. Do them 
   - Resolved: `:!cmd` runs `sh -c`, captures stdout+stderr, shows up to 30 lines in a Message dialog (truncation marker beyond that). `:shell` spawns an interactive `$SHELL` subshell (terminal suspend/resume like the editor flow) and reloads panes on exit.
   - **P2** | **Files:** `src/ui/popup_cmd.rs` | **Hints:** `:!ls -la` runs a shell command and shows output in a scrollable popup or preview pane. Use `std::process::Command::new("sh").args(["-c", cmd])`. Suspend UI during execution, capture stdout/stderr, display result. Add `:shell` to spawn an interactive subshell. | **Effort:** M
 
-### 1.5 Async Operations + Progress (thread + channel, no tokio — see Open Decision 2)
-
-- [x] **1.5.1 ~~Add `tokio` to dependencies~~ — not needed**
-  - Resolved differently: async transfers run on a worker thread with an `mpsc` progress channel; the main loop uses `crossterm::event::poll(50ms)` while a transfer is active. No tokio. See Open Decision 2.
-  - **P1** | **Files:** `Cargo.toml` | **Hints:** `tokio = { version = "1", features = ["full"] }` or minimal: `["rt-multi-thread", "fs", "sync", "macros"]`. Only needed for progress bars + cancel support. | **Effort:** S
+### 1.5 Async Operations + Progress (worker thread + mpsc channel, no tokio)
 
 - [x] **1.5.2 Implement async file copy with progress bar**
   - Resolved: transfers >10MB run in the background (`ops::spawn_transfer`): chunked 256KB copy reports bytes via channel, a `Gauge` dialog shows percent + "Esc to cancel". Esc sets the cancel flag; the worker removes the partial file and aborts. UI stays fully responsive during transfer.
-  - **P1** | **Files:** `src/fs/ops.rs` (new), `src/ui/dialog.rs` | **Hints:** When copying large files (>10MB) or multiple files, spawn a dialog with a progress bar. Use `tokio::fs::copy` or stream chunks manually for progress tracking. Cancel via `Esc`. Progress = bytes_copied / total_bytes. Update bar at ~30fps via `tokio::select!` with `tokio::time::interval`. Realistic scope: integrating tokio into a previously synchronous codebase, streaming chunked copy, progress UI at 30fps, cancel support, and tokio-ratatui event loop integration is ~2-4 weeks for a first-time tokio integration. | **Effort:** XL
+  - **P1** | **Files:** `src/fs/ops.rs` (new), `src/ui/dialog.rs` | **Hints:** When copying large files (>10MB) or multiple files, spawn a dialog with a progress bar. Stream chunks manually for progress tracking. Cancel via `Esc`. Progress = bytes_copied / total_bytes. | **Effort:** L
 
 - [x] **1.5.3 Implement async file move with progress**
   - Resolved: same threshold path — `spawn_transfer(cut=true)` copies with progress, then deletes sources; clipboard clears on completion for cut-pastes. Small moves still use instant `rename`.
@@ -275,23 +267,15 @@ These are small, self-contained fixes with high impact-to-effort ratio. Do them 
   - Resolved: `Ctrl+G` opens a find-in-files popup with input bar. Enter regex pattern, press Enter to search current directory tree (via `ignore` crate, respects .gitignore). Results shown as `path:line: content` list. Navigate with arrows, Enter opens file in editor. Limited to 1000 matches. Binary files skipped automatically.
   - **P1** | **Files:** `src/ui/input.rs`, `src/ui/popup_findinfiles.rs` (new) | **Hints:** Press `Ctrl+G` or similar to open "grep" mode. Enter search term. Walk directory tree with `ignore` crate (respects .gitignore). Search each file with `ripgrep`-style line matching. Show results in a new pane or popup: `filename:line: match`. Allow `Enter` on a result to open the file at that line. Add `ignore = "0.4"` to `Cargo.toml`. | **Effort:** L
 
-- [ ] **2.5 Add search history persistence — ON HOLD**
-  - On hold per user (2026-07-26): possibly unnecessary — fuzzy search is instant, retyping is cheap. Revisit only if it comes up again.
-  - **P2** | **Files:** `src/ui/search.rs`, `src/config.rs` | **Hints:** Store last 100 search queries in config or a separate history file. Use `Up`/`Down` in search bar to cycle through history. Save on quit, load on startup. | **Effort:** S
-
 - [x] **2.6 Highlight search matches in file listing**
   - Resolved: fuzzy search (nucleo) highlights individual matching characters with `theme.colors.warning()` background; regex filter highlights the entire matched substring. Highlighting respects the entry's base style (git colors, symlink errors, etc.).
   - **P1** | **Files:** `src/ui/panes.rs`, `src/ui/search.rs` | **Hints:** When filter is active, render matching filename characters with a highlight color (e.g., yellow background or bold). Use ratatui `Span` with style for matched portion of filename. | **Effort:** M
-
-- [ ] **2.7 Add `--search` and `--regex` CLI flags for headless use — ON HOLD**
-  - On hold per user (2026-07-26): possibly unnecessary — matters mainly for scripting, which nobody has asked for.
-  - **P2** | **Files:** `src/cli.rs`, `src/main.rs` | **Hints:** `-s/--search <PATTERN>` opens with search pre-filled. `-r/--regex <PATTERN>` opens with regex filter pre-applied. Mentioned in README M0 checklist. | **Effort:** S
 
 ---
 
 ## Phase 3: Preview & Polish (M4)
 
-> Goal: Rich previews, remove external dependencies, add bookmarks and history.
+> Goal: Rich previews, remove external dependencies, live refresh.
 > Depends on: Phase 0. Phase 2 (search) is recommended for find-in-files preview integration.
 
 ### 3.1 Syntax Highlighting — Replace `bat` with `syntect`
@@ -336,26 +320,22 @@ These are small, self-contained fixes with high impact-to-effort ratio. Do them 
   - Resolved (user request): directories preview to total recursive size, file/dir counts, and a children listing (dirs first, capped at 1000). Sizing uses `ops::total_size_capped` (50k-entry cap, shows "≥ X (partial)"); the walk never follows symlinks, so symlink cycles cannot hang it. Parent (`..`) and unknown-kind entries show a message instead of a filesystem preview.
   - **P2** | **Files:** `src/ui/popup_preview.rs` | **Effort:** S
 
-### 3.4 ~~Bookmarks & History~~ — REMOVED
+### 3.4 File Watching
 
-Removed per user decision (2026-07-26): not needed. Tasks 3.4.1–3.4.4 (bookmark storage, bookmark keybindings, directory history, recent files) will not be implemented.
-
-### 3.5 File Watching
-
-- [x] **3.5.1 Add `notify` crate for live directory refresh**
+- [x] **3.4.1 Add `notify` crate for live directory refresh**
   - Resolved: `notify = "8"` added; `RecommendedWatcher` created at startup with an `mpsc` channel.
   - **P1** | **Files:** `Cargo.toml` | **Hints:** `notify = { version = "7", features = ["macos_kqueue"] }`. Cross-platform filesystem events. | **Effort:** S
 
-- [x] **3.5.2 Implement auto-refresh on external changes**
-  - Resolved: Both pane directories are watched (`NonRecursive`). The run loop drains events via `try_recv`, arms a 150 ms debounce `Instant`, and reloads panes on silence. Watches re-sync automatically on navigation via `refresh_fs_watches()`. The 50 ms tick loop is extended to also run while `fs_debounce` is set so the reload fires promptly.
+- [x] **3.4.2 Implement auto-refresh on external changes**
+  - Resolved: Both pane directories are watched (`NonRecursive`). The run loop drains events via `try_recv` (ignoring access/read events, which rodeo's own preview triggers), arms a 150 ms debounce `Instant`, and reloads panes on silence — keeping both the cursor position and the flagged entries. Watches re-sync automatically on navigation via `refresh_fs_watches()`. The 50 ms tick loop is extended to also run while `fs_debounce` is set so the reload fires promptly.
   - **P1** | **Files:** `src/ui/mod.rs`, `src/ui/panes.rs` | **Effort:** M
 
 ---
 
 ## Phase 4: Power User (M5)
 
-> Goal: Bulk rename, trash, git column, shell integration, directory sizes.
-> Depends on: Phase 1 (operations), Phase 3 (bookmarks/history).
+> Goal: Bulk rename, trash, shell integration, directory sizes.
+> Depends on: Phase 1 (operations).
 
 - [x] **4.1 Bulk rename with regex and sequential patterns**
   - Resolved: `B` (or `Shift+B`) opens `BulkRename` popup on 2+ selected files. Pattern bar supports `s/regex/replacement/[g]` substitution and `prefix_%03d` sequential numbering. Live two-column old→new preview; collision and empty-name errors shown inline. Enter applies, Esc cancels.
@@ -364,11 +344,6 @@ Removed per user decision (2026-07-26): not needed. Tasks 3.4.1–3.4.4 (bookmar
 - [x] **4.2 Trash support with restore capability**
   - Resolved: `:trash` opens `TrashView` popup listing trashed items with original paths. `r` restores selected/highlighted items to their original location; `D` permanently deletes them; `x` multi-selects. Uses `trash::os_limited::{list, restore_all, purge_all}` (Linux/Windows). macOS shows a graceful "not supported" message.
   - **P1** | **Files:** `src/ui/popup_trash.rs` (new), `src/ui/input.rs` | **Effort:** L
-
-- [ ] **4.3 Git status column in file listing (optional, mostly superseded)**
-  - Superseded by entry git-colors (2026-07-26): entry names are colored by status — modified=`warning`, added=`success`, deleted=`error`, untracked=`info`, ignored=`muted` — matching the header palette. Directories aggregate the most severe descendant status. Data: `git status --porcelain=v1 -z -uall --ignored=matching` parsed in `src/ui/git.rs`, refreshed on pane reload.
-  - Remaining value of this task: an opt-in one-char status column for staged-vs-unstaged distinction, which colors can't express. Low priority.
-  - **P2** | **Files:** `src/ui/panes.rs` | **Hints:** Instead of just showing selected marker (`●`) in column 0, show git status: `M` modified, `A` added, `D` deleted, `?` untracked, `!` ignored, ` ` clean. Use `gix` crate (pure Rust) for git status parsing: `gix = "0.70"`. Cache git status per directory to avoid repeated `git status` calls. Update only when directory changes or on manual refresh. | **Effort:** L
 
 - [x] **4.4 Directory size calculation**
   - Resolved: `Shift+S` → `Action::DirSizes` → `compute_dir_sizes()` walks each directory (capped at 200k entries), fills `entry.dir_size`, shows `≥X` when truncated. Size column shows the result in place of "DIR".
@@ -434,8 +409,9 @@ Removed per user decision (2026-07-26): not needed. Tasks 3.4.1–3.4.4 (bookmar
 - [ ] **5.1.8 Add integration test: app starts and renders without panic**
   - **P1** | **Files:** `tests/integration.rs` (new) | **Hints:** Use `ratatui::Terminal::new(CrosstermBackend::new(io::sink()))` or `ratatui::backend::TestBackend`. Run one frame of `App::render()`. Assert no panic. | **Effort:** M
 
-- [ ] **5.1.9 Add integration tests for file operations (requires temp dirs)**
-  - **P2** | **Files:** `tests/file_ops.rs` (new) | **Hints:** Create temp directory with test files. Run copy/move/delete/rename. Assert filesystem state. Use `tempfile` crate. | **Effort:** L
+- [x] **5.1.9 Add integration tests for file operations (requires temp dirs)**
+  - Resolved: `tests/file_ops.rs` — 7 tests over temp dirs covering copy (file + recursive tree), move (source removed), delete, rename, the capped size walk (symlinked dirs not followed) and the transfer path guards. Required exposing the crate as a library (`src/lib.rs`).
+  - **P2** | **Files:** `tests/file_ops.rs` | **Effort:** L
 
 - [x] **5.1.10 Add unit tests for dialog module (once created)**
   - Resolved: 11 tests — confirm y/n/Enter/Esc/stay-open, input typing/backspace/Shift/Ctrl-filtering/submit/cancel, message close keys.
@@ -468,13 +444,15 @@ Removed per user decision (2026-07-26): not needed. Tasks 3.4.1–3.4.4 (bookmar
 - [ ] **5.3.3 Systematic `.unwrap()` / `.expect()` removal**
   - **P1** | **Files:** All `src/**/*.rs` | **Hints:** Convert panicking functions to return `Result`. Use `?` propagation. For truly unrecoverable errors (e.g., terminal init failure), use `.expect()` with a descriptive message. File listing errors should not crash — show error in pane body. | **Effort:** L
 
-- [ ] **5.3.4 Add error display in footer/pane for non-fatal errors**
-  - **P2** | **Files:** `src/ui/footer.rs`, `src/ui/mod.rs` | **Hints:** Add `error_message: Option<String>` to `UiConfig` or `Footer`. On file operation failure, set the message and show it in the footer (or as a temporary status bar notification). Auto-clear after 3 seconds. | **Effort:** M
+- [x] **5.3.4 Add error display in footer/pane for non-fatal errors**
+  - Resolved: `Footer::set_status(text, is_error)` with a 3 s TTL, driven by `App::ok_status()` / `App::err_status()`. Every non-fatal failure (create, rename, delete, copy, move, theme, config save/reload, shell) and every successful operation now reports there instead of opening a modal dialog. Errors use `theme.colors.error()`, successes `info()`.
+  - **P2** | **Files:** `src/ui/footer.rs`, `src/ui/input.rs` | **Effort:** M
 
 ### 5.4 Documentation
 
-- [ ] **5.4.1 Add crate-level doc comments (`//!`) to `src/lib.rs` or `src/main.rs`**
-  - **P2** | **Files:** `src/main.rs`, `src/lib.rs` (new, optional) | **Hints:** Describe what rodeo is, link to README, document module structure. | **Effort:** S
+- [x] **5.4.1 Add crate-level doc comments (`//!`) to `src/lib.rs` or `src/main.rs`**
+  - Resolved: `src/lib.rs` documents what rodeo is and what each top-level module (`config`, `fs`, `ui`, `cli`, `logging`) is responsible for.
+  - **P2** | **Files:** `src/lib.rs` | **Effort:** S
 
 - [ ] **5.4.2 Add doc comments to all public items**
   - **P2** | **Files:** All `src/**/*.rs` | **Hints:** Every `pub struct`, `pub fn`, `pub enum` should have `///` doc comments. Run `cargo doc --open` to verify. Enable `#![warn(missing_docs)]` once most items are documented. | **Effort:** M
@@ -509,10 +487,9 @@ Phase 0 (Bug Fixes) ────────────────────
 - Phase 1 file ops require Phase 0 unwrap cleanup (no crashes during file operations).
 - Phase 1.3 (vim modes) benefits from Phase 1.2 (sync ops) being done — modes are about triggering operations.
 - Phase 1.4 (command palette) can run in parallel with 1.3.
-- Phase 1.5 (async) requires tokio and `src/fs/ops.rs` extraction from Phase 1.2.
+- Phase 1.5 (async transfers) requires the `src/fs/ops.rs` extraction from Phase 1.2.
 - Phase 3 syntect replacement has no blockers — can start any time.
-- Phase 4 bulk rename needs visual mode (1.3) and file ops (1.2).
-- Phase 4 git column has no blockers (git info already in header).
+- Phase 4 bulk rename needs file ops (1.2).
 - Phase 5 runs in parallel with everything.
 
 ---
@@ -529,9 +506,11 @@ Phase 0 (Bug Fixes) ────────────────────
 | `crossterm` | 0.29.0 | Yes | Terminal input events |
 | `env_logger` | 0.11.10 | Yes | Logging (to be replaced by `tracing`) |
 | `flate2` | 1.1.9 | Yes | Gzip decompression for `.tar.gz` preview |
+| `ignore` | 0.4.31 | Yes | Recursive walking for find-in-files (respects .gitignore) |
 | `image` | 0.25.10 | Yes | Image preview decoding |
 | `infer` | 0.16 | Yes | File type detection (replaced `file` command) |
 | `log` | 0.4.31 | Yes | Log macros (to be replaced by `tracing`) |
+| `notify` | 8.2.0 | Yes | Filesystem event watching (live pane refresh) |
 | `nucleo` | 0.5.0 | Yes | Fuzzy file matching |
 | `pdf-extract` | 0.12.0 | Yes | PDF text extraction for preview |
 | `ratatui` | 0.30.0 | Yes | Core TUI framework |
@@ -540,6 +519,7 @@ Phase 0 (Bug Fixes) ────────────────────
 | `serde` | 1.0.228 | Yes | Config/theme deserialization |
 | `syntect` | 5.3.0 | Yes | Syntax highlighting (replaced `bat`) |
 | `tar` | 0.4.46 | Yes | Tar archive listing for preview |
+| `tempfile` | 3 | Yes | Dev-dependency: temp dirs for unit/integration tests |
 | `trash` | 5.2.6 | Yes | Delete to system trash (with permanent fallback) |
 | `xdg` | 3.0.0 | Yes | XDG base directories for config path |
 | `yaml_serde` | 0.10.4 | Yes | YAML config parsing (see Open Decisions) |
@@ -549,14 +529,11 @@ Phase 0 (Bug Fixes) ────────────────────
 
 | Crate | Version | Phase | Purpose |
 |-------|---------|-------|---------|
-| `ignore` | 0.4 | Phase 2 | File tree walking (respects .gitignore) |
 | `toml` | 0.8 | Phase 3 | Possibly config format switch (Open Decision 1) |
-| `notify` | 7 | Phase 3 | Filesystem event watching |
 | `tracing` | 0.1 | Phase 5 | Structured logging (replace `log`) |
 | `tracing-subscriber` | 0.3 | Phase 5 | Log output formatting |
 | `tracing-appender` | 0.2 | Phase 5 | File-based log rotation (optional) |
 | `gix` | 0.70 | Phase 4 | Pure-Rust git status (replace `git` CLI) |
-| `tempfile` | 3 | Phase 5 | Test utilities |
 
 > **Note:** Crate versions above are current as of 2026-06-19. Check [crates.io](https://crates.io) for latest versions before adding. Use `cargo add <crate>` for automatic version resolution.
 
@@ -575,7 +552,6 @@ Phase 0 (Bug Fixes) ────────────────────
 | # | Question | Options | Impact | Recommendation |
 |---|----------|---------|--------|----------------|
 | 1 | **YAML vs TOML for config?** | YAML (current) or TOML (planning docs) | Affects `config.rs`, theme files, Cargo.toml deps, user-facing format | **TOML** — more Rust-idiomatic, serde support is first-class, no indentation issues, README and all planning docs assume TOML. However, 10 theme files already exist in YAML — migration script needed. |
-| 2 | ~~**When to introduce async (tokio)?**~~ → **DECIDED: no tokio** | Thread + channel vs tokio | — | **Thread + mpsc** (2026-07-26, supersedes earlier "Phase 1.5 tokio" note): async transfers run on a worker thread reporting bytes over an `mpsc` channel; the event loop polls with a timeout while transfers run. Delivers progress + cancel UX with zero new deps and no runtime. Re-evaluate tokio only if file watching (3.5) or many concurrent transfers need an executor — the channel protocol stays identical. |
 | 3 | **Vim-modal or modeless?** | Modal (Normal/Command/Visual) or single-mode with key combos | Fundamental UX design. Affects all keybinding code. | **Modal** — all three planning docs agree. Vim users are the target audience. Start modeless in Phase 1.2, introduce modes in 1.3. |
 | 4 | **`syntect` vs keep `bat`?** | `syntect` (pure Rust, bundled) vs `bat` (external binary) | Preview architecture, binary size, runtime deps | **`syntect`** — all planning docs recommend it. Removes external dependency, works offline, gives full control over theme mapping. `bat` was a quick prototype shortcut. |
 | 5 | **`gix` vs `git` CLI?** | `gix` (pure Rust) vs shelling out to `git` binary | Git status performance, binary size, portability | **`gix`** — removes runtime dependency on `git` binary, no shell overhead, consistent behavior. But lower priority: current `git` CLI approach works fine for header stats. |
@@ -589,16 +565,16 @@ Phase 0 (Bug Fixes) ────────────────────
 
 ## Summary: Effort Estimates by Phase
 
-| Phase | Tasks | Total Estimate | Can Parallelize? |
-|-------|-------|---------------|-------------------|
-| Quick Wins | 15 | ~2 hours | All independent |
-| Phase 0: Bug Fixes | 21 | ~3 days | Most independent |
-| Phase 1: File Ops | 18 | ~2-3 weeks | 1.1-1.2 first, then 1.3-1.5 |
-| Phase 2: Search | 7 | ~1-2 weeks | Can start after 0 |
-| Phase 3: Preview | 11 | ~2 weeks | Can start after 0 |
-| Phase 4: Power User | 9 | ~3 weeks | Needs Phase 1+2+3 partially |
-| Phase 5: Infrastructure | 18 | ~2 weeks | Runs in parallel |
-| **Total** | **99** | **~10-12 weeks part-time** | |
+| Phase | Done | Open | Notes |
+|-------|------|------|-------|
+| Quick Wins | 12 | 0 | — |
+| Phase 0: Bug Fixes | 21 | 0 | — |
+| Phase 1: File Ops | 22 | 0 | — |
+| Phase 2: Search | 5 | 0 | — |
+| Phase 3: Preview | 11 | 1 | only 3.2.3 (archive browsing) left |
+| Phase 4: Power User | 8 | 0 | — |
+| Phase 5: Infrastructure | 13 | 9 | CI extras, tracing, docs |
+| **Total** | **92** | **10** | |
 
 ---
 
