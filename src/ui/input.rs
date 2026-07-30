@@ -5,8 +5,12 @@ use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifier
 use super::{
     App,
     dialog::{Dialog, DialogAction, DialogResult},
+    keymap::Action,
     panes::{EntryKind, MoveDirection, OpenAction, SortOrder, SortType},
+    popup_bulkrename::BulkRename,
+    popup_findinfiles::FindInFiles,
     popup_preview::PopupPreview,
+    popup_trash::TrashView,
     search::{FilterSpec, Search, SearchKind},
     textinput::TextInput,
     uiconfig::ActivePane,
@@ -17,48 +21,79 @@ use crate::ui::theme::Theme;
 
 impl App {
     pub(crate) fn handle_input(&mut self) -> std::io::Result<()> {
-        match event::read()? {
-            Event::Key(key_event) if key_event.kind == KeyEventKind::Press => {
-                // A pending `d` (awaiting the second key of `dd`) is cancelled
-                // by any other key.
-                if self.pending_d && !matches!(key_event.code, KeyCode::Char('d')) {
-                    self.pending_d = false;
-                }
-
-                // Dialogs take priority over all other key handling.
-                if self.dialog.is_some() {
-                    self.handle_dialog_key(&key_event);
-                    return Ok(());
-                }
-
-                // The command bar consumes keys while it is open.
-                if self.command.is_some() {
-                    self.handle_command_key(&key_event);
-                    return Ok(());
-                }
-
-                // The search bar consumes keys while it is being edited.
-                if self.search.is_some() {
-                    self.handle_search_key(&key_event);
-                    return Ok(());
-                }
-
-                if self.is_popup_active() && self.handle_popup_key(&key_event) {
-                    return Ok(());
-                }
-
-                if self.handle_ctrl_key(&key_event) {
-                    return Ok(());
-                }
-                if self.handle_shift_key(&key_event) {
-                    return Ok(());
-                }
-
-                self.handle_main_key(&key_event);
-            }
-            _ => {}
+        if let Event::Key(key_event) = event::read()?
+            && key_event.kind == KeyEventKind::Press
+        {
+            self.dispatch_key(&key_event);
         }
         Ok(())
+    }
+
+    /// Routes one key press through the handler chain. Split out of
+    /// [`Self::handle_input`] so tests can drive the app without a terminal.
+    pub(crate) fn dispatch_key(&mut self, key_event: &KeyEvent) {
+        // A pending `d` (awaiting the second key of `dd`) is cancelled
+        // by any other key.
+        if self.pending_d && !matches!(key_event.code, KeyCode::Char('d')) {
+            self.pending_d = false;
+        }
+
+        // Dialogs take priority over all other key handling.
+        if self.dialog.is_some() {
+            self.handle_dialog_key(key_event);
+            return;
+        }
+
+        // The command bar consumes keys while it is open.
+        if self.command.is_some() {
+            self.handle_command_key(key_event);
+            return;
+        }
+
+        // The search bar consumes keys while it is being edited.
+        if self.search.is_some() {
+            self.handle_search_key(key_event);
+            return;
+        }
+
+        // The find-in-files popup consumes keys while it is open.
+        if self.find_in_files.is_some() {
+            self.handle_find_in_files_key(key_event);
+            return;
+        }
+
+        // Bulk rename popup consumes keys while it is open.
+        if self.bulk_rename.is_some() {
+            self.handle_bulk_rename_key(key_event);
+            return;
+        }
+
+        // Trash view consumes keys while it is open.
+        if self.trash_view.is_some() {
+            self.handle_trash_key(key_event);
+            return;
+        }
+
+        if self.is_popup_active() && self.handle_popup_key(key_event) {
+            return;
+        }
+
+        if self.handle_ctrl_key(key_event) {
+            return;
+        }
+        if self.handle_shift_key(key_event) {
+            return;
+        }
+
+        self.handle_main_key(key_event);
+    }
+
+    /// `true` for keys that may trigger a keymap action: plain presses and
+    /// Shift'ed characters (`G`, `*`, `?`, `:` arrive with SHIFT on most
+    /// layouts). Ctrl/Alt/Super combos are never single-key bindings and must
+    /// not fall through to the keymap.
+    fn is_plain_key(key: &KeyEvent) -> bool {
+        (key.modifiers - KeyModifiers::SHIFT).is_empty()
     }
 
     fn is_popup_active(&self) -> bool {
@@ -159,6 +194,244 @@ impl App {
     fn cancel_search(&mut self) {
         self.search = None;
         self.panes.get_active_pane_mut().clear_filter();
+    }
+
+    fn handle_find_in_files_key(&mut self, key: &KeyEvent) {
+        let Some(find) = self.find_in_files.as_mut() else {
+            return;
+        };
+
+        // If currently searching, only allow Esc to cancel
+        if find.searching {
+            if matches!(key.code, KeyCode::Esc) {
+                self.find_in_files = None;
+            }
+            return;
+        }
+
+        match key.code {
+            KeyCode::Enter => {
+                if find.results.is_empty() {
+                    // Start a new search
+                    let pattern = find.input.value.clone();
+                    if !pattern.is_empty() {
+                        self.start_find_in_files(pattern);
+                    }
+                } else {
+                    // Open the selected file
+                    if let Some(m) = find.selected_match() {
+                        self.pending_editor_file = Some(m.path.clone());
+                        self.find_in_files = None;
+                    }
+                }
+            }
+            KeyCode::Esc => {
+                self.find_in_files = None;
+            }
+            KeyCode::Backspace => {
+                find.input.backspace();
+            }
+            KeyCode::Down => {
+                find.move_down();
+            }
+            KeyCode::Up => {
+                find.move_up();
+            }
+            KeyCode::Left => {
+                find.input.left();
+            }
+            KeyCode::Right => {
+                find.input.right();
+            }
+            KeyCode::Char(c)
+                if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT =>
+            {
+                find.input.insert(c);
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_trash_key(&mut self, key: &KeyEvent) {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => {
+                self.trash_view = None;
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                if let Some(tv) = self.trash_view.as_mut() {
+                    tv.move_up();
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if let Some(tv) = self.trash_view.as_mut() {
+                    tv.move_down();
+                }
+            }
+            KeyCode::Char('x') => {
+                if let Some(tv) = self.trash_view.as_mut() {
+                    tv.toggle_select();
+                    tv.move_down();
+                }
+            }
+            // Restore selected/highlighted item(s).
+            KeyCode::Char('r') => {
+                let Some(tv) = self.trash_view.as_ref() else {
+                    return;
+                };
+                match tv.restore_targets() {
+                    Ok(n) => {
+                        self.ok_status(format!("{n} item(s) restored"));
+                        self.trash_view = Some(TrashView::load()); // refresh
+                        self.panes.reload(&self.config, true);
+                    }
+                    Err(e) => self.err_status(e),
+                }
+            }
+            // Permanently delete selected/highlighted item(s).
+            KeyCode::Char('D') => {
+                let Some(tv) = self.trash_view.as_ref() else {
+                    return;
+                };
+                match tv.purge_targets() {
+                    Ok(n) => {
+                        self.ok_status(format!("{n} item(s) permanently deleted"));
+                        self.trash_view = Some(TrashView::load()); // refresh
+                    }
+                    Err(e) => self.err_status(e),
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_bulk_rename_key(&mut self, key: &KeyEvent) {
+        match key.code {
+            KeyCode::Esc => {
+                self.bulk_rename = None;
+            }
+            KeyCode::Enter => {
+                let Some(br) = self.bulk_rename.as_ref() else {
+                    return;
+                };
+                if !br.is_valid() {
+                    return;
+                }
+                let pairs = br.rename_pairs();
+                self.bulk_rename = None;
+                let mut errors = 0usize;
+                for (old, new) in &pairs {
+                    if let Err(e) = std::fs::rename(old, new) {
+                        log::error!("bulk rename {old:?} → {new:?}: {e}");
+                        errors += 1;
+                    }
+                }
+                self.panes.reload(&self.config, true);
+                if errors == 0 {
+                    self.ok_status(format!("{} file(s) renamed", pairs.len()));
+                } else {
+                    self.err_status(format!("{errors} rename(s) failed"));
+                }
+            }
+            KeyCode::Backspace => {
+                if let Some(br) = self.bulk_rename.as_mut() {
+                    br.pattern.backspace();
+                    br.update_preview();
+                }
+            }
+            KeyCode::Left => {
+                if let Some(br) = self.bulk_rename.as_mut() {
+                    br.pattern.left();
+                }
+            }
+            KeyCode::Right => {
+                if let Some(br) = self.bulk_rename.as_mut() {
+                    br.pattern.right();
+                }
+            }
+            KeyCode::Char(c)
+                if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT =>
+            {
+                if let Some(br) = self.bulk_rename.as_mut() {
+                    br.pattern.insert(c);
+                    br.update_preview();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn start_find_in_files(&mut self, pattern: String) {
+        let Some(find) = self.find_in_files.as_mut() else {
+            return;
+        };
+
+        find.start_search();
+
+        // Get the current directory
+        let search_dir = PathBuf::from(&self.panes.get_active_pane().path);
+
+        // Compile the regex pattern
+        let re = match regex::Regex::new(&pattern) {
+            Ok(re) => re,
+            Err(_) => {
+                find.finish_search();
+                self.err_status("Invalid regex pattern".to_string());
+                return;
+            }
+        };
+
+        // Walk the directory tree and search file contents
+        let walker = ignore::WalkBuilder::new(&search_dir)
+            .hidden(false)
+            .git_ignore(true)
+            .build();
+
+        let mut match_count = 0;
+        for entry in walker {
+            let Ok(entry) = entry else { continue };
+            let path = entry.path();
+
+            // Only search files, not directories
+            if !path.is_file() {
+                continue;
+            }
+
+            // Read file contents
+            let Ok(contents) = std::fs::read_to_string(path) else {
+                continue;
+            };
+
+            // Search each line
+            for (line_num, line) in contents.lines().enumerate() {
+                if re.is_match(line) {
+                    let find = self.find_in_files.as_mut().unwrap();
+                    find.add_result(super::popup_findinfiles::FindMatch {
+                        path: path.to_path_buf(),
+                        line_num: line_num + 1,
+                        line_content: line.to_string(),
+                    });
+                    match_count += 1;
+
+                    // Limit results to avoid excessive memory use
+                    if match_count >= 1000 {
+                        break;
+                    }
+                }
+            }
+
+            if match_count >= 1000 {
+                break;
+            }
+        }
+
+        let find = self.find_in_files.as_mut().unwrap();
+        find.finish_search();
+
+        if match_count == 0 {
+            self.ok_status("No matches found".to_string());
+        } else {
+            self.ok_status(format!("Found {} matches", match_count));
+        }
     }
 
     /// Transient footer notice for successful operations.
@@ -619,6 +892,7 @@ impl App {
                 Ok(()) => self.ok_status("Configuration saved".to_string()),
                 Err(e) => self.err_status(format!("Cannot save config: {e}")),
             },
+            "so" | "source" => self.reload_config(),
             "e" | "cd" => self.navigate_to(arg),
             "mkdir" => {
                 let parent = PathBuf::from(&self.panes.get_active_pane().path);
@@ -642,16 +916,42 @@ impl App {
             "theme" => self.switch_theme(arg),
             "help" => self.ui_config.active_keybind_popup = true,
             "shell" => self.pending_shell = true,
+            "trash" => {
+                self.trash_view = Some(TrashView::load());
+            }
             _ => {
                 self.err_status(format!("Unknown command: {cmd}  (try :help)"));
             }
         }
     }
 
+    /// `:source` — reload the config file at runtime and apply it (theme
+    /// included when it changed).
+    fn reload_config(&mut self) {
+        match Config::load_config(None) {
+            Ok(config) => {
+                let theme_name = config.theme.clone();
+                let theme_changed = theme_name != self.config.theme;
+                self.config = config;
+                if theme_changed {
+                    match Theme::load_theme(Some(&theme_name)) {
+                        Ok(theme) => self.theme = theme,
+                        Err(e) => {
+                            self.err_status(format!("Cannot load theme '{theme_name}': {e}"));
+                        }
+                    }
+                }
+                self.panes.reload(&self.config, false);
+                self.ok_status("Config reloaded".to_string());
+            }
+            Err(e) => self.err_status(format!("Cannot reload config: {e}")),
+        }
+    }
+
     fn complete_command(&mut self) {
         const COMMANDS: &[&str] = &[
-            "q", "quit", "w", "write", "e", "cd", "mkdir", "touch", "delete", "rename", "theme",
-            "help", "shell",
+            "q", "quit", "w", "write", "so", "source", "e", "cd", "mkdir", "touch", "delete",
+            "rename", "theme", "help", "shell",
         ];
 
         let Some(input) = self.command.as_mut() else {
@@ -750,6 +1050,24 @@ impl App {
             return;
         }
 
+        // Expand %f → space-separated shell-quoted paths of selected (or
+        // highlighted) entries so `:!wc -l %f` works naturally.
+        let cmd = if cmd.contains("%f") {
+            let targets = self.op_targets();
+            let quoted = targets
+                .iter()
+                .map(|p| {
+                    let s = p.to_string_lossy();
+                    format!("'{}'", s.replace('\'', "'\\''" ))
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+            cmd.replace("%f", &quoted)
+        } else {
+            cmd.to_string()
+        };
+        let cmd = cmd.as_str();
+
         match std::process::Command::new("sh").args(["-c", cmd]).output() {
             Ok(out) => {
                 let mut text = String::from_utf8_lossy(&out.stdout).to_string();
@@ -766,18 +1084,17 @@ impl App {
                     text = "(no output)".to_string();
                 }
 
-                let lines: Vec<&str> = text.lines().collect();
-                let text = if lines.len() > 30 {
-                    format!(
-                        "{}\n… ({} more lines)",
-                        lines[..30].join("\n"),
-                        lines.len() - 30
-                    )
-                } else {
-                    text
-                };
+                let lines: Vec<ratatui::text::Line> = text
+                    .lines()
+                    .map(|l| ratatui::text::Line::from(l.to_string()))
+                    .collect();
 
-                self.dialog = Some(Dialog::message(format!(":!{cmd}"), text));
+                // Output opens as a scrollable, selection-independent preview.
+                self.preview = Some(PopupPreview::from_text(
+                    format!(":!{cmd}"),
+                    ratatui::text::Text::from(lines),
+                ));
+                self.ui_config.active_preview_popup = true;
             }
             Err(e) => {
                 self.err_status(format!("Cannot run shell: {e}"));
@@ -787,9 +1104,13 @@ impl App {
     // Keys checked in order: popup-specific → Ctrl-modified → Shift-modified → unmodified.
     // Popup handler takes priority when any popup is active.
     fn handle_popup_key(&mut self, key: &KeyEvent) -> bool {
-        if key.code == KeyCode::Esc
-            || key.code == KeyCode::Char(' ')
-            || key.code == KeyCode::Char('q')
+        // Dismiss keys are plain presses only — Ctrl+Space/Ctrl+q must not
+        // close a popup.
+        if Self::is_plain_key(key)
+            && matches!(
+                key.code,
+                KeyCode::Esc | KeyCode::Char(' ') | KeyCode::Char('q')
+            )
         {
             self.ui_config.active_keybind_popup = false;
             self.ui_config.active_about_popup = false;
@@ -837,7 +1158,7 @@ impl App {
                 }
                 _ => return false,
             }
-        } else if self.ui_config.active_preview_popup && key.modifiers.is_empty() {
+        } else if self.ui_config.active_preview_popup && Self::is_plain_key(key) {
             match key.code {
                 KeyCode::Up | KeyCode::Char('k') => {
                     self.panes.goto_next(MoveDirection::Up);
@@ -889,6 +1210,10 @@ impl App {
                     self.search = Some(Search::regex(initial));
                     return true;
                 }
+                KeyCode::Char('g') => {
+                    self.find_in_files = Some(FindInFiles::new());
+                    return true;
+                }
                 _ => {
                     log::debug!("unhandled Ctrl+{:?}", key.code);
                     return false;
@@ -929,7 +1254,10 @@ impl App {
                     self.panes.reload(&self.config, false);
                     return true;
                 }
-                KeyCode::Char('G') => self.panes.goto_last(),
+                KeyCode::Char('G') => {
+                    self.panes.goto_last();
+                    return true;
+                }
                 _ => {
                     log::debug!("unhandled Shift+{:?}", key.code);
                     return false;
@@ -940,8 +1268,31 @@ impl App {
     }
 
     fn handle_main_key(&mut self, key: &KeyEvent) {
-        match key.code {
-            KeyCode::Enter | KeyCode::F(4) => match self.panes.get_active_pane_mut().open() {
+        // Esc is hardcoded: it drives the universal dismiss chain.
+        if key.code == KeyCode::Esc {
+            self.handle_esc();
+            return;
+        }
+
+        // Keymap entries are single-key bindings: a modified key that no
+        // Ctrl/Shift handler claimed is dropped rather than firing the
+        // unmodified action (Ctrl+d must not start the `dd` chord).
+        if !Self::is_plain_key(key) {
+            log::debug!("unhandled {:?}+{:?}", key.modifiers, key.code);
+            return;
+        }
+
+        let Some(action) = self
+            .keymap
+            .iter()
+            .find(|(code, _)| *code == key.code)
+            .map(|(_, action)| *action)
+        else {
+            return;
+        };
+
+        match action {
+            Action::OpenEntry => match self.panes.get_active_pane_mut().open() {
                 OpenAction::DirectoryOpened | OpenAction::Reload => {
                     self.panes.reload(&self.config, true);
                     self.header
@@ -952,7 +1303,7 @@ impl App {
                 }
                 OpenAction::Nothing => {}
             },
-            KeyCode::Backspace => {
+            Action::ParentDir => {
                 let path = self.panes.get_active_pane().path.clone();
                 if let OpenAction::DirectoryOpened =
                     self.panes.get_active_pane_mut().go_to_parent(&path)
@@ -962,7 +1313,7 @@ impl App {
                         .update(self.panes.get_active_pane().path.to_string());
                 }
             }
-            KeyCode::F(7) => {
+            Action::Mkdir => {
                 let parent = PathBuf::from(&self.panes.get_active_pane().path);
                 self.dialog = Some(Dialog::input(
                     "mkdir",
@@ -971,40 +1322,60 @@ impl App {
                     DialogAction::Mkdir { parent },
                 ));
             }
-            KeyCode::Char('g') => self.panes.goto_first(),
-            KeyCode::Char('x') => self.panes.get_active_pane_mut().toggle_select(),
-            KeyCode::Char('q') | KeyCode::F(10) => self.exit = true,
-            KeyCode::Char('h') => self.panes.set_active_pane(ActivePane::Left),
-            KeyCode::Char('l') => self.panes.set_active_pane(ActivePane::Right),
-            KeyCode::Tab => {
+            Action::GotoFirst => self.panes.goto_first(),
+            Action::GotoLast => self.panes.goto_last(),
+            Action::ToggleSelect => self.panes.get_active_pane_mut().toggle_select(),
+            Action::SelectGlob => {
+                self.dialog = Some(Dialog::input(
+                    "Select",
+                    "Wildcard pattern (* ?):",
+                    "",
+                    DialogAction::SelectGlob,
+                ));
+            }
+            Action::DirSizes => {
+                let count = self.panes.get_active_pane_mut().compute_dir_sizes();
+                self.ok_status(format!("Sizes computed for {count} directories"));
+            }
+            Action::BulkRename => {
+                let pane = self.panes.get_active_pane();
+                let targets = if pane.has_selections() {
+                    pane.selected_entries()
+                        .into_iter()
+                        .map(|e| e.path)
+                        .collect()
+                } else {
+                    // Fall back to the highlighted entry.
+                    pane.get_selected_entry()
+                        .filter(|e| !matches!(e.kind, EntryKind::Parent))
+                        .map(|e| vec![e.path])
+                        .unwrap_or_default()
+                };
+                if targets.len() < 2 {
+                    self.err_status(
+                        "Select 2+ files with x before bulk rename".to_string(),
+                    );
+                } else {
+                    self.bulk_rename = Some(BulkRename::new(targets));
+                }
+            }
+            Action::Quit => self.exit = true,
+            Action::PaneLeft => self.panes.set_active_pane(ActivePane::Left),
+            Action::PaneRight => self.panes.set_active_pane(ActivePane::Right),
+            Action::PaneToggle => {
                 self.panes.toggle_active_pane();
                 self.header
                     .update(self.panes.get_active_pane().path.to_string());
             }
-            KeyCode::Char('?') => {
+            Action::About => {
                 self.ui_config.active_keybind_popup = false;
                 self.ui_config.active_about_popup = !self.ui_config.active_about_popup;
             }
-            KeyCode::F(1) => {
+            Action::Help => {
                 self.ui_config.active_about_popup = false;
                 self.ui_config.active_keybind_popup = !self.ui_config.active_keybind_popup;
             }
-            KeyCode::Esc => {
-                if let Some(p) = &self.progress {
-                    p.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
-                } else if self.ui_config.active_keybind_popup {
-                    self.ui_config.active_keybind_popup = false;
-                } else if self.ui_config.active_about_popup {
-                    self.ui_config.active_about_popup = false;
-                } else if self.panes.get_active_pane().filter().is_some() {
-                    self.panes.get_active_pane_mut().clear_filter();
-                } else if self.panes.get_active_pane().has_selections() {
-                    self.panes.get_active_pane_mut().clear_selections();
-                } else {
-                    self.exit = true;
-                }
-            }
-            KeyCode::Char(' ') => {
+            Action::Preview => {
                 if let Some(e) = self.panes.get_active_pane().get_selected_entry() {
                     match e.kind {
                         EntryKind::File | EntryKind::Directory | EntryKind::Symlink => {
@@ -1019,21 +1390,21 @@ impl App {
                     }
                 }
             }
-            KeyCode::Char('j') | KeyCode::Down => {
+            Action::MoveDown => {
                 self.panes.goto_next(MoveDirection::Down);
             }
-            KeyCode::Char('k') | KeyCode::Up => {
+            Action::MoveUp => {
                 self.panes.goto_next(MoveDirection::Up);
             }
-            KeyCode::Char('r') | KeyCode::F(2) => self.start_rename(),
-            KeyCode::Char('/') | KeyCode::F(3) => {
+            Action::Rename => self.start_rename(),
+            Action::Search => {
                 self.panes.get_active_pane_mut().clear_filter();
                 self.search = Some(Search::fuzzy());
             }
-            KeyCode::Char(':') => {
+            Action::CommandPalette => {
                 self.command = Some(TextInput::default());
             }
-            KeyCode::Char('a') => {
+            Action::Create => {
                 let parent = PathBuf::from(&self.panes.get_active_pane().path);
                 self.dialog = Some(Dialog::input(
                     "Create",
@@ -1042,12 +1413,12 @@ impl App {
                     DialogAction::Create { parent },
                 ));
             }
-            KeyCode::Char('y') => {
+            Action::Yank => {
                 self.yank();
             }
-            KeyCode::Char('p') => self.paste(false),
-            KeyCode::Char('P') => self.paste(true),
-            KeyCode::Char('d') => {
+            Action::Paste => self.paste(false),
+            Action::PasteMove => self.paste(true),
+            Action::DeleteChord => {
                 if self.pending_d {
                     self.pending_d = false;
                     self.start_delete();
@@ -1055,10 +1426,25 @@ impl App {
                     self.pending_d = true;
                 }
             }
-            KeyCode::F(5) => self.start_copy(),
-            KeyCode::F(6) => self.start_move(),
-            KeyCode::Delete | KeyCode::F(8) => self.start_delete(),
-            _ => {}
+            Action::Copy => self.start_copy(),
+            Action::Move => self.start_move(),
+            Action::Delete => self.start_delete(),
+        }
+    }
+
+    fn handle_esc(&mut self) {
+        if let Some(p) = &self.progress {
+            p.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        } else if self.ui_config.active_keybind_popup {
+            self.ui_config.active_keybind_popup = false;
+        } else if self.ui_config.active_about_popup {
+            self.ui_config.active_about_popup = false;
+        } else if self.panes.get_active_pane().filter().is_some() {
+            self.panes.get_active_pane_mut().clear_filter();
+        } else if self.panes.get_active_pane().has_selections() {
+            self.panes.get_active_pane_mut().clear_selections();
+        } else {
+            self.exit = true;
         }
     }
 }
@@ -1078,6 +1464,70 @@ fn common_prefix(strings: &[String]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A throwaway app rooted in a temporary directory.
+    fn test_app(dir: &Path) -> App {
+        let config = Config {
+            initial_directory_left: dir.to_string_lossy().to_string(),
+            initial_directory_right: dir.to_string_lossy().to_string(),
+            ..Default::default()
+        };
+        let theme = Theme::load_theme(None).expect("default theme in themes/");
+        App::new(theme, config)
+    }
+
+    fn key(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
+        KeyEvent::new(code, modifiers)
+    }
+
+    #[test]
+    fn ctrl_modified_key_does_not_trigger_plain_action() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = test_app(dir.path());
+
+        // Ctrl+d is not a binding: it must not start the `dd` delete chord.
+        app.dispatch_key(&key(KeyCode::Char('d'), KeyModifiers::CONTROL));
+        assert!(!app.pending_d);
+
+        // Plain d still does.
+        app.dispatch_key(&key(KeyCode::Char('d'), KeyModifiers::NONE));
+        assert!(app.pending_d);
+    }
+
+    #[test]
+    fn ctrl_q_does_not_quit() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = test_app(dir.path());
+
+        app.dispatch_key(&key(KeyCode::Char('q'), KeyModifiers::CONTROL));
+        assert!(!app.exit);
+
+        app.dispatch_key(&key(KeyCode::Char('q'), KeyModifiers::NONE));
+        assert!(app.exit);
+    }
+
+    #[test]
+    fn ctrl_space_does_not_dismiss_popup() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = test_app(dir.path());
+        app.ui_config.active_keybind_popup = true;
+
+        app.dispatch_key(&key(KeyCode::Char(' '), KeyModifiers::CONTROL));
+        assert!(app.ui_config.active_keybind_popup);
+
+        app.dispatch_key(&key(KeyCode::Char(' '), KeyModifiers::NONE));
+        assert!(!app.ui_config.active_keybind_popup);
+    }
+
+    #[test]
+    fn shifted_characters_still_reach_the_keymap() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = test_app(dir.path());
+
+        // '?' arrives with SHIFT on most layouts — it must still toggle About.
+        app.dispatch_key(&key(KeyCode::Char('?'), KeyModifiers::SHIFT));
+        assert!(app.ui_config.active_about_popup);
+    }
 
     #[test]
     fn common_prefix_of_similar_strings() {

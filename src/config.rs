@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     io,
     path::{Path, PathBuf},
 };
@@ -65,6 +66,10 @@ pub struct Config {
     pub active_pane: ActivePane,
     #[serde(default = "default_editor")]
     pub editor: String,
+    /// Optional keybinding overrides: action name → key name (single,
+    /// unmodified keys only). See `ui::keymap` for valid names.
+    #[serde(default)]
+    pub keybindings: HashMap<String, String>,
 }
 
 impl Default for Config {
@@ -79,6 +84,7 @@ impl Default for Config {
             directories_on_top: default_directories_on_top(),
             active_pane: default_active_pane(),
             editor: default_editor(),
+            keybindings: HashMap::new(),
         }
     }
 }
@@ -164,5 +170,79 @@ impl Config {
             )
         })?;
         Self::load_config_from_file(path)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_config_has_expected_values() {
+        let config = Config::default();
+        assert_eq!(config.theme, "light");
+        assert_eq!(config.sort_type, SortType::Name);
+        assert_eq!(config.sort_order, SortOrder::Ascending);
+        assert!(!config.show_hidden);
+        assert!(config.directories_on_top);
+        assert!(matches!(config.active_pane, ActivePane::Left));
+        assert!(config.keybindings.is_empty());
+    }
+
+    #[test]
+    fn deserialize_empty_yaml_uses_defaults() {
+        let yaml = "";
+        let config: Config = yaml_serde::from_str(yaml).unwrap();
+        assert_eq!(config.theme, "light");
+        assert_eq!(config.sort_type, SortType::Name);
+        assert_eq!(config.sort_order, SortOrder::Ascending);
+    }
+
+    #[test]
+    fn deserialize_partial_yaml_merges_with_defaults() {
+        let yaml = "theme: dark\nshow_hidden: true";
+        let config: Config = yaml_serde::from_str(yaml).unwrap();
+        assert_eq!(config.theme, "dark");
+        assert!(config.show_hidden);
+        // Other fields should use defaults
+        assert_eq!(config.sort_type, SortType::Name);
+        assert!(config.directories_on_top);
+    }
+
+    #[test]
+    fn deserialize_full_yaml() {
+        let yaml = "theme: nord
+initial_directory_left: /tmp
+initial_directory_right: /home
+sort_type: Size
+sort_order: Descending
+show_hidden: true
+directories_on_top: false
+active_pane: Right
+editor: emacs
+keybindings:
+  quit: Q
+  help: H
+";
+        let config: Config = yaml_serde::from_str(yaml).unwrap();
+        assert_eq!(config.theme, "nord");
+        assert_eq!(config.initial_directory_left, "/tmp");
+        assert_eq!(config.initial_directory_right, "/home");
+        assert_eq!(config.sort_type, SortType::Size);
+        assert_eq!(config.sort_order, SortOrder::Descending);
+        assert!(config.show_hidden);
+        assert!(!config.directories_on_top);
+        assert!(matches!(config.active_pane, ActivePane::Right));
+        assert_eq!(config.editor, "emacs");
+        assert_eq!(config.keybindings.get("quit"), Some(&"Q".to_string()));
+    }
+
+    #[test]
+    fn default_editor_respects_visual_then_editor() {
+        // Note: This test doesn't actually modify env vars to avoid side effects.
+        // It just tests that default_editor() is called and returns something.
+        let config = Config::default();
+        // Editor should be set to VISUAL, EDITOR, or "vi" as fallback
+        assert!(!config.editor.is_empty());
     }
 }

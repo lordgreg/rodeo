@@ -2,7 +2,7 @@ use std::{
     path::PathBuf,
     process::Command,
     sync::{Arc, atomic::AtomicBool, mpsc},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use crate::{
@@ -10,6 +10,7 @@ use crate::{
     fs::ops::ProgressMsg,
     ui::{footer::Footer, theme::Theme},
 };
+use notify::Watcher as _;
 use ratatui::{
     DefaultTerminal, Frame,
     layout::{Constraint, Direction, Layout},
@@ -23,20 +24,29 @@ pub mod footer;
 pub mod git;
 pub mod header;
 pub mod input;
+pub mod keymap;
 pub mod panes;
 pub mod popup_about;
+pub mod popup_bulkrename;
+pub mod popup_findinfiles;
 pub mod popup_keybinds;
 pub mod popup_preview;
+pub mod popup_trash;
 pub mod search;
 pub mod textinput;
 pub mod theme;
 pub mod uiconfig;
 
 use component::Component;
+use crossterm::event::KeyCode;
 use dialog::Dialog;
 use header::Header;
+use keymap::Action;
 use panes::Panes;
 use popup_about::PopupAbout;
+use popup_bulkrename::BulkRename;
+use popup_trash::TrashView;
+use popup_findinfiles::FindInFiles;
 use popup_keybinds::PopupKeybinds;
 use popup_preview::PopupPreview;
 use search::{FilterSpec, Search, SearchKind};
@@ -67,21 +77,57 @@ pub struct App {
     dialog: Option<Dialog>,
     search: Option<Search>,
     command: Option<TextInput>,
+    find_in_files: Option<FindInFiles>,
+    bulk_rename: Option<BulkRename>,
+    trash_view: Option<TrashView>,
     clipboard: Vec<PathBuf>,
     clipboard_cut: bool,
     pending_d: bool,
     pending_editor_file: Option<PathBuf>,
     pending_shell: bool,
     progress: Option<Progress>,
+    keymap: Vec<(KeyCode, Action)>,
+    /// Filesystem event receiver — events trigger a debounced pane reload.
+    fs_notify_rx: mpsc::Receiver<notify::Result<notify::Event>>,
+    /// The watcher must stay alive for the duration of the app.
+    _fs_watcher: notify::RecommendedWatcher,
+    /// Currently watched directories (left pane, right pane).
+    watched_dirs: [PathBuf; 2],
+    /// When the last filesystem event arrived; reload fires after 150 ms silence.
+    fs_debounce: Option<Instant>,
 }
 
 impl App {
     pub fn new(theme: Theme, config: Config) -> Self {
         let panes = Panes::new(&config);
-
         let current_directory = config.get_initial_dir();
-
         let header = Header::new(current_directory);
+        let keymap = keymap::build_keymap(&config);
+
+        // Set up filesystem watcher. Errors are non-fatal: auto-refresh just
+        // won't work, but everything else continues normally.
+        let (fs_tx, fs_notify_rx) = mpsc::channel();
+        let watcher_result =
+            notify::RecommendedWatcher::new(fs_tx, notify::Config::default());
+        let watched_dirs = panes.pane_dirs();
+        let mut _fs_watcher = watcher_result.unwrap_or_else(|e| {
+            log::warn!("Cannot start filesystem watcher: {e}");
+            // Create a dummy watcher that immediately errors — the channel
+            // will stay empty and auto-refresh simply won't fire.
+            notify::RecommendedWatcher::new(
+                mpsc::channel().0,
+                notify::Config::default(),
+            )
+            .expect("fallback watcher")
+        });
+        for dir in &watched_dirs {
+            if let Err(e) = _fs_watcher
+                .watch(dir, notify::RecursiveMode::NonRecursive)
+            {
+                log::warn!("Cannot watch {dir:?}: {e}");
+            }
+        }
+
         Self {
             exit: false,
             theme,
@@ -89,17 +135,25 @@ impl App {
             header,
             footer: Footer::default(),
             panes,
+            keymap,
             config,
             preview: None,
             dialog: None,
             search: None,
             command: None,
+            find_in_files: None,
+            bulk_rename: None,
+            trash_view: None,
             clipboard: Vec::new(),
             clipboard_cut: false,
             pending_d: false,
             pending_editor_file: None,
             pending_shell: false,
             progress: None,
+            fs_notify_rx,
+            _fs_watcher,
+            watched_dirs,
+            fs_debounce: None,
         }
     }
 
@@ -107,9 +161,36 @@ impl App {
         while !self.exit {
             terminal.draw(|frame| self.render(frame))?;
 
-            if self.progress.is_some() {
-                // While a transfer runs, poll with a timeout so the gauge
-                // updates and Esc stays responsive.
+            // Drain all pending filesystem events; arm the debounce timer.
+            // Access (read/open) events are ignored: rodeo itself reads files
+            // while building a preview, and reloading on those would fight the
+            // cursor.
+            while let Ok(Ok(event)) = self.fs_notify_rx.try_recv() {
+                if event.kind.is_access() {
+                    continue;
+                }
+                self.fs_debounce = Some(Instant::now());
+            }
+
+            // After 150 ms of FS silence, reload both panes and re-sync watches.
+            if self.fs_debounce.is_some_and(|t| t.elapsed() >= Duration::from_millis(150)) {
+                self.fs_debounce = None;
+                // Keep flagged entries: an external change must not wipe the
+                // user's selection.
+                self.panes.reload(&self.config, false);
+                self.header
+                    .update(self.panes.get_active_pane().path.to_string());
+                self.refresh_fs_watches();
+            }
+
+            let preview_loading = self.preview.as_ref().is_some_and(|p| p.is_loading());
+            let needs_tick =
+                self.progress.is_some() || preview_loading || self.fs_debounce.is_some();
+
+            if needs_tick {
+                // While a transfer runs, a preview is loading, or a debounce
+                // is pending, poll with a short timeout so animation stays
+                // smooth and Esc remains responsive.
                 if crossterm::event::poll(Duration::from_millis(50))? {
                     self.handle_input()?;
                 }
@@ -118,13 +199,23 @@ impl App {
                 self.handle_input()?;
             }
 
+            // After each input event, sync watched directories to current panes.
+            self.refresh_fs_watches();
+
             if let Some(path) = self.pending_editor_file.take() {
+                let mtime_before = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+
                 terminal.clear()?;
                 Command::new(&self.config.editor).arg(&path).status()?;
                 terminal.clear()?;
                 self.panes.reload(&self.config, true);
                 self.header
                     .update(self.panes.get_active_pane().path.to_string());
+
+                let mtime_after = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+                if mtime_after != mtime_before {
+                    self.ok_status(format!("Modified: {}", path.display()));
+                }
             }
 
             if self.pending_shell {
@@ -143,6 +234,30 @@ impl App {
 
     /// Drains progress messages from a background transfer; finishes it when
     /// the worker reports Done.
+    /// Updates the filesystem watcher to track the two currently-displayed
+    /// directories. Called after navigation so new directories are watched
+    /// automatically.
+    fn refresh_fs_watches(&mut self) {
+        let new_dirs = self.panes.pane_dirs();
+        if new_dirs == self.watched_dirs {
+            return;
+        }
+        // Unwatch old directories.
+        for dir in &self.watched_dirs {
+            let _ = self._fs_watcher.unwatch(dir);
+        }
+        // Watch new directories.
+        for dir in &new_dirs {
+            if let Err(e) = self
+                ._fs_watcher
+                .watch(dir, notify::RecursiveMode::NonRecursive)
+            {
+                log::warn!("Cannot watch {dir:?}: {e}");
+            }
+        }
+        self.watched_dirs = new_dirs;
+    }
+
     fn pump_progress(&mut self) {
         let Some(p) = self.progress.as_mut() else {
             return;
@@ -240,13 +355,44 @@ impl App {
         }
 
         if self.ui_config.active_preview_popup {
-            let current = self.panes.get_active_pane().get_selected_entry();
-            if self.preview.as_ref().and_then(|p| p.selected()) != current.as_ref() {
-                self.preview = current.map(|e| PopupPreview::new(Some(e)));
+            // Entry-bound previews follow the selection; free text previews
+            // (e.g., `:!` output) stay until closed.
+            if let Some(shown) = self.preview.as_ref().and_then(|p| p.selected()) {
+                // Compare by path only: a reload rebuilds Entry values (sizes,
+                // flags) and a full equality check would rebuild — and re-read
+                // — the preview on every frame.
+                let shown_path = shown.path.clone();
+                let current = self.panes.get_active_pane().get_selected_entry();
+                if current.as_ref().map(|e| &e.path) != Some(&shown_path) {
+                    self.preview = current.map(|e| PopupPreview::new(Some(e)));
+                }
             }
             if let Some(preview) = self.preview.as_mut() {
                 preview.render(frame, &self.theme, &self.ui_config, frame.area());
             }
+        }
+
+        // Bulk rename popup renders on top of preview.
+        if let Some(br) = self.bulk_rename.as_mut() {
+            br.render(frame, &self.theme, &self.ui_config, frame.area());
+        }
+
+        // Trash view renders on top of everything except dialogs.
+        if let Some(tv) = self.trash_view.as_mut() {
+            tv.render(frame, &self.theme, &self.ui_config, frame.area());
+        }
+
+        // Find-in-files popup renders on top of preview.
+        if let Some(find) = self.find_in_files.as_mut() {
+            // Centered popup, 80% width and height
+            let area = ratatui::layout::Rect {
+                x: frame.area().width / 10,
+                y: frame.area().height / 10,
+                width: frame.area().width * 4 / 5,
+                height: frame.area().height * 4 / 5,
+            };
+            frame.render_widget(Clear, area);
+            find.render(frame, &self.theme, &self.ui_config, area);
         }
 
         // Dialogs render on top of everything.

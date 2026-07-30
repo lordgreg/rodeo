@@ -937,6 +937,14 @@ impl Panes {
         }
     }
 
+    /// Returns the filesystem paths currently displayed in both panes.
+    pub fn pane_dirs(&self) -> [PathBuf; 2] {
+        [
+            PathBuf::from(&self.pane_left.path),
+            PathBuf::from(&self.pane_right.path),
+        ]
+    }
+
     pub fn get_inactive_pane(&self) -> &Pane {
         if self.active_pane == ActivePane::Left {
             &self.pane_right
