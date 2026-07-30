@@ -271,14 +271,16 @@ These are small, self-contained fixes with high impact-to-effort ratio. Do them 
   - Resolved: `Ctrl+F` opens the filter bar (pre-filled with the active pattern for editing). Live-filtered as you type; invalid regex shows the bar in the theme error color and keeps the last valid listing. `Enter` keeps the filter (bar stays visible read-only with pattern + hints); `Esc` in the bar cancels, `Esc` in main mode clears the filter before quitting. Filter re-applies automatically on pane reload. `regex = "1.13"` added.
   - **P0** | **Files:** `src/ui/input.rs`, `src/ui/search.rs` | **Hints:** Press `Ctrl+F` to open a regex input bar. Type a regex pattern to filter directory listing. Only files matching the regex are shown. Invalid regex shows error in the bar. Use the `regex` crate: `regex = "1"`. Add to `Cargo.toml`. | **Effort:** M
 
-- [ ] **2.4 Implement find-in-files (search file contents)**
-  - **P1** | **Files:** `src/ui/input.rs`, `src/ui/search.rs` | **Hints:** Press `Ctrl+G` or similar to open "grep" mode. Enter search term. Walk directory tree with `ignore` crate (respects .gitignore). Search each file with `ripgrep`-style line matching. Show results in a new pane or popup: `filename:line: match`. Allow `Enter` on a result to open the file at that line. Add `ignore = "0.4"` to `Cargo.toml`. | **Effort:** L
+- [x] **2.4 Implement find-in-files (search file contents)**
+  - Resolved: `Ctrl+G` opens a find-in-files popup with input bar. Enter regex pattern, press Enter to search current directory tree (via `ignore` crate, respects .gitignore). Results shown as `path:line: content` list. Navigate with arrows, Enter opens file in editor. Limited to 1000 matches. Binary files skipped automatically.
+  - **P1** | **Files:** `src/ui/input.rs`, `src/ui/popup_findinfiles.rs` (new) | **Hints:** Press `Ctrl+G` or similar to open "grep" mode. Enter search term. Walk directory tree with `ignore` crate (respects .gitignore). Search each file with `ripgrep`-style line matching. Show results in a new pane or popup: `filename:line: match`. Allow `Enter` on a result to open the file at that line. Add `ignore = "0.4"` to `Cargo.toml`. | **Effort:** L
 
 - [ ] **2.5 Add search history persistence — ON HOLD**
   - On hold per user (2026-07-26): possibly unnecessary — fuzzy search is instant, retyping is cheap. Revisit only if it comes up again.
   - **P2** | **Files:** `src/ui/search.rs`, `src/config.rs` | **Hints:** Store last 100 search queries in config or a separate history file. Use `Up`/`Down` in search bar to cycle through history. Save on quit, load on startup. | **Effort:** S
 
-- [ ] **2.6 Highlight search matches in file listing**
+- [x] **2.6 Highlight search matches in file listing**
+  - Resolved: fuzzy search (nucleo) highlights individual matching characters with `theme.colors.warning()` background; regex filter highlights the entire matched substring. Highlighting respects the entry's base style (git colors, symlink errors, etc.).
   - **P1** | **Files:** `src/ui/panes.rs`, `src/ui/search.rs` | **Hints:** When filter is active, render matching filename characters with a highlight color (e.g., yellow background or bold). Use ratatui `Span` with style for matched portion of filename. | **Effort:** M
 
 - [ ] **2.7 Add `--search` and `--regex` CLI flags for headless use — ON HOLD**
@@ -340,11 +342,13 @@ Removed per user decision (2026-07-26): not needed. Tasks 3.4.1–3.4.4 (bookmar
 
 ### 3.5 File Watching
 
-- [ ] **3.5.1 Add `notify` crate for live directory refresh**
+- [x] **3.5.1 Add `notify` crate for live directory refresh**
+  - Resolved: `notify = "8"` added; `RecommendedWatcher` created at startup with an `mpsc` channel.
   - **P1** | **Files:** `Cargo.toml` | **Hints:** `notify = { version = "7", features = ["macos_kqueue"] }`. Cross-platform filesystem events. | **Effort:** S
 
-- [ ] **3.5.2 Implement auto-refresh on external changes**
-  - **P1** | **Files:** `src/ui/mod.rs`, `src/ui/panes.rs` | **Hints:** Spawn a `notify` watcher on the current pane's directory. On `EventKind::Create | Modify | Remove`, reload the pane. Debounce: wait 100ms after last event before reloading (filesystem events come in bursts). Use `tokio` or a separate thread with `std::sync::mpsc` channel. IMPORTANT: The `notify` watcher and the TUI render loop run in different threads. In the main event loop, use `try_recv()` (non-blocking) on the channel to check for filesystem events without blocking keyboard input. If using tokio, integrate with `tokio::select!` alongside crossterm's `event::poll`. Debounce events: collect all events within a 100ms window before triggering a single pane reload. | **Effort:** M
+- [x] **3.5.2 Implement auto-refresh on external changes**
+  - Resolved: Both pane directories are watched (`NonRecursive`). The run loop drains events via `try_recv`, arms a 150 ms debounce `Instant`, and reloads panes on silence. Watches re-sync automatically on navigation via `refresh_fs_watches()`. The 50 ms tick loop is extended to also run while `fs_debounce` is set so the reload fires promptly.
+  - **P1** | **Files:** `src/ui/mod.rs`, `src/ui/panes.rs` | **Effort:** M
 
 ---
 
@@ -353,33 +357,41 @@ Removed per user decision (2026-07-26): not needed. Tasks 3.4.1–3.4.4 (bookmar
 > Goal: Bulk rename, trash, git column, shell integration, directory sizes.
 > Depends on: Phase 1 (operations), Phase 3 (bookmarks/history).
 
-- [ ] **4.1 Bulk rename with regex and sequential patterns**
-  - **P1** | **Files:** `src/ui/bulk_rename.rs` (new), `src/ui/input.rs` | **Hints:** Enter visual mode (`v`), select files, press `:b` or `Ctrl+R`. Show a two-column preview: old names → new names. Input bar at bottom: `s/old/new/` for regex substitution, `%d` for zero-padded numbering. Live preview of rename results. Confirm to apply. Use `regex` crate. Handle collisions before applying. | **Effort:** L
+- [x] **4.1 Bulk rename with regex and sequential patterns**
+  - Resolved: `B` (or `Shift+B`) opens `BulkRename` popup on 2+ selected files. Pattern bar supports `s/regex/replacement/[g]` substitution and `prefix_%03d` sequential numbering. Live two-column old→new preview; collision and empty-name errors shown inline. Enter applies, Esc cancels.
+  - **P1** | **Files:** `src/ui/popup_bulkrename.rs` (new), `src/ui/input.rs` | **Effort:** L
 
-- [ ] **4.2 Trash support with restore capability**
-  - **P1** | **Files:** `src/fs/ops.rs`, `src/ui/input.rs` | **Hints:** Use `trash` crate's `delete` and `list` APIs. Add a "Trash" view accessible via `:trash` command or similar. Show trash contents in a pane. Allow restore (`p` from trash) and permanent delete (`Shift+dd` from trash). Cross-platform: freedesktop Trash spec on Linux, macOS Trash, Windows Recycle Bin. | **Effort:** L
+- [x] **4.2 Trash support with restore capability**
+  - Resolved: `:trash` opens `TrashView` popup listing trashed items with original paths. `r` restores selected/highlighted items to their original location; `D` permanently deletes them; `x` multi-selects. Uses `trash::os_limited::{list, restore_all, purge_all}` (Linux/Windows). macOS shows a graceful "not supported" message.
+  - **P1** | **Files:** `src/ui/popup_trash.rs` (new), `src/ui/input.rs` | **Effort:** L
 
 - [ ] **4.3 Git status column in file listing (optional, mostly superseded)**
   - Superseded by entry git-colors (2026-07-26): entry names are colored by status — modified=`warning`, added=`success`, deleted=`error`, untracked=`info`, ignored=`muted` — matching the header palette. Directories aggregate the most severe descendant status. Data: `git status --porcelain=v1 -z -uall --ignored=matching` parsed in `src/ui/git.rs`, refreshed on pane reload.
   - Remaining value of this task: an opt-in one-char status column for staged-vs-unstaged distinction, which colors can't express. Low priority.
   - **P2** | **Files:** `src/ui/panes.rs` | **Hints:** Instead of just showing selected marker (`●`) in column 0, show git status: `M` modified, `A` added, `D` deleted, `?` untracked, `!` ignored, ` ` clean. Use `gix` crate (pure Rust) for git status parsing: `gix = "0.70"`. Cache git status per directory to avoid repeated `git status` calls. Update only when directory changes or on manual refresh. | **Effort:** L
 
-- [ ] **4.4 Directory size calculation**
+- [x] **4.4 Directory size calculation**
+  - Resolved: `Shift+S` → `Action::DirSizes` → `compute_dir_sizes()` walks each directory (capped at 200k entries), fills `entry.dir_size`, shows `≥X` when truncated. Size column shows the result in place of "DIR".
   - **P2** | **Files:** `src/fs/size.rs` (new), `src/ui/panes.rs` | **Hints:** For directories, show cumulative size instead of "DIR". Compute with parallel walk using `ignore` crate. Cache results. Show in the Size column: `12.3 MB` for dirs instead of `DIR`. Add a "calculating..." placeholder while scanning. `Ctrl+Shift+S` to trigger manual scan of current directory. | **Effort:** M
 
-- [ ] **4.5 Shell command output in preview pane**
+- [x] **4.5 Shell command output in preview pane**
+  - Resolved: `:!cmd` already routes output to a `PopupPreview::from_text` scrollable popup. `%f` substitution (pipe selected files) added — `:!wc -l %f` expands `%f` to space-separated quoted paths of selected (or highlighted) entries.
   - **P2** | **Files:** `src/ui/popup_cmd.rs`, `src/ui/popup_preview.rs` | **Hints:** `:!<cmd>` captures stdout/stderr and shows it in the preview pane (reusing preview infrastructure). Allow piping selected files to commands: `:!wc -l %f`. | **Effort:** M
 
-- [ ] **4.6 External editor integration polish**
+- [x] **4.6 External editor integration polish**
+  - Resolved: `default_editor()` in `config.rs` already checks `$VISUAL` before `$EDITOR`, falls back to `vi`. Editor spawned in `App::run`; mtime compared before/after — footer shows "Modified: path" if changed. Directory reloaded on exit.
   - **P2** | **Files:** `src/ui/input.rs` | **Hints:** Support `$VISUAL` before `$EDITOR`. Add configuration option for default editor. When editor exits, reload the file's directory. If file was modified (check mtime), show a brief notification. | **Effort:** S
 
-- [ ] **4.7 Config hot-reloading**
+- [x] **4.7 Config hot-reloading**
+  - Resolved: `:so` / `:source` calls `reload_config()` which re-parses the config file, swaps in the new `Config`, reloads theme if changed, and reloads both panes.
   - **P2** | **Files:** `src/config.rs`, `src/ui/input.rs` | **Hints:** Add `:so[urce]` command to reload config file at runtime. Watch config file with `notify` for auto-reload. | **Effort:** M
 
-- [ ] **4.8 Multiple file selection with wildcards**
+- [x] **4.8 Multiple file selection with wildcards**
+  - Resolved: `*` → `Action::SelectGlob` opens an input dialog for a wildcard pattern (`*`/`?`); `Ctrl+A` → `select_all()`; `Esc` clears selection before quitting.
   - **P2** | **Files:** `src/ui/input.rs`, `src/ui/panes.rs` | **Hints:** `*` key to select all files matching a glob pattern (input dialog). `Ctrl+A` to select all files in current pane. `Esc` to clear selection. | **Effort:** S
 
-- [ ] **4.9 Implement configurable keybindings from config file**
+- [x] **4.9 Implement configurable keybindings from config file**
+  - Resolved: `src/ui/keymap.rs` defines `Action` enum + `build_keymap()` which merges hardcoded defaults with `config.keybindings` overrides. All main key dispatch goes through `self.keymap`.
   - **P2** | **Files:** `src/config.rs`, `src/ui/input.rs` | **Hints:** Add `[keybindings]` section to config with string-to-action mappings. Define an `Action` enum representing every possible user action. In `input.rs`, instead of matching on `KeyCode` directly, build a `HashMap<KeyEvent, Action>` from config (with hardcoded defaults as fallback). This enables users to remap any key without code changes. Start simple: only support single-key bindings initially, expand to key sequences later. | **Effort:** M
 
 ---
@@ -407,13 +419,16 @@ Removed per user decision (2026-07-26): not needed. Tasks 3.4.1–3.4.4 (bookmar
   - Resolved: 7 tests covering wrap-around both directions, single-item, empty list, None selected.
   - **P0** | **Files:** `src/ui/panes.rs` | **Hints:** Test wrap-around (last+down=0, first+up=last), single-item list, empty list (row_count=0), None selected → 0. | **Effort:** S
 
-- [ ] **5.1.5 Add unit tests for sort logic in `read_entries()`**
+- [x] **5.1.5 Add unit tests for sort logic in `read_entries()`**
+  - Resolved: extracted `sort_entries()` function and added 5 tests covering Name/Size/Flagged sort types, Ascending/Descending order, and directories_on_top behavior.
   - **P1** | **Files:** `src/ui/panes.rs` | **Hints:** Extract sort to a pure function `sort_entries(entries, config) -> Vec<Entry>`. Test each SortType combination with SortOrder. Test directories_on_top ordering. | **Effort:** M
 
-- [ ] **5.1.6 Add unit tests for `Config` deserialization**
+- [x] **5.1.6 Add unit tests for `Config` deserialization**
+  - Resolved: added 5 tests covering default values, empty YAML (all defaults), partial YAML (merged with defaults), full YAML, and editor resolution.
   - **P1** | **Files:** `src/config.rs` | **Hints:** Test default values, test YAML parsing with partial config, test missing fields → defaults. | **Effort:** S
 
-- [ ] **5.1.7 Add unit tests for `Theme` deserialization**
+- [x] **5.1.7 Add unit tests for `Theme` deserialization**
+  - Resolved: added 3 tests for hex color parsing (`Color::hex_to_color`) and full theme YAML deserialization. File-loading tests skipped (load_from_file calls process::exit on error).
   - **P1** | **Files:** `src/ui/theme.rs` | **Hints:** Test hex color parsing (valid, invalid, short strings). Test loading a known theme file. | **Effort:** S
 
 - [ ] **5.1.8 Add integration test: app starts and renders without panic**
