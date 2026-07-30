@@ -612,6 +612,68 @@ impl Pane {
     }
 }
 
+/// Matches a name against a shell-style wildcard pattern supporting `*`
+/// (any sequence, including empty) and `?` (exactly one character).
+/// Case-sensitive, like glob.
+pub(crate) fn wildcard_match(pattern: &str, name: &str) -> bool {
+    let p: Vec<char> = pattern.chars().collect();
+    let n: Vec<char> = name.chars().collect();
+
+    let (mut pi, mut ni) = (0, 0);
+    let mut star: Option<(usize, usize)> = None; // (pattern idx after '*', name idx at '*')
+
+    while ni < n.len() {
+        if pi < p.len() && (p[pi] == '?' || p[pi] == n[ni]) {
+            pi += 1;
+            ni += 1;
+        } else if pi < p.len() && p[pi] == '*' {
+            star = Some((pi + 1, ni));
+            pi += 1;
+        } else if let Some((sp, sn)) = star {
+            // Backtrack: let '*' consume one more character.
+            pi = sp;
+            ni = sn + 1;
+            star = Some((sp, sn + 1));
+        } else {
+            return false;
+        }
+    }
+
+    while pi < p.len() && p[pi] == '*' {
+        pi += 1;
+    }
+    pi == p.len()
+}
+
+/// Sorts entries in-place according to config settings.
+/// Applies sort_type, sort_order, and optionally pins directories on top.
+fn sort_entries(entries: &mut [Entry], config: &Config) {
+    entries.sort_by(|a, b| {
+        let mut cmp = match config.sort_type {
+            SortType::Flagged => a.selected.cmp(&b.selected),
+            SortType::Name => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+            SortType::Size => a.raw_size.cmp(&b.raw_size),
+            SortType::Time => a.raw_modified.cmp(&b.raw_modified),
+        };
+        cmp = match config.sort_order {
+            SortOrder::Ascending => cmp,
+            SortOrder::Descending => cmp.reverse(),
+        };
+
+        if config.directories_on_top {
+            let a_is_dir = matches!(a.kind, EntryKind::Directory | EntryKind::Parent);
+            let b_is_dir = matches!(b.kind, EntryKind::Directory | EntryKind::Parent);
+            match (a_is_dir, b_is_dir) {
+                (true, false) => return std::cmp::Ordering::Less,
+                (false, true) => return std::cmp::Ordering::Greater,
+                _ => {} // both same group, fall through to sort_type
+            }
+        }
+
+        cmp
+    });
+}
+
 fn read_entries(dir: &str, config: &Config) -> (Vec<Entry>, usize) {
     let mut hidden_count = 0;
 
@@ -638,30 +700,7 @@ fn read_entries(dir: &str, config: &Config) -> (Vec<Entry>, usize) {
         }
     };
 
-    entries.sort_by(|a, b| {
-        let mut cmp = match config.sort_type {
-            SortType::Flagged => a.selected.cmp(&b.selected),
-            SortType::Name => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
-            SortType::Size => a.raw_size.cmp(&b.raw_size),
-            SortType::Time => a.raw_modified.cmp(&b.raw_modified),
-        };
-        cmp = match config.sort_order {
-            SortOrder::Ascending => cmp,
-            SortOrder::Descending => cmp.reverse(),
-        };
-
-        if config.directories_on_top {
-            let a_is_dir = matches!(a.kind, EntryKind::Directory | EntryKind::Parent);
-            let b_is_dir = matches!(b.kind, EntryKind::Directory | EntryKind::Parent);
-            match (a_is_dir, b_is_dir) {
-                (true, false) => return std::cmp::Ordering::Less,
-                (false, true) => return std::cmp::Ordering::Greater,
-                _ => {} // both same group, fall through to sort_type
-            }
-        }
-
-        cmp
-    });
+    sort_entries(&mut entries, config);
 
     entries.insert(0, Entry::parent(dir));
 
@@ -1138,6 +1177,93 @@ mod tests {
             let selected = pane.selected_entries();
             assert_eq!(selected.len(), 1);
             assert_eq!(selected[0].name, "a.rs");
+        }
+    }
+
+    mod wildcard {
+        use super::*;
+
+        #[test]
+        fn star_matches_everything() {
+            assert!(wildcard_match("*", "anything.rs"));
+            assert!(wildcard_match("*", ""));
+        }
+
+        #[test]
+        fn extension_pattern() {
+            assert!(wildcard_match("*.rs", "main.rs"));
+            assert!(!wildcard_match("*.rs", "main.toml"));
+        }
+
+        #[test]
+        fn question_mark_matches_single_char() {
+            assert!(wildcard_match("?.rs", "a.rs"));
+            assert!(!wildcard_match("?.rs", "ab.rs"));
+        }
+
+        #[test]
+        fn prefix_and_suffix() {
+            assert!(wildcard_match("foo*", "foobar"));
+            assert!(!wildcard_match("foo*", "barfoo"));
+            assert!(wildcard_match("*bar", "foobar"));
+            assert!(!wildcard_match("*bar", "barfoo"));
+        }
+
+        #[test]
+        fn middle_star_backtracks() {
+            assert!(wildcard_match("f*b*r", "foobar"));
+            assert!(wildcard_match("f*b*r", "foobazbar"));
+            assert!(!wildcard_match("f*b*r", "foobaz"));
+        }
+
+        #[test]
+        fn exact_match_required_without_wildcards() {
+            assert!(wildcard_match("exact", "exact"));
+            assert!(!wildcard_match("exact", "exactly"));
+        }
+
+        #[test]
+        fn unicode_names() {
+            assert!(wildcard_match("*.txt", "日本語.txt"));
+            assert!(wildcard_match("日?", "日本"));
+        }
+
+        #[test]
+        fn select_matching_marks_and_counts() {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::File::create(dir.path().join("a.rs")).unwrap();
+            std::fs::File::create(dir.path().join("ab.rs")).unwrap();
+            std::fs::File::create(dir.path().join("b.txt")).unwrap();
+
+            let config = Config::default();
+            let mut pane = Pane::new(&config, dir.path().to_str().unwrap());
+
+            let count = pane.select_matching("*.rs");
+            assert_eq!(count, 2);
+            let names: Vec<String> = pane
+                .selected_entries()
+                .into_iter()
+                .map(|e| e.name)
+                .collect();
+            assert!(names.contains(&"a.rs".to_string()));
+            assert!(names.contains(&"ab.rs".to_string()));
+
+            // Idempotent: second call selects nothing new.
+            assert_eq!(pane.select_matching("*.rs"), 0);
+        }
+
+        #[test]
+        fn select_all_marks_everything_selectable() {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::File::create(dir.path().join("a.rs")).unwrap();
+            std::fs::create_dir(dir.path().join("sub")).unwrap();
+
+            let config = Config::default();
+            let mut pane = Pane::new(&config, dir.path().to_str().unwrap());
+
+            assert_eq!(pane.select_all(), 2);
+            // Parent entry is never selected.
+            assert!(pane.selected_entries().iter().all(|e| e.kind != EntryKind::Parent));
         }
     }
 
