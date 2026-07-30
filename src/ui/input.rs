@@ -866,6 +866,11 @@ impl App {
                     self.panes.reload(&self.config, false);
                     return true;
                 }
+                KeyCode::Char('a') => {
+                    let count = self.panes.get_active_pane_mut().select_all();
+                    self.ok_status(format!("{count} selected"));
+                    return true;
+                }
                 KeyCode::Char('t') => {
                     let parent = PathBuf::from(&self.panes.get_active_pane().path);
                     self.dialog = Some(Dialog::input(
