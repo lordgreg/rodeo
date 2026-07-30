@@ -616,6 +616,11 @@ impl Pane {
     }
 
     pub fn reload(&mut self, config: &Config, clear_selection: bool) {
+        // Remember the highlighted entry so a background refresh (filesystem
+        // watcher, transfer, editor exit) does not throw the cursor back to
+        // the top of the list.
+        let cursor_path = self.get_selected_entry().map(|e| e.path);
+
         let selected_paths: Vec<PathBuf> = self
             .all_paths
             .iter()
@@ -643,8 +648,14 @@ impl Pane {
             self.paths = self.all_paths.clone();
         }
 
+        // Restore the cursor on the same entry when it still exists; after a
+        // directory change the old path is gone and the cursor starts at the
+        // top.
+        let cursor_index = cursor_path
+            .and_then(|p| self.paths.iter().position(|e| e.path == p))
+            .unwrap_or(0);
         self.state = TableState::default();
-        self.state.select(Some(0));
+        self.state.select(Some(cursor_index));
     }
 
     pub fn go_to_parent(&mut self, current_path: &str) -> OpenAction {
@@ -1341,6 +1352,36 @@ mod tests {
             let selected = pane.selected_entries();
             assert_eq!(selected.len(), 1);
             assert_eq!(selected[0].name, "a.rs");
+        }
+
+        #[test]
+        fn cursor_survives_reload() {
+            let (dir, mut pane) = test_pane();
+            pane.state.select(Some(3)); // b.txt
+            assert_eq!(
+                pane.get_selected_entry().map(|e| e.name),
+                Some("b.txt".to_string())
+            );
+
+            // A new file shifts indices; the cursor must stay on b.txt.
+            std::fs::File::create(dir.path().join("aa.rs")).unwrap();
+            pane.reload(&Config::default(), false);
+
+            assert_eq!(
+                pane.get_selected_entry().map(|e| e.name),
+                Some("b.txt".to_string())
+            );
+        }
+
+        #[test]
+        fn cursor_resets_when_entry_disappears() {
+            let (dir, mut pane) = test_pane();
+            pane.state.select(Some(3)); // b.txt
+
+            std::fs::remove_file(dir.path().join("b.txt")).unwrap();
+            pane.reload(&Config::default(), false);
+
+            assert_eq!(pane.state.selected(), Some(0));
         }
     }
 
