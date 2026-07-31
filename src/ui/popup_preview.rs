@@ -21,7 +21,7 @@ use ratatui::{
 
 use crate::fs::ops;
 use crate::ui::{
-    component::Component,
+    component::{Component, centered_popup},
     panes::{Entry, EntryKind, format_date, format_size},
     theme::Theme,
     uiconfig::UiConfig,
@@ -31,6 +31,11 @@ use crate::ui::{
 const LISTING_LIMIT: usize = 1000;
 /// Bytes shown in the binary hex dump.
 const HEX_DUMP_BYTES: usize = 256;
+
+/// Upper bounds for the popup, in cells. Code and text stay readable at about
+/// a hundred columns; beyond that the popup just swallows the screen.
+const MAX_POPUP_WIDTH: u16 = 110;
+const MAX_POPUP_HEIGHT: u16 = 50;
 
 enum PreviewContent {
     Text(Text<'static>),
@@ -486,14 +491,14 @@ fn hex_dump(bytes: &[u8]) -> Vec<Line<'static>> {
 
 impl Component for PopupPreview {
     fn render(&mut self, frame: &mut Frame<'_>, theme: &Theme, _ui: &UiConfig, area: Rect) {
-        let width = area.width * 3 / 5;
-        let height = area.height * 9 / 10;
-        let popup_area = Rect {
-            x: area.x + (area.width - width) / 2,
-            y: area.y + (area.height - height) / 2,
-            width,
-            height,
-        };
+        // 60% of the screen, but never wider than a comfortable reading
+        // measure — on an ultrawide that would otherwise be 120+ columns.
+        let popup_area = centered_popup(
+            area,
+            (area.width * 3 / 5, area.height * 9 / 10),
+            (30, 5),
+            (MAX_POPUP_WIDTH, MAX_POPUP_HEIGHT),
+        );
 
         frame.render_widget(Clear, popup_area);
 

@@ -6,7 +6,11 @@ use ratatui::{
     widgets::{Block, Borders, Clear, Padding, Paragraph},
 };
 
-use crate::ui::{component::Component, theme::Theme, uiconfig::UiConfig};
+use crate::ui::{
+    component::{Component, centered_popup},
+    theme::Theme,
+    uiconfig::UiConfig,
+};
 
 const KEYBINDS: &[(&str, &str)] = &[
     ("F1", "This help"),
@@ -46,16 +50,23 @@ const KEYBINDS: &[(&str, &str)] = &[
 const COMMANDS: &[(&str, &str)] = &[
     (":q / :quit", "Quit"),
     (":w / :write", "Save config"),
+    (":so / :source", "Reload config"),
     (":e / :cd <path>", "Navigate to directory"),
     (":mkdir <name>", "Create directory"),
     (":touch <name>", "Create empty file"),
     (":delete", "Trash selected/current"),
     (":rename <new>", "Rename current entry"),
     (":theme [name]", "Switch theme / list themes"),
+    (":trash", "Browse the trash"),
     (":help", "This help"),
     (":shell", "Interactive subshell"),
     (":!<cmd>", "Run shell command"),
 ];
+
+/// Gap between two rendered columns.
+const COLUMN_GAP: u16 = 2;
+/// Even a reference table stops being readable past this width.
+const MAX_WIDTH: u16 = 130;
 
 #[derive(Debug, Default)]
 pub struct PopupKeybinds {}
@@ -66,26 +77,59 @@ impl PopupKeybinds {
     }
 }
 
-fn column_lines<'a>(entries: &'a [(&str, &str)], theme: &Theme) -> Vec<Line<'a>> {
-    entries
+/// Width of the key column: the longest key in either list, plus a space.
+fn key_column() -> usize {
+    KEYBINDS
         .iter()
-        .map(|(key, description)| {
-            Line::from(vec![
-                Span::from(format!("{key:<24}")).style(theme.colors.primary()),
-                Span::from(*description),
-            ])
-        })
-        .collect()
+        .chain(COMMANDS)
+        .map(|(key, _)| key.len())
+        .max()
+        .unwrap_or_default()
+        + 1
+}
+
+/// Every line of the help text: both sections with their headings.
+fn all_lines(theme: &Theme) -> Vec<Line<'static>> {
+    let key_column = key_column();
+    let heading = |text: &str| {
+        Line::from(Span::styled(
+            text.to_string(),
+            Style::default().fg(theme.colors.highlight()),
+        ))
+    };
+    let entry = |(key, description): &(&str, &str)| {
+        Line::from(vec![
+            Span::from(format!("{key:<key_column$}")).style(theme.colors.primary()),
+            Span::from(description.to_string()),
+        ])
+    };
+
+    let mut lines = vec![heading("Keybindings")];
+    lines.extend(KEYBINDS.iter().map(entry));
+    lines.push(Line::from(""));
+    lines.push(heading("Commands"));
+    lines.extend(COMMANDS.iter().map(entry));
+    lines
 }
 
 impl Component for PopupKeybinds {
     fn render(&mut self, frame: &mut Frame<'_>, theme: &Theme, _ui: &UiConfig, area: Rect) {
-        let popup_area = Rect {
-            x: area.x + area.width / 8,
-            y: area.y + area.height / 8,
-            width: area.width * 3 / 4,
-            height: area.height * 3 / 4,
-        };
+        let lines = all_lines(theme);
+        let line_width = lines.iter().map(|l| l.width()).max().unwrap_or(20) as u16;
+
+        // Lay the entries out in as many columns as it takes to fit the
+        // terminal height, instead of one tall column that gets cut off.
+        let usable_rows = area.height.saturating_sub(4).max(5);
+        let columns = lines.len().div_ceil(usable_rows as usize).max(1) as u16;
+        let rows = (lines.len() as u16).div_ceil(columns);
+
+        let want_width = columns * line_width + (columns - 1) * COLUMN_GAP + 4;
+        let popup_area = centered_popup(
+            area,
+            (want_width, rows + 2),
+            (40, 8),
+            (MAX_WIDTH, area.height),
+        );
 
         frame.render_widget(Clear, popup_area);
 
@@ -102,23 +146,40 @@ impl Component for PopupKeybinds {
         let inner = block.inner(popup_area);
         frame.render_widget(block, popup_area);
 
-        let columns = Layout::default()
+        let layout = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
+            .spacing(COLUMN_GAP)
+            .constraints(vec![Constraint::Fill(1); columns as usize])
             .split(inner);
 
-        let mut key_lines = vec![Line::from(Span::styled(
-            "Keybindings",
-            Style::default().fg(theme.colors.highlight()),
-        ))];
-        key_lines.extend(column_lines(KEYBINDS, theme));
-        frame.render_widget(Paragraph::new(key_lines), columns[0]);
+        for (index, chunk) in lines.chunks(rows as usize).enumerate() {
+            frame.render_widget(Paragraph::new(chunk.to_vec()), layout[index]);
+        }
+    }
+}
 
-        let mut cmd_lines = vec![Line::from(Span::styled(
-            "Commands",
-            Style::default().fg(theme.colors.highlight()),
-        ))];
-        cmd_lines.extend(column_lines(COMMANDS, theme));
-        frame.render_widget(Paragraph::new(cmd_lines), columns[1]);
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn key_column_fits_the_longest_key() {
+        let longest = KEYBINDS
+            .iter()
+            .chain(COMMANDS)
+            .map(|(key, _)| key.len())
+            .max()
+            .unwrap();
+        assert!(key_column() > longest);
+    }
+
+    #[test]
+    fn every_binding_has_a_description() {
+        assert!(
+            KEYBINDS
+                .iter()
+                .chain(COMMANDS)
+                .all(|(key, description)| !key.is_empty() && !description.is_empty())
+        );
     }
 }

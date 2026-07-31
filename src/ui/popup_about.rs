@@ -5,7 +5,11 @@ use ratatui::{
     widgets::{Block, Borders, Clear, Paragraph},
 };
 
-use crate::ui::{component::Component, theme::Theme, uiconfig::UiConfig};
+use crate::ui::{
+    component::{Component, centered_popup, content_size},
+    theme::Theme,
+    uiconfig::UiConfig,
+};
 
 #[derive(Debug, Default)]
 pub struct PopupAbout {}
@@ -17,15 +21,6 @@ impl PopupAbout {
 }
 impl Component for PopupAbout {
     fn render(&mut self, frame: &mut Frame<'_>, theme: &Theme, _ui: &UiConfig, area: Rect) {
-        let popup_area = Rect {
-            x: area.x + area.width / 4,
-            y: area.y + area.height / 4,
-            width: area.width / 2,
-            height: area.height / 2,
-        };
-
-        frame.render_widget(Clear, popup_area);
-
         let text = vec![
             ratatui::text::Line::from(env!("CARGO_PKG_NAME")),
             ratatui::text::Line::from(format!("v{}", env!("CARGO_PKG_VERSION"))),
@@ -35,6 +30,21 @@ impl Component for PopupAbout {
             ratatui::text::Line::from("Author: grepx"),
             ratatui::text::Line::from("https://codeberg.org/grepx/rodeo"),
         ];
+
+        // Sized to its content — seven short lines never need half the screen.
+        let widest = text
+            .iter()
+            .map(|l| l.width() as u16)
+            .max()
+            .unwrap_or_default();
+        let popup_area = centered_popup(
+            area,
+            content_size(widest, text.len()),
+            (24, 5),
+            (60, area.height),
+        );
+
+        frame.render_widget(Clear, popup_area);
 
         let block = Block::default().title("About").borders(Borders::ALL).style(
             Style::default()
