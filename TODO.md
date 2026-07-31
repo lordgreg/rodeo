@@ -294,6 +294,10 @@ These are small, self-contained fixes with high impact-to-effort ratio. Do them 
   - Resolved via command palette (1.4): `:theme <name>` switches at runtime (`self.theme = Theme::load_theme(...)`), `:theme` alone lists available themes, Tab completes theme names. Guards against the `load_from_file` process-exit on unknown names by validating against `get_theme_list()` first.
   - **P2** | **Files:** `src/ui/input.rs`, `src/ui/theme.rs`, `src/ui/mod.rs` | **Hints:** Add keybinding — NOTE: `Ctrl+T` is taken by touch (1.2.6), use `:theme <name>` via command palette or another key. At minimum, use `get_theme_list()` to discover available themes, cycle through them on keypress. Reload the `Theme` struct and trigger a full redraw. Since `App` owns `Theme`, replacement is straightforward: `self.theme = Theme::load(theme_name)?`. | **Effort:** S
 
+- [ ] **3.1.5 Resolve the themes directory at runtime instead of a relative path**
+  - Found 2026-07-31 during the TOML migration: `DEFAULT_THEME_DIR` is the literal `"themes"`, so themes only load when rodeo is started from the repository root. An installed binary (`cargo install --path .`) finds nothing — with the new fallback it still starts, but every theme silently degrades to "not found", and `:theme` lists nothing.
+  - **P1** | **Files:** `src/ui/theme.rs`, `src/config.rs` | **Hints:** Replace the constant with a `theme_dirs() -> Vec<PathBuf>` search path, first match wins: (1) `$XDG_DATA_HOME/rodeo/themes` (user themes, via the `xdg` crate already in use), (2) `$XDG_DATA_DIRS` entries / `/usr/share/rodeo/themes` (packaged), (3) `./themes` relative to the current directory (development). `get_theme_list()` should merge all directories and de-duplicate by stem so `:theme` completion still works. Consider `include_str!("../themes/default.toml")` as a last-resort built-in so the app can always start with a sane palette even with no theme files installed at all. Optional: a `theme_dir` config key to override the search entirely. | **Effort:** M
+
 ### 3.2 Archive Preview
 
 - [x] **3.2.1 Add `tar` and `zip` crates**
@@ -570,10 +574,10 @@ Phase 0 (Bug Fixes) ────────────────────
 | Phase 0: Bug Fixes | 21 | 0 | — |
 | Phase 1: File Ops | 22 | 0 | — |
 | Phase 2: Search | 5 | 0 | — |
-| Phase 3: Preview | 11 | 0 | — |
+| Phase 3: Preview | 11 | 1 | 3.1.5 (theme dir lookup) |
 | Phase 4: Power User | 8 | 0 | — |
 | Phase 5: Infrastructure | 13 | 9 | CI extras, tracing, docs |
-| **Total** | **92** | **9** | |
+| **Total** | **92** | **10** | |
 
 ---
 
