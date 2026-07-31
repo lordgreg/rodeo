@@ -520,11 +520,13 @@ These are small, self-contained fixes with high impact-to-effort ratio. Do them 
   - A directory with no entries renders as a blank box.
   - **P2** | **Files:** `src/ui/panes.rs` | **Hints:** Render a centered muted `(empty directory)` when `paths` holds only `..`, and `(no matches)` when a filter hides everything. | **Effort:** S
 
-- [ ] **6.3.4 Responsive extra columns on wide terminals**
+- [x] **6.3.4 Responsive extra columns on wide terminals**
+  - Resolved: `ColumnSet::for_width()` adds git status, permissions and owner one at a time, each only while the name column can still show a reasonable name. Git status shows the two raw porcelain characters (index state in the success colour, worktree state in the warning colour) — the staged-vs-unstaged distinction colours cannot express. Owner is resolved from `/etc/passwd` (cached, numeric uid fallback), deliberately without a new dependency.
   - Now the primary answer to empty ultrawide screens, since the preview stays a popup (Open Decision 12): the spare width has to be filled with file-manager information, not preview content.
   - **P1** | **Files:** `src/ui/panes.rs` | **Hints:** Above ~120 columns per pane, add permissions (`rwxr-xr-x`), owner and a one-character git status column — the staged-vs-unstaged distinction that colours cannot express. Hide them again when narrow. | **Effort:** M
 
-- [ ] **6.3.5 File-type icons (config-gated)**
+- [x] **6.3.5 File-type icons (config-gated)**
+  - Resolved: `icons = true` in config.toml. Glyph by kind, then well-known name, then extension; codepoints written as `\u{...}` escapes because private-use characters get mangled in transit (the first draft lost all 41).
   - **P2** | **Files:** `src/ui/panes.rs`, `src/config.rs` | **Hints:** Nerd-font glyph per extension/kind with a `icons = true` config key (default off, since it needs a patched font). Biggest single "modern TUI" visual cue. | **Effort:** M
 
 ### 6.4 Chrome
@@ -534,7 +536,9 @@ These are small, self-contained fixes with high impact-to-effort ratio. Do them 
   - The footer truncates mid-word today (`F7 Mkdi`, `^h Hidd`).
   - **P1** | **Files:** `src/ui/footer.rs` | **Hints:** Keep short and long label variants per entry; pick per available width, and drop the lowest-priority entries instead of cutting a word in half. | **Effort:** S
 
-- [ ] **6.4.2 Useful header: breadcrumb, free space, sort/filter state**
+- [x] **6.4.2 Useful header: breadcrumb, free space, sort/filter state**
+  - Resolved: the empty middle third now shows the active path as a breadcrumb (parents muted, current directory emphasised, truncated from the left), and free space on the device sits next to the git status, sampled on navigation via `statvfs`.
+  - Not done on purpose: sort/filter chips. Sort state is already the ▾/▴ arrow on the column header and an active regex filter has its own bar, so chips would only repeat what is on screen.
   - The middle third of the header currently renders an empty string.
   - **P2** | **Files:** `src/ui/header.rs` | **Hints:** Left: pane stats (as now). Middle: breadcrumb of the active path with the last segment emphasised. Right: git (as now) plus free space on the device and chips for the active sort and filter. | **Effort:** M
 
@@ -644,8 +648,8 @@ Phase 0 (Bug Fixes) ────────────────────
 | Phase 3: Preview | 12 | 0 | — |
 | Phase 4: Power User | 8 | 0 | — |
 | Phase 5: Infrastructure | 13 | 8 | CI extras, unwrap sweep, docs |
-| Phase 6: Pre-release UI Polish | 8 | 4 | extra columns, header, icons |
-| **Total** | **101** | **12** | |
+| Phase 6: Pre-release UI Polish | 11 | 1 | only 6.2.3 (optional) left |
+| **Total** | **104** | **9** | |
 
 ---
 
