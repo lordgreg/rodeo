@@ -3,7 +3,7 @@ use std::io;
 use std::io::Cursor;
 use std::io::Error;
 use std::io::ErrorKind;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use log::info;
 use ratatui::style::Color;
@@ -11,8 +11,48 @@ use serde::{Deserialize, Serialize};
 use syntect::highlighting::Theme as SynTheme;
 use syntect::highlighting::ThemeSet;
 
+use crate::config::CONFIG_DIR;
+
 pub const DEFAULT_THEME_FILENAME: &str = "default.toml";
-pub const DEFAULT_THEME_DIR: &str = "themes";
+pub const DEFAULT_THEME_NAME: &str = "default";
+/// Directory holding themes, relative to a data directory (or the working
+/// directory when running from a checkout).
+pub const THEME_SUBDIR: &str = "themes";
+
+/// Compiled-in copy of the bundled default theme. It guarantees rodeo can
+/// always start with a sane palette — even when no theme files are installed
+/// anywhere on the system.
+const BUILTIN_DEFAULT_THEME: &str = include_str!("../../themes/default.toml");
+
+/// Search path for theme files, most specific first:
+/// 1. `$XDG_DATA_HOME/rodeo/themes` — the user's own themes,
+/// 2. `$XDG_DATA_DIRS/rodeo/themes` (e.g. `/usr/share/rodeo/themes`) — packaged,
+/// 3. `./themes` — running from a source checkout.
+pub fn theme_dirs() -> Vec<PathBuf> {
+    let xdg = xdg::BaseDirectories::with_prefix(CONFIG_DIR);
+    build_theme_dirs(xdg.get_data_home(), xdg.get_data_dirs())
+}
+
+/// Pure part of [`theme_dirs`], separated so it can be tested without
+/// touching the process environment.
+fn build_theme_dirs(data_home: Option<PathBuf>, data_dirs: Vec<PathBuf>) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = data_home
+        .into_iter()
+        .chain(data_dirs)
+        .map(|d| d.join(THEME_SUBDIR))
+        .collect();
+    dirs.push(PathBuf::from(THEME_SUBDIR));
+    dirs.dedup();
+    dirs
+}
+
+/// First existing `<dir>/<name>.toml` along the search path.
+fn find_theme_file(name: &str) -> Option<PathBuf> {
+    theme_dirs()
+        .into_iter()
+        .map(|dir| dir.join(format!("{name}.toml")))
+        .find(|path| path.is_file())
+}
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Colors {
@@ -397,89 +437,158 @@ impl Theme {
         ThemeSet::load_from_reader(&mut cursor).expect("failed to load generated theme")
     }
 
+    /// Loads a theme by name (looked up along [`theme_dirs`]) or by path when
+    /// the argument ends in `.toml`. `None` loads the default theme.
+    ///
+    /// Never fatal: an unknown name falls back to the default theme, and a
+    /// default that is not installed anywhere falls back to the compiled-in
+    /// copy.
     pub fn load_theme(name: Option<&str>) -> io::Result<Self> {
-        // 1. if name without extension, we know its in themes directory,
-        // 2. if name with .toml, we know its a path to a file
-        // 3. if name is None, we load the default theme from themes directory
-        let filename;
+        let name = name.unwrap_or(DEFAULT_THEME_NAME);
 
-        if let Some(name) = name {
-            if !name.ends_with(".toml") {
-                filename = format!("{}/{}.toml", DEFAULT_THEME_DIR, name);
-            } else {
-                filename = name.to_string();
+        if name.ends_with(".toml") {
+            return Self::load_from_file(Path::new(name));
+        }
+
+        if let Some(path) = find_theme_file(name) {
+            return Self::load_from_file(&path);
+        }
+
+        if name != DEFAULT_THEME_NAME {
+            log::warn!(
+                "theme '{name}' not found in {:?}, using default",
+                theme_dirs()
+            );
+            if let Some(path) = find_theme_file(DEFAULT_THEME_NAME) {
+                return Self::load_from_file(&path);
             }
-        } else {
-            filename = format!("{}/{}", DEFAULT_THEME_DIR, DEFAULT_THEME_FILENAME);
         }
 
-        // A missing theme must not be fatal: fall back to the bundled default
-        // (load_from_file exits the process when it cannot read the file).
-        let fallback = format!("{}/{}", DEFAULT_THEME_DIR, DEFAULT_THEME_FILENAME);
-        if !Path::new(&filename).exists() && filename != fallback {
-            log::warn!("theme '{filename}' not found, falling back to {fallback}");
-            return Self::load_from_file(&fallback);
-        }
-
-        Self::load_from_file(&filename)
+        log::warn!(
+            "no theme files found in {:?}, using built-in theme",
+            theme_dirs()
+        );
+        Self::builtin()
     }
 
+    /// The compiled-in default theme.
+    pub fn builtin() -> io::Result<Self> {
+        Self::from_str(BUILTIN_DEFAULT_THEME)
+    }
+
+    /// Every theme name found along the search path, plus the built-in one,
+    /// de-duplicated (earlier directories win) and sorted.
     pub fn get_theme_list() -> Vec<String> {
-        let mut themes: Vec<String> = Vec::new();
-        let entries = match fs::read_dir(DEFAULT_THEME_DIR) {
-            Ok(rd) => rd,
-            Err(e) => {
-                log::warn!("cannot read theme directory {}: {}", DEFAULT_THEME_DIR, e);
-                return themes;
-            }
-        };
+        let mut themes: Vec<String> = vec![DEFAULT_THEME_NAME.to_string()];
 
-        for entry in entries {
-            let entry = match entry {
-                Ok(e) => e,
-                Err(_) => continue,
+        for dir in theme_dirs() {
+            let entries = match fs::read_dir(&dir) {
+                Ok(rd) => rd,
+                Err(e) => {
+                    log::debug!("skipping theme directory {}: {e}", dir.display());
+                    continue;
+                }
             };
-            let path = entry.path();
 
-            if path.extension().is_none_or(|ext| ext != "toml") {
-                continue;
-            }
+            for entry in entries.flatten() {
+                let path = entry.path();
 
-            if let Some(stem) = path.file_stem()
-                && let Some(name) = stem.to_str()
-            {
-                themes.push(name.to_string());
+                if path.extension().is_none_or(|ext| ext != "toml") {
+                    continue;
+                }
+
+                if let Some(stem) = path.file_stem()
+                    && let Some(name) = stem.to_str()
+                    && !themes.iter().any(|t| t == name)
+                {
+                    themes.push(name.to_string());
+                }
             }
         }
 
+        themes.sort();
         themes
     }
 
-    pub fn load_from_file(filename: &str) -> io::Result<Self> {
-        let theme_str = match std::fs::read_to_string(filename) {
-            Ok(s) => s,
-            Err(e) => {
-                log::error!("Failed to read theme file '{}': {}", filename, e);
-                log::error!("Available themes:\n{}", Self::get_theme_list().join("\n"));
-                std::process::exit(1);
-            }
-        };
-
-        let theme: Theme = toml::from_str(&theme_str).map_err(|_| {
-            Error::new(
-                ErrorKind::InvalidData,
-                "cannot parse theme data.".to_string(),
-            )
+    pub fn load_from_file(path: &Path) -> io::Result<Self> {
+        let theme_str = std::fs::read_to_string(path).map_err(|e| {
+            log::error!("cannot read theme file '{}': {e}", path.display());
+            e
         })?;
 
-        info!("Loaded theme {}", theme.name);
+        let theme = Self::from_str(&theme_str)?;
+        info!("Loaded theme {} from {}", theme.name, path.display());
         Ok(theme)
+    }
+
+    fn from_str(theme_str: &str) -> io::Result<Self> {
+        toml::from_str(theme_str).map_err(|e| {
+            Error::new(
+                ErrorKind::InvalidData,
+                format!("cannot parse theme data: {e}"),
+            )
+        })
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn theme_dirs_are_ordered_user_system_local() {
+        let dirs = build_theme_dirs(
+            Some(PathBuf::from("/home/u/.local/share/rodeo")),
+            vec![
+                PathBuf::from("/usr/local/share/rodeo"),
+                PathBuf::from("/usr/share/rodeo"),
+            ],
+        );
+
+        assert_eq!(
+            dirs,
+            vec![
+                PathBuf::from("/home/u/.local/share/rodeo/themes"),
+                PathBuf::from("/usr/local/share/rodeo/themes"),
+                PathBuf::from("/usr/share/rodeo/themes"),
+                PathBuf::from("themes"),
+            ]
+        );
+    }
+
+    #[test]
+    fn theme_dirs_always_include_the_working_directory() {
+        // No HOME and no XDG_DATA_DIRS: the checkout-relative path remains.
+        let dirs = build_theme_dirs(None, Vec::new());
+        assert_eq!(dirs, vec![PathBuf::from("themes")]);
+    }
+
+    #[test]
+    fn builtin_theme_is_valid_and_parses() {
+        let theme = Theme::builtin().expect("compiled-in default theme must parse");
+        assert!(!theme.name.is_empty());
+        // Sanity: colors resolve to real RGB values, not the fallback.
+        assert!(matches!(theme.colors.background(), Color::Rgb(_, _, _)));
+    }
+
+    #[test]
+    fn theme_list_always_offers_the_default() {
+        assert!(Theme::get_theme_list().iter().any(|t| t == "default"));
+    }
+
+    #[test]
+    fn load_from_file_reports_missing_files_instead_of_exiting() {
+        let err = Theme::load_from_file(Path::new("/nonexistent/rodeo-theme.toml"))
+            .expect_err("missing theme file must be an error");
+        assert_eq!(err.kind(), ErrorKind::NotFound);
+    }
+
+    #[test]
+    fn unknown_theme_name_falls_back_instead_of_failing() {
+        let theme = Theme::load_theme(Some("definitely-not-a-theme"))
+            .expect("unknown theme must fall back, not fail");
+        assert!(!theme.name.is_empty());
+    }
 
     #[test]
     fn hex_to_color_parses_valid_hex() {

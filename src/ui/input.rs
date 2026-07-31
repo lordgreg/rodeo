@@ -1022,7 +1022,8 @@ impl App {
             return;
         }
 
-        // Guard: load_from_file exits the process on unreadable files.
+        // Unknown names would silently fall back to the default theme, so
+        // reject them here and tell the user what is available instead.
         let is_path = name.ends_with(".toml");
         if !is_path && !known.iter().any(|t| t == name) {
             self.err_status(format!(
