@@ -521,7 +521,8 @@ These are small, self-contained fixes with high impact-to-effort ratio. Do them 
   - **P2** | **Files:** `src/ui/panes.rs` | **Hints:** Render a centered muted `(empty directory)` when `paths` holds only `..`, and `(no matches)` when a filter hides everything. | **Effort:** S
 
 - [ ] **6.3.4 Responsive extra columns on wide terminals**
-  - **P2** | **Files:** `src/ui/panes.rs` | **Hints:** Above ~120 columns per pane, add permissions (`rwxr-xr-x`), owner and a one-character git status column — the staged-vs-unstaged distinction that colours cannot express. Hide them again when narrow. | **Effort:** M
+  - Now the primary answer to empty ultrawide screens, since the preview stays a popup (Open Decision 12): the spare width has to be filled with file-manager information, not preview content.
+  - **P1** | **Files:** `src/ui/panes.rs` | **Hints:** Above ~120 columns per pane, add permissions (`rwxr-xr-x`), owner and a one-character git status column — the staged-vs-unstaged distinction that colours cannot express. Hide them again when narrow. | **Effort:** M
 
 - [ ] **6.3.5 File-type icons (config-gated)**
   - **P2** | **Files:** `src/ui/panes.rs`, `src/config.rs` | **Hints:** Nerd-font glyph per extension/kind with a `icons = true` config key (default off, since it needs a patched font). Biggest single "modern TUI" visual cue. | **Effort:** M
@@ -537,11 +538,7 @@ These are small, self-contained fixes with high impact-to-effort ratio. Do them 
   - The middle third of the header currently renders an empty string.
   - **P2** | **Files:** `src/ui/header.rs` | **Hints:** Left: pane stats (as now). Middle: breadcrumb of the active path with the last segment emphasised. Right: git (as now) plus free space on the device and chips for the active sort and filter. | **Effort:** M
 
-### 6.5 Bigger Changes (need a decision first)
-
-- [ ] **6.5.1 Persistent preview pane — DECISION NEEDED: pane or popup?**
-  - The strongest fix for empty ultrawide screens: `left | right | preview`, or a toggle for `single pane + large preview` (ranger/lf style). It also demotes the preview popup to a "zoom" view, which makes 6.1.1 much less important.
-  - **P1** | **Files:** `src/ui/mod.rs`, `src/ui/panes.rs`, `src/ui/popup_preview.rs` | **Hints:** The preview content pipeline (background load, spinner, cache-per-selection, scrolling) already exists and is widget-shaped — it mostly needs a non-popup render path and a layout slot. Only show it above a width threshold; keep the popup for the zoomed view. | **Effort:** M
+### 6.5 Bigger Changes
 
 - [ ] **6.5.2 Mouse support**
   - **P3** | **Files:** `src/ui/input.rs` | **Hints:** `crossterm::event::EnableMouseCapture`. Click to move the cursor, double-click to open, click a column header to sort, wheel to scroll. Must be toggleable — mouse capture breaks terminal text selection. | **Effort:** M
@@ -639,6 +636,7 @@ Phase 0 (Bug Fixes) ────────────────────
 | 8 | **Linux-first or cross-platform from day 1?** | Linux only vs Linux + macOS + Windows | Dependency choices, testing burden | **Linux-first** with cross-platform awareness. Use cross-platform crates (`crossterm`, `notify`, `trash`). Don't test on macOS/Windows initially, but avoid platform-specific code. |
 | 9 | **Trash: permanent delete fallback?** | Only trash (fail on unsupported FS) vs fallback to `rm` | Safety vs. functionality | **Trash with permanent fallback** — if `trash` crate fails (network FS, some Linux configs), show a prominent "Trash unavailable. Permanently delete?" confirmation with red styling. |
 | 10 | **Single binary or multiple?** | One `rodeo` binary vs `rodeo` + `rodeo-server` for remote | Distribution simplicity vs. capability | **Single binary** — remote filesystem features are Phase 6+. No server mode needed now. |
+| 12 | ~~**Persistent preview pane or popup?**~~ → **DECIDED: popup only** | Third column following the cursor vs the existing modal popup | Layout, preview cost per keystroke | **Popup only** (2026-07-31): rodeo is a file manager first — the two panes exist so you can work *between* two directories, and a preview column competes with that. A persistent pane would also turn a user-initiated load into one per cursor movement (PDF extraction, directory size walks), needing debouncing, a load policy and a cache for something that is not the point of the tool. Wide terminals get filled with file-manager information instead (6.3.4, 6.4.2). |
 | 11 | ~~**`tracing` or `log`?**~~ → **DECIDED: keep `log`** | `tracing` + `tracing-subscriber` vs `log` + `env_logger` | Logging stack, ~50 call sites | **`log` + `env_logger`** (2026-07-31): `tracing` earns its keep in async services and libraries where cross-task spans matter. rodeo is a single-threaded TUI with one worker thread, and `log` is still fully idiomatic for that. Revisit only if concurrency grows or log rotation (`tracing-appender`) becomes necessary. |
 
 ---
@@ -654,8 +652,8 @@ Phase 0 (Bug Fixes) ────────────────────
 | Phase 3: Preview | 12 | 0 | — |
 | Phase 4: Power User | 8 | 0 | — |
 | Phase 5: Infrastructure | 13 | 8 | CI extras, unwrap sweep, docs |
-| Phase 6: Pre-release UI Polish | 8 | 7 | icons, extra columns, header, preview pane, mouse |
-| **Total** | **101** | **15** | |
+| Phase 6: Pre-release UI Polish | 8 | 6 | extra columns, header, icons, mouse |
+| **Total** | **101** | **14** | |
 
 ---
 
