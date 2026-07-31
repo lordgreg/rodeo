@@ -1186,6 +1186,12 @@ impl App {
                     self.panes.goto_next(MoveDirection::Down);
                     return true;
                 }
+                KeyCode::Char('w') => {
+                    if let Some(preview) = self.preview.as_mut() {
+                        preview.toggle_wrap();
+                    }
+                    return true;
+                }
                 _ => {}
             }
         }

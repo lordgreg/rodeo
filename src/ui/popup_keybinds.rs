@@ -42,6 +42,7 @@ const KEYBINDS: &[(&str, &str)] = &[
     ("Ctrl+j/k or Ctrl+arrows", "Scroll preview"),
     ("Ctrl+f/b", "Preview: page down/up"),
     ("Ctrl+d/u", "Preview: half page down/up"),
+    ("w", "Preview: toggle line wrap"),
     ("?", "About"),
     ("Esc", "Close / clear / quit"),
     ("q", "Quit"),

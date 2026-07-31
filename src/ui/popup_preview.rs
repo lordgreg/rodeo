@@ -58,6 +58,10 @@ pub struct PopupPreview {
     loading_rx: Option<mpsc::Receiver<PreviewContent>>,
     /// When the background load started (drives spinner animation).
     loading_started: Option<Instant>,
+    /// Wrap long lines to the popup width. On by default: without it every
+    /// line longer than the popup is simply cut off at the right edge, which
+    /// hides most of a prose document (README lines run past 300 columns).
+    wrap: bool,
 }
 
 #[derive(PartialEq, Debug)]
@@ -120,6 +124,7 @@ impl PopupPreview {
             content,
             loading_rx: None,
             loading_started: None,
+            wrap: true,
         }
     }
 
@@ -136,6 +141,7 @@ impl PopupPreview {
             content: Some(PreviewContent::Text(text)),
             loading_rx: None,
             loading_started: None,
+            wrap: true,
         }
     }
 
@@ -144,6 +150,28 @@ impl PopupPreview {
     /// spinner animates without waiting for a keypress.
     pub fn is_loading(&self) -> bool {
         matches!(self.content, Some(PreviewContent::Loading))
+    }
+
+    /// Toggles line wrapping; code is sometimes easier to read unwrapped.
+    pub fn toggle_wrap(&mut self) {
+        self.wrap = !self.wrap;
+        self.row = 0;
+    }
+
+    /// Builds the scrollable paragraph for `text`, clamping the scroll offset
+    /// to the number of rows the text actually renders to (which depends on
+    /// wrapping).
+    fn text_paragraph(&mut self, text: &Text<'static>, area: Rect) -> Paragraph<'static> {
+        let mut paragraph = Paragraph::new(text.clone());
+        if self.wrap {
+            paragraph = paragraph.wrap(Wrap { trim: false });
+        }
+
+        let rendered_rows = paragraph.line_count(area.width) as u16;
+        let max_row = rendered_rows.saturating_sub(area.height);
+        self.row = self.row.min(max_row);
+
+        paragraph.scroll((self.row, 0))
     }
 
     pub fn row_next(&mut self) {
@@ -524,13 +552,8 @@ impl Component for PopupPreview {
         // their content lazily from the filesystem.
         if self.selected.is_none() {
             if let Some(PreviewContent::Text(text)) = self.content.as_ref() {
-                let line_count = text.lines.len() as u16;
-                let max_row = line_count.saturating_sub(inner_area.height);
-                self.row = self.row.min(max_row);
-                frame.render_widget(
-                    Paragraph::new(text.clone()).scroll((self.row, 0)),
-                    inner_area,
-                );
+                let paragraph = self.text_paragraph(&text.clone(), inner_area);
+                frame.render_widget(paragraph, inner_area);
             }
             return;
         }
@@ -611,13 +634,8 @@ impl Component for PopupPreview {
 
         match content {
             PreviewContent::Text(text) => {
-                let line_count = text.lines.len() as u16;
-                let max_row = line_count.saturating_sub(inner_area.height);
-                self.row = self.row.min(max_row);
-                frame.render_widget(
-                    Paragraph::new(text.clone()).scroll((self.row, 0)),
-                    inner_area,
-                );
+                let paragraph = self.text_paragraph(&text.clone(), inner_area);
+                frame.render_widget(paragraph, inner_area);
             }
             PreviewContent::Image(path) => {
                 let dyn_img = match image::ImageReader::open(path) {
@@ -800,6 +818,44 @@ mod tests {
             PopupPreview::new(Some(Entry::new(tmp.path().to_path_buf())), test_syn_theme());
 
         assert!(preview.content.is_none());
+    }
+
+    #[test]
+    fn wrapping_bounds_the_scroll_by_rendered_rows() {
+        // One very long logical line: unwrapped it is a single row and there is
+        // nothing to scroll, wrapped it is many rows.
+        let text = Text::from(vec![Line::from("word ".repeat(40))]);
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 20,
+            height: 5,
+        };
+
+        let mut preview = PopupPreview::from_text("t".to_string(), text.clone());
+        preview.row = 500;
+        let _ = preview.text_paragraph(&text, area);
+        let wrapped_max = preview.row;
+        assert!(
+            wrapped_max > 0,
+            "wrapped text must be scrollable past the first screen"
+        );
+        assert!(wrapped_max < 500, "scroll must be clamped to the content");
+
+        // Without wrapping the same text fits on one row: nothing to scroll.
+        preview.wrap = false;
+        preview.row = 500;
+        let _ = preview.text_paragraph(&text, area);
+        assert_eq!(preview.row, 0);
+    }
+
+    #[test]
+    fn toggling_wrap_returns_to_the_top() {
+        let mut preview = PopupPreview::from_text("t".to_string(), Text::from("x"));
+        preview.row = 12;
+        preview.toggle_wrap();
+        assert!(!preview.wrap);
+        assert_eq!(preview.row, 0);
     }
 
     #[test]
