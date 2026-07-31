@@ -464,6 +464,10 @@ These are small, self-contained fixes with high impact-to-effort ratio. Do them 
 - [ ] **5.4.3 Update README with current status, installation instructions, keybindings**
   - **P2** | **Files:** `README.md` | **Hints:** Add "Installation" section (`cargo install --path .` or `cargo build --release`). Add runtime deps section: `bat`, `file` commands (until syntect replaces bat). Add keybinding table. Link to this TODO. | **Effort:** M
 
+- [ ] **5.4.5 Choose a licence**
+  - Found 2026-07-31 while writing the README: there is no `LICENSE` file and no `license` field in `Cargo.toml`, so the repository is implicitly all-rights-reserved despite being public. Blocks any release, and `cargo publish` refuses without it.
+  - **P1** | **Files:** `LICENSE` (new), `Cargo.toml`, `README.md` | **Hints:** MIT or Apache-2.0 (or the usual dual `MIT OR Apache-2.0`) match the Rust ecosystem; GPL-3.0 if you want copyleft. Add `license = "..."` to `Cargo.toml` so the crate metadata matches. | **Effort:** S
+
 - [ ] **5.4.4 Add man page or `--help` improvement**
   - **P3** | **Files:** `src/cli.rs`, `docs/rodeo.1` (new) | **Hints:** Enhance clap doc strings. Optional: generate man page with `clap_mangen`. | **Effort:** S
 
@@ -644,9 +648,9 @@ Phase 0 (Bug Fixes) ────────────────────
 | Phase 2: Search | 5 | 0 | — |
 | Phase 3: Preview | 12 | 0 | — |
 | Phase 4: Power User | 8 | 0 | — |
-| Phase 5: Infrastructure | 13 | 8 | CI extras, unwrap sweep, docs |
+| Phase 5: Infrastructure | 13 | 9 | CI extras, unwrap sweep, docs, licence |
 | Phase 6: Pre-release UI Polish | 11 | 0 | complete |
-| **Total** | **104** | **8** | |
+| **Total** | **104** | **9** | |
 
 ---
 
