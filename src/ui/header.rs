@@ -8,7 +8,15 @@ use ratatui::{
     widgets::{Block, Padding, Paragraph},
 };
 
-use crate::ui::{component::Component, panes::PaneStats, theme::Theme, uiconfig::UiConfig};
+use crate::ui::{
+    component::Component,
+    panes::{PaneStats, format_size},
+    theme::Theme,
+    uiconfig::UiConfig,
+};
+
+/// Ellipsis used when the breadcrumb does not fit.
+const ELLIPSIS: &str = "…/";
 
 #[derive(Default, Debug, Clone)]
 struct GitStatus {
@@ -63,15 +71,22 @@ pub struct Header {
     pub directory: String,
     stats: Option<PaneStats>,
     git_status: Option<GitStatus>,
+    /// Bytes available on the filesystem holding `directory`. Sampled when the
+    /// directory changes, not per frame.
+    free_space: Option<u64>,
 }
 
 impl Header {
     pub fn new(directory: impl Into<String>) -> Self {
-        Self {
+        let mut header = Self {
             directory: directory.into(),
             stats: None,
             git_status: None,
-        }
+            free_space: None,
+        };
+        header.free_space = free_space(&header.directory);
+        header.git_status = GitStatus::try_from_path(&header.directory);
+        header
     }
 
     pub fn set_stats(&mut self, stats: PaneStats) {
@@ -103,6 +118,78 @@ impl Header {
         self.directory = directory;
 
         self.git_status = self.update_git(&self.directory);
+        self.free_space = free_space(&self.directory);
+    }
+
+    /// The active path as a breadcrumb: separators and parents muted, the
+    /// directory you are actually in emphasised. Truncated from the left,
+    /// because the tail is the part that matters.
+    fn breadcrumb(&self, theme: &Theme, width: u16) -> Line<'static> {
+        let segments: Vec<&str> = self
+            .directory
+            .split('/')
+            .filter(|segment| !segment.is_empty())
+            .collect();
+        let Some((last, parents)) = segments.split_last() else {
+            return Line::from(Span::styled(
+                "/",
+                Style::default().fg(theme.colors.primary()),
+            ));
+        };
+
+        // Drop leading parents until the whole thing fits.
+        let width = width as usize;
+        let last_width = last.chars().count();
+        let mut skip = 0;
+        loop {
+            let shown = &parents[skip..];
+            let parents_width: usize =
+                shown.iter().map(|p| p.chars().count() + 1).sum::<usize>() + 1;
+            let prefix_width = if skip > 0 {
+                ELLIPSIS.chars().count()
+            } else {
+                0
+            };
+            if prefix_width + parents_width + last_width <= width || skip == parents.len() {
+                break;
+            }
+            skip += 1;
+        }
+
+        let mut spans = Vec::new();
+        if skip > 0 {
+            spans.push(Span::styled(
+                ELLIPSIS.to_string(),
+                Style::default().fg(theme.colors.muted()),
+            ));
+        } else {
+            spans.push(Span::styled(
+                "/".to_string(),
+                Style::default().fg(theme.colors.muted()),
+            ));
+        }
+        for parent in &parents[skip..] {
+            spans.push(Span::styled(
+                format!("{parent}/"),
+                Style::default().fg(theme.colors.muted()),
+            ));
+        }
+        spans.push(Span::styled(
+            (*last).to_string(),
+            Style::default().fg(theme.colors.primary()).bold(),
+        ));
+
+        Line::from(spans)
+    }
+
+    /// Free space on the device, so a copy that cannot fit is obvious before
+    /// starting it.
+    fn free_space_to_line(&self, theme: &Theme) -> Option<Span<'static>> {
+        let free = self.free_space?;
+        Some(Span::styled(
+            format!("{} free", format_size(free)),
+            Style::default().fg(theme.colors.muted()),
+        ))
     }
 
     fn update_git(&self, path: &str) -> Option<GitStatus> {
@@ -155,20 +242,124 @@ impl Component for Header {
                 .style(Style::default().fg(theme.colors.foreground())),
             layout[0],
         );
+        // The middle third used to render an empty string; it now says where
+        // you actually are.
         frame.render_widget(
-            Paragraph::new("")
+            Paragraph::new(self.breadcrumb(theme, layout[1].width.saturating_sub(2)))
                 .block(Block::default().padding(Padding::horizontal(1)))
                 .alignment(HorizontalAlignment::Center)
                 .style(Style::default().fg(theme.colors.foreground())),
             layout[1],
         );
 
+        let mut right = self.git_to_line(theme);
+        if let Some(free) = self.free_space_to_line(theme) {
+            if !right.spans.is_empty() {
+                right.spans.push(Span::styled(
+                    "  ",
+                    Style::default().fg(theme.colors.muted()),
+                ));
+            }
+            right.spans.push(free);
+        }
+
         frame.render_widget(
-            Paragraph::new(self.git_to_line(theme))
+            Paragraph::new(right)
                 .alignment(HorizontalAlignment::Right)
                 .block(Block::default().padding(Padding::horizontal(1)))
                 .style(Style::default().fg(theme.colors.muted())),
             layout[2],
         );
+    }
+}
+
+/// Bytes available to unprivileged users on the filesystem holding `path`.
+///
+/// Uses `statvfs` directly: `libc` is already in the dependency tree, and the
+/// alternative (spawning `df`) would cost a process per navigation.
+#[cfg(unix)]
+fn free_space(path: &str) -> Option<u64> {
+    use std::ffi::CString;
+
+    let c_path = CString::new(path).ok()?;
+    // SAFETY: c_path is a valid NUL-terminated string for the duration of the
+    // call, stat is a properly sized zeroed statvfs, and the return code is
+    // checked before any field is read.
+    let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
+    if unsafe { libc::statvfs(c_path.as_ptr(), &mut stat) } != 0 {
+        return None;
+    }
+
+    Some(stat.f_bavail as u64 * stat.f_frsize as u64)
+}
+
+#[cfg(not(unix))]
+fn free_space(_path: &str) -> Option<u64> {
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn line_text(line: &Line<'_>) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    fn header_at(path: &str) -> Header {
+        Header {
+            directory: path.to_string(),
+            stats: None,
+            git_status: None,
+            free_space: None,
+        }
+    }
+
+    #[test]
+    fn breadcrumb_shows_the_whole_path_when_it_fits() {
+        let theme = Theme::builtin().unwrap();
+        let header = header_at("/home/user/projects/rodeo");
+
+        assert_eq!(
+            line_text(&header.breadcrumb(&theme, 80)),
+            "/home/user/projects/rodeo"
+        );
+    }
+
+    #[test]
+    fn breadcrumb_drops_leading_segments_when_narrow() {
+        let theme = Theme::builtin().unwrap();
+        let header = header_at("/a/very/deeply/nested/directory/tree/leaf");
+
+        let text = line_text(&header.breadcrumb(&theme, 20));
+        assert!(text.starts_with('…'), "{text}");
+        // The directory you are in is what matters, so it always survives.
+        assert!(text.ends_with("leaf"), "{text}");
+        assert!(text.chars().count() <= 20, "{text}");
+    }
+
+    #[test]
+    fn breadcrumb_keeps_the_leaf_even_when_it_cannot_fit() {
+        let theme = Theme::builtin().unwrap();
+        let header = header_at("/some/extremely-long-directory-name-that-cannot-fit");
+
+        let text = line_text(&header.breadcrumb(&theme, 10));
+        assert!(text.ends_with("extremely-long-directory-name-that-cannot-fit"));
+    }
+
+    #[test]
+    fn breadcrumb_of_root_is_a_slash() {
+        let theme = Theme::builtin().unwrap();
+        assert_eq!(line_text(&header_at("/").breadcrumb(&theme, 40)), "/");
+    }
+
+    #[test]
+    fn emphasises_the_current_directory() {
+        let theme = Theme::builtin().unwrap();
+        let line = header_at("/home/user/rodeo").breadcrumb(&theme, 80);
+
+        let last = line.spans.last().unwrap();
+        assert_eq!(last.content.as_ref(), "rodeo");
+        assert_ne!(last.style, line.spans[0].style);
     }
 }
