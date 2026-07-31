@@ -89,8 +89,10 @@ pub struct App {
     keymap: Vec<(KeyCode, Action)>,
     /// Filesystem event receiver — events trigger a debounced pane reload.
     fs_notify_rx: mpsc::Receiver<notify::Result<notify::Event>>,
-    /// The watcher must stay alive for the duration of the app.
-    _fs_watcher: notify::RecommendedWatcher,
+    /// The watcher must stay alive for the duration of the app. `None` when it
+    /// could not be created (inotify limits, unsupported filesystem) — the app
+    /// then simply does not auto-refresh.
+    _fs_watcher: Option<notify::RecommendedWatcher>,
     /// Currently watched directories (left pane, right pane).
     watched_dirs: [PathBuf; 2],
     /// When the last filesystem event arrived; reload fires after 150 ms silence.
@@ -112,18 +114,15 @@ impl App {
         // Set up filesystem watcher. Errors are non-fatal: auto-refresh just
         // won't work, but everything else continues normally.
         let (fs_tx, fs_notify_rx) = mpsc::channel();
-        let watcher_result = notify::RecommendedWatcher::new(fs_tx, notify::Config::default());
         let watched_dirs = panes.pane_dirs();
-        let mut _fs_watcher = watcher_result.unwrap_or_else(|e| {
-            log::warn!("Cannot start filesystem watcher: {e}");
-            // Create a dummy watcher that immediately errors — the channel
-            // will stay empty and auto-refresh simply won't fire.
-            notify::RecommendedWatcher::new(mpsc::channel().0, notify::Config::default())
-                .expect("fallback watcher")
-        });
-        for dir in &watched_dirs {
-            if let Err(e) = _fs_watcher.watch(dir, notify::RecursiveMode::NonRecursive) {
-                log::warn!("Cannot watch {dir:?}: {e}");
+        let mut _fs_watcher = notify::RecommendedWatcher::new(fs_tx, notify::Config::default())
+            .map_err(|e| log::warn!("Cannot start filesystem watcher: {e}"))
+            .ok();
+        if let Some(watcher) = _fs_watcher.as_mut() {
+            for dir in &watched_dirs {
+                if let Err(e) = watcher.watch(dir, notify::RecursiveMode::NonRecursive) {
+                    log::warn!("Cannot watch {dir:?}: {e}");
+                }
             }
         }
 
@@ -245,16 +244,18 @@ impl App {
         if new_dirs == self.watched_dirs {
             return;
         }
+        let Some(watcher) = self._fs_watcher.as_mut() else {
+            self.watched_dirs = new_dirs;
+            return;
+        };
+
         // Unwatch old directories.
         for dir in &self.watched_dirs {
-            let _ = self._fs_watcher.unwatch(dir);
+            let _ = watcher.unwatch(dir);
         }
         // Watch new directories.
         for dir in &new_dirs {
-            if let Err(e) = self
-                ._fs_watcher
-                .watch(dir, notify::RecursiveMode::NonRecursive)
-            {
+            if let Err(e) = watcher.watch(dir, notify::RecursiveMode::NonRecursive) {
                 log::warn!("Cannot watch {dir:?}: {e}");
             }
         }

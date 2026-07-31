@@ -159,7 +159,13 @@ impl Config {
             Some(filename) => Path::new(filename).to_path_buf(),
             None => xdg::BaseDirectories::with_prefix(CONFIG_DIR)
                 .get_config_file(CONFIG_FILENAME)
-                .expect("Failed to get config file path"),
+                .unwrap_or_else(|| {
+                    // Only None when no HOME could be determined (containers,
+                    // some service managers). Falling back to the working
+                    // directory beats refusing to start.
+                    warn!("no home directory found, using ./{CONFIG_FILENAME}");
+                    PathBuf::from(CONFIG_FILENAME)
+                }),
         }
     }
 

@@ -1,6 +1,8 @@
 //! Bulk rename popup: displays old → new names with live preview and applies
 //! `s/regex/replacement/` or `%d` (sequential numbering) patterns.
 
+use std::sync::OnceLock;
+
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
@@ -186,8 +188,11 @@ impl BulkRename {
 /// Expands a numbering pattern like `photo_%03d.jpg` → `photo_001.jpg`.
 fn apply_number_format(pat: &str, n: usize, ext: &str) -> String {
     // Replace %0Nd or %Nd with zero-padded / unpadded number; append extension
-    // when the pattern doesn't already contain one.
-    let re = Regex::new(r"%0?(\d*)d").unwrap();
+    // when the pattern doesn't already contain one. The pattern is a literal,
+    // so it is compiled once and cannot fail at runtime.
+    static NUMBER_PATTERN: OnceLock<Regex> = OnceLock::new();
+    let re = NUMBER_PATTERN
+        .get_or_init(|| Regex::new(r"%0?(\d*)d").expect("literal numbering pattern must compile"));
     let result = re.replace(pat, |caps: &regex::Captures| {
         let width: usize = caps[1].parse().unwrap_or(0);
         if width > 0 {

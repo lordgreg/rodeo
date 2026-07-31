@@ -387,6 +387,7 @@ impl App {
             .build();
 
         let mut match_count = 0;
+        let mut matches = Vec::new();
         for entry in walker {
             let Ok(entry) = entry else { continue };
             let path = entry.path();
@@ -404,8 +405,7 @@ impl App {
             // Search each line
             for (line_num, line) in contents.lines().enumerate() {
                 if re.is_match(line) {
-                    let find = self.find_in_files.as_mut().unwrap();
-                    find.add_result(super::popup_findinfiles::FindMatch {
+                    matches.push(super::popup_findinfiles::FindMatch {
                         path: path.to_path_buf(),
                         line_num: line_num + 1,
                         line_content: line.to_string(),
@@ -424,7 +424,14 @@ impl App {
             }
         }
 
-        let find = self.find_in_files.as_mut().unwrap();
+        // Results are gathered locally and handed over in one go: borrowing
+        // self inside the walk would need an unwrap per match.
+        let Some(find) = self.find_in_files.as_mut() else {
+            return;
+        };
+        for m in matches {
+            find.add_result(m);
+        }
         find.finish_search();
 
         if match_count == 0 {
