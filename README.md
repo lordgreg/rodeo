@@ -133,8 +133,26 @@ Bundled themes: `default`, `catppuccin-frappe`, `catppuccin-latte`,
 
 ### Commands
 
-`:q` `:w` `:so` `:e <path>` `:mkdir` `:touch` `:delete` `:rename <new>`
-`:theme [name]` `:trash` `:shell` `:!<cmd>` `:help`
+`:` opens the command line. Matching commands are listed as you type, with
+their arguments and a description; `Tab` walks the list and `Shift+Tab` goes
+back, Vim-wildmenu style. Arguments complete too — directories for `:e`/`:cd`,
+theme names for `:theme`.
+
+| Command | Action |
+|---------|--------|
+| `:q` `:quit` | Quit |
+| `:w` `:write` | Save the configuration |
+| `:so` `:source` | Reload the configuration |
+| `:e` `:cd <path>` | Navigate to a directory |
+| `:mkdir <name>` | Create a directory |
+| `:touch <name>` | Create an empty file |
+| `:rename <new>` | Rename the current entry |
+| `:delete` | Trash the selected or current entries |
+| `:theme [name]` | Switch theme, or list the available ones |
+| `:trash` | Browse the trash |
+| `:shell` | Open an interactive subshell |
+| `:!<cmd>` | Run a shell command |
+| `:help` | Show the help popup |
 
 `:!` output opens in the preview popup, and `%f` expands to the selected (or
 highlighted) paths — `:!wc -l %f`.

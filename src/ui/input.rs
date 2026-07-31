@@ -10,6 +10,7 @@ use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifier
 
 use super::{
     App,
+    completion::Completion,
     dialog::{Dialog, DialogAction, DialogResult},
     keymap::Action,
     panes::{EntryKind, MoveDirection, OpenAction, SortOrder, SortType},
@@ -879,13 +880,27 @@ impl App {
         match key.code {
             KeyCode::Enter => {
                 if let Some(input) = self.command.take() {
+                    self.completion = Completion::default();
                     self.run_command(&input.value.clone());
                 }
+                return;
             }
             KeyCode::Esc => {
                 self.command = None;
+                self.completion = Completion::default();
+                return;
             }
-            KeyCode::Tab => self.complete_command(),
+            // Tab walks the menu; the line follows the highlighted candidate.
+            KeyCode::Tab | KeyCode::BackTab => {
+                let forward = key.code == KeyCode::Tab;
+                let line = input.value.clone();
+                if let Some(completed) = self.completion.cycle(&line, forward)
+                    && let Some(input) = self.command.as_mut()
+                {
+                    *input = TextInput::new(completed);
+                }
+                return;
+            }
             KeyCode::Backspace => input.backspace(),
             KeyCode::Left => input.left(),
             KeyCode::Right => input.right(),
@@ -894,8 +909,22 @@ impl App {
             {
                 input.insert(c);
             }
-            _ => {}
+            _ => return,
         }
+
+        // Editing the line invalidates the menu: rebuild it from scratch.
+        self.refresh_completion();
+    }
+
+    /// Recomputes the completion menu for the current command line.
+    pub(crate) fn refresh_completion(&mut self) {
+        let Some(input) = self.command.as_ref() else {
+            self.completion = Completion::default();
+            return;
+        };
+        let line = input.value.clone();
+        let pane_dir = PathBuf::from(&self.panes.get_active_pane().path);
+        self.completion = Completion::compute(&line, &pane_dir);
     }
 
     fn run_command(&mut self, cmdline: &str) {
@@ -973,51 +1002,6 @@ impl App {
             }
             Err(e) => self.err_status(format!("Cannot reload config: {e}")),
         }
-    }
-
-    fn complete_command(&mut self) {
-        const COMMANDS: &[&str] = &[
-            "q", "quit", "w", "write", "so", "source", "e", "cd", "mkdir", "touch", "delete",
-            "rename", "theme", "help", "shell",
-        ];
-
-        let Some(input) = self.command.as_mut() else {
-            return;
-        };
-        let text = input.value.clone();
-
-        // Argument completion: only theme names for now.
-        if let Some((first, rest)) = text.split_once(char::is_whitespace) {
-            if first == "theme" {
-                let rest = rest.trim_start();
-                let matches: Vec<String> = Theme::get_theme_list()
-                    .into_iter()
-                    .filter(|t| t.starts_with(rest))
-                    .collect();
-                if let Some(completion) = common_prefix(&matches)
-                    && completion.len() > rest.len()
-                {
-                    input.value = format!("{first} {completion}");
-                    input.cursor = input.value.chars().count();
-                }
-            }
-            return;
-        }
-
-        let matches: Vec<String> = COMMANDS
-            .iter()
-            .filter(|c| c.starts_with(text.as_str()))
-            .map(|s| s.to_string())
-            .collect();
-        if let Some(completion) = common_prefix(&matches)
-            && completion.len() > text.len()
-        {
-            input.value = completion;
-        }
-        if matches.len() == 1 {
-            input.value = format!("{} ", matches[0]);
-        }
-        input.cursor = input.value.chars().count();
     }
 
     fn navigate_to(&mut self, arg: &str) {
@@ -1438,6 +1422,7 @@ impl App {
             }
             Action::CommandPalette => {
                 self.command = Some(TextInput::default());
+                self.refresh_completion();
             }
             Action::Create => {
                 let parent = PathBuf::from(&self.panes.get_active_pane().path);
@@ -1482,18 +1467,6 @@ impl App {
             self.exit = true;
         }
     }
-}
-
-/// Longest common prefix of the given strings, or `None` when empty.
-fn common_prefix(strings: &[String]) -> Option<String> {
-    let first = strings.first()?;
-    let mut prefix = first.clone();
-    for s in &strings[1..] {
-        while !s.starts_with(&prefix) {
-            prefix.pop();
-        }
-    }
-    Some(prefix)
 }
 
 #[cfg(test)]
@@ -1555,6 +1528,64 @@ mod tests {
     }
 
     #[test]
+    fn command_palette_offers_completions_immediately() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = test_app(dir.path());
+
+        app.dispatch_key(&key(KeyCode::Char(':'), KeyModifiers::NONE));
+
+        assert!(app.command.is_some());
+        assert!(
+            app.completion.is_active(),
+            "the menu should be offered without pressing Tab first"
+        );
+    }
+
+    #[test]
+    fn tab_cycles_the_completion_menu() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = test_app(dir.path());
+
+        app.dispatch_key(&key(KeyCode::Char(':'), KeyModifiers::NONE));
+        app.dispatch_key(&key(KeyCode::Char('q'), KeyModifiers::NONE));
+        app.dispatch_key(&key(KeyCode::Tab, KeyModifiers::NONE));
+        assert_eq!(app.command.as_ref().unwrap().value, "q");
+
+        app.dispatch_key(&key(KeyCode::Tab, KeyModifiers::NONE));
+        assert_eq!(app.command.as_ref().unwrap().value, "quit");
+
+        // Shift+Tab walks back.
+        app.dispatch_key(&key(KeyCode::BackTab, KeyModifiers::SHIFT));
+        assert_eq!(app.command.as_ref().unwrap().value, "q");
+    }
+
+    #[test]
+    fn typing_refilters_the_menu() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = test_app(dir.path());
+
+        app.dispatch_key(&key(KeyCode::Char(':'), KeyModifiers::NONE));
+        let all = app.completion.candidates().len();
+
+        app.dispatch_key(&key(KeyCode::Char('t'), KeyModifiers::NONE));
+        let filtered = app.completion.candidates().len();
+
+        assert!(filtered < all && filtered > 0, "{filtered} of {all}");
+    }
+
+    #[test]
+    fn leaving_the_palette_clears_the_menu() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = test_app(dir.path());
+
+        app.dispatch_key(&key(KeyCode::Char(':'), KeyModifiers::NONE));
+        app.dispatch_key(&key(KeyCode::Esc, KeyModifiers::NONE));
+
+        assert!(app.command.is_none());
+        assert!(!app.completion.is_active());
+    }
+
+    #[test]
     fn shifted_characters_still_reach_the_keymap() {
         let dir = tempfile::tempdir().unwrap();
         let mut app = test_app(dir.path());
@@ -1562,28 +1593,5 @@ mod tests {
         // '?' arrives with SHIFT on most layouts — it must still toggle About.
         app.dispatch_key(&key(KeyCode::Char('?'), KeyModifiers::SHIFT));
         assert!(app.ui_config.active_about_popup);
-    }
-
-    #[test]
-    fn common_prefix_of_similar_strings() {
-        let strings = vec!["quit".to_string(), "quark".to_string()];
-        assert_eq!(common_prefix(&strings), Some("qu".to_string()));
-    }
-
-    #[test]
-    fn common_prefix_single_string_is_itself() {
-        let strings = vec!["theme".to_string()];
-        assert_eq!(common_prefix(&strings), Some("theme".to_string()));
-    }
-
-    #[test]
-    fn common_prefix_none_for_empty() {
-        assert_eq!(common_prefix(&[]), None);
-    }
-
-    #[test]
-    fn common_prefix_empty_when_no_overlap() {
-        let strings = vec!["abc".to_string(), "xyz".to_string()];
-        assert_eq!(common_prefix(&strings), Some(String::new()));
     }
 }

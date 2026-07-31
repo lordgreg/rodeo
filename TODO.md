@@ -541,6 +541,11 @@ These are small, self-contained fixes with high impact-to-effort ratio. Do them 
 
 ### 6.4 Chrome
 
+- [x] **6.4.3 Wildmenu-style completion for the `:` command line**
+  - Requested 2026-07-31: `Tab` completion with a live preview, the way Vim's wildmenu and editor autocomplete work.
+  - Resolved: `src/ui/command.rs` holds one table of commands (names, aliases, argument placeholder, description, argument kind) that drives the completion menu, the help popup and the README, so they cannot drift. `src/ui/completion.rs` computes candidates for the command name or its argument — directories for `:e`/`:cd` (with `~` expansion and nested paths), theme names for `:theme`. The menu is shown as soon as `:` is pressed rather than only after the first `Tab`, so commands are discoverable; `Tab`/`Shift+Tab` walk it, and the list scrolls when there are more candidates than rows. Replaces the old common-prefix completer.
+
+
 - [x] **6.4.1 Adaptive footer labels**
   - Resolved: hints render as one line (key in the accent colour, action muted) and whole entries are dropped with an ellipsis when the terminal is narrow, instead of cutting words in half.
   - The footer truncates mid-word today (`F7 Mkdi`, `^h Hidd`).
@@ -658,8 +663,8 @@ Phase 0 (Bug Fixes) ────────────────────
 | Phase 3: Preview | 12 | 0 | — |
 | Phase 4: Power User | 8 | 0 | — |
 | Phase 5: Infrastructure | 22 | 0 | complete |
-| Phase 6: Pre-release UI Polish | 11 | 0 | complete |
-| **Total** | **113** | **0** | |
+| Phase 6: Pre-release UI Polish | 12 | 0 | complete |
+| **Total** | **114** | **0** | |
 
 ---
 

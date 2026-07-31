@@ -10,6 +10,7 @@ use ratatui::{
 };
 
 use crate::ui::{
+    command,
     component::{Component, centered_popup},
     theme::Theme,
     uiconfig::UiConfig,
@@ -36,7 +37,7 @@ const KEYBINDS: &[(&str, &str)] = &[
     ("x", "Toggle select file"),
     ("y / p / P", "Yank / paste copy / paste move"),
     ("dd", "Move to trash"),
-    (":", "Command palette"),
+    (":", "Command palette (Tab completes)"),
     ("Space", "Preview"),
     ("Ctrl+h", "Toggle hidden files"),
     ("Ctrl+l", "Refresh panes / redraw"),
@@ -49,22 +50,6 @@ const KEYBINDS: &[(&str, &str)] = &[
     ("?", "About"),
     ("Esc", "Close / clear / quit"),
     ("q", "Quit"),
-];
-
-const COMMANDS: &[(&str, &str)] = &[
-    (":q / :quit", "Quit"),
-    (":w / :write", "Save config"),
-    (":so / :source", "Reload config"),
-    (":e / :cd <path>", "Navigate to directory"),
-    (":mkdir <name>", "Create directory"),
-    (":touch <name>", "Create empty file"),
-    (":delete", "Trash selected/current"),
-    (":rename <new>", "Rename current entry"),
-    (":theme [name]", "Switch theme / list themes"),
-    (":trash", "Browse the trash"),
-    (":help", "This help"),
-    (":shell", "Interactive subshell"),
-    (":!<cmd>", "Run shell command"),
 ];
 
 /// Gap between two rendered columns.
@@ -81,12 +66,28 @@ impl PopupKeybinds {
     }
 }
 
+/// The command list, rendered from the shared table so the help popup cannot
+/// drift from what the palette actually accepts.
+fn command_entries() -> Vec<(String, &'static str)> {
+    command::COMMANDS
+        .iter()
+        .map(|spec| {
+            let mut names = spec.display_names();
+            if !spec.args.is_empty() {
+                names.push(' ');
+                names.push_str(spec.args);
+            }
+            (names, spec.description)
+        })
+        .collect()
+}
+
 /// Width of the key column: the longest key in either list, plus a space.
-fn key_column() -> usize {
+fn key_column(commands: &[(String, &'static str)]) -> usize {
     KEYBINDS
         .iter()
-        .chain(COMMANDS)
         .map(|(key, _)| key.len())
+        .chain(commands.iter().map(|(names, _)| names.len()))
         .max()
         .unwrap_or_default()
         + 1
@@ -94,14 +95,15 @@ fn key_column() -> usize {
 
 /// Every line of the help text: both sections with their headings.
 fn all_lines(theme: &Theme) -> Vec<Line<'static>> {
-    let key_column = key_column();
+    let commands = command_entries();
+    let key_column = key_column(&commands);
     let heading = |text: &str| {
         Line::from(Span::styled(
             text.to_string(),
             Style::default().fg(theme.colors.highlight()),
         ))
     };
-    let entry = |(key, description): &(&str, &str)| {
+    let entry = |key: &str, description: &str| {
         Line::from(vec![
             Span::from(format!("{key:<key_column$}")).style(theme.colors.primary()),
             Span::from(description.to_string()),
@@ -109,10 +111,18 @@ fn all_lines(theme: &Theme) -> Vec<Line<'static>> {
     };
 
     let mut lines = vec![heading("Keybindings")];
-    lines.extend(KEYBINDS.iter().map(entry));
+    lines.extend(
+        KEYBINDS
+            .iter()
+            .map(|(key, description)| entry(key, description)),
+    );
     lines.push(Line::from(""));
-    lines.push(heading("Commands"));
-    lines.extend(COMMANDS.iter().map(entry));
+    lines.push(heading("Commands  (Tab completes, Shift+Tab goes back)"));
+    lines.extend(
+        commands
+            .iter()
+            .map(|(names, description)| entry(names, description)),
+    );
     lines
 }
 
@@ -168,13 +178,14 @@ mod tests {
 
     #[test]
     fn key_column_fits_the_longest_key() {
+        let commands = command_entries();
         let longest = KEYBINDS
             .iter()
-            .chain(COMMANDS)
             .map(|(key, _)| key.len())
+            .chain(commands.iter().map(|(names, _)| names.len()))
             .max()
             .unwrap();
-        assert!(key_column() > longest);
+        assert!(key_column(&commands) > longest);
     }
 
     #[test]
@@ -182,8 +193,14 @@ mod tests {
         assert!(
             KEYBINDS
                 .iter()
-                .chain(COMMANDS)
                 .all(|(key, description)| !key.is_empty() && !description.is_empty())
         );
+    }
+
+    #[test]
+    fn commands_come_from_the_shared_table() {
+        let entries = command_entries();
+        assert_eq!(entries.len(), command::COMMANDS.len());
+        assert!(entries.iter().any(|(names, _)| names.starts_with(":q /")));
     }
 }

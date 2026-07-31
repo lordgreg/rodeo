@@ -20,6 +20,8 @@ use ratatui::{
     widgets::{Block, Borders, Clear, Gauge},
 };
 
+pub mod command;
+pub mod completion;
 pub mod component;
 pub mod dialog;
 pub mod footer;
@@ -80,6 +82,8 @@ pub struct App {
     dialog: Option<Dialog>,
     search: Option<Search>,
     command: Option<TextInput>,
+    /// Live completion for the command line, recomputed as it is edited.
+    completion: completion::Completion,
     find_in_files: Option<FindInFiles>,
     bulk_rename: Option<BulkRename>,
     trash_view: Option<TrashView>,
@@ -142,6 +146,7 @@ impl App {
             dialog: None,
             search: None,
             command: None,
+            completion: completion::Completion::default(),
             find_in_files: None,
             bulk_rename: None,
             trash_view: None,
@@ -365,6 +370,9 @@ impl App {
 
         if show_input_bar {
             self.render_input_bar(frame, outer_layout[2]);
+            // The menu floats above the command line, like an editor's
+            // completion popup.
+            self.render_completion_menu(frame, outer_layout[2]);
         }
 
         // Anything modal reads as a focused layer only if what is behind it
@@ -456,6 +464,103 @@ impl App {
         }
     }
 
+    /// Draws the command-line completion menu just above `input_area`.
+    ///
+    /// Candidates are listed with their argument placeholder and description,
+    /// the highlighted one inverted, and the list scrolls to keep the
+    /// selection visible when there are more candidates than rows.
+    fn render_completion_menu(&mut self, frame: &mut Frame<'_>, input_area: Rect) {
+        use ratatui::{
+            text::{Line, Span},
+            widgets::Paragraph,
+        };
+
+        if self.command.is_none() || !self.completion.is_active() {
+            return;
+        }
+
+        let candidates = self.completion.candidates();
+        let name_width = candidates
+            .iter()
+            .map(|c| c.value.chars().count() + c.args.chars().count() + 1)
+            .max()
+            .unwrap_or(0);
+        let description_width = candidates
+            .iter()
+            .map(|c| c.description.chars().count())
+            .max()
+            .unwrap_or(0);
+
+        let width = (name_width + description_width + 4).min(MAX_COMPLETION_WIDTH) as u16;
+        let width = width.min(input_area.width);
+
+        // Never grow past the panes, and never past the available room above
+        // the command line.
+        let rows = candidates
+            .len()
+            .min(MAX_COMPLETION_ROWS)
+            .min(input_area.y.saturating_sub(1) as usize) as u16;
+        if rows == 0 || width == 0 {
+            return;
+        }
+
+        // Keep the selection inside the visible window.
+        let selected = self.completion.selected();
+        let first = match selected {
+            Some(index) if index >= rows as usize => index + 1 - rows as usize,
+            _ => 0,
+        };
+
+        let area = Rect {
+            x: input_area.x,
+            y: input_area.y.saturating_sub(rows),
+            width,
+            height: rows,
+        };
+
+        let lines: Vec<Line> = candidates
+            .iter()
+            .enumerate()
+            .skip(first)
+            .take(rows as usize)
+            .map(|(index, candidate)| {
+                let is_selected = selected == Some(index);
+                let (name_style, description_style) = if is_selected {
+                    (
+                        Style::new()
+                            .fg(self.theme.colors.background())
+                            .bg(self.theme.colors.primary()),
+                        Style::new()
+                            .fg(self.theme.colors.background())
+                            .bg(self.theme.colors.primary()),
+                    )
+                } else {
+                    (
+                        Style::new().fg(self.theme.colors.foreground()),
+                        Style::new().fg(self.theme.colors.muted()),
+                    )
+                };
+
+                let mut name = candidate.value.clone();
+                if !candidate.args.is_empty() {
+                    name.push(' ');
+                    name.push_str(&candidate.args);
+                }
+
+                Line::from(vec![
+                    Span::styled(format!(" {name:<name_width$} "), name_style),
+                    Span::styled(candidate.description.clone(), description_style),
+                ])
+            })
+            .collect();
+
+        frame.render_widget(Clear, area);
+        frame.render_widget(
+            Paragraph::new(lines).style(Style::new().bg(self.theme.colors.surface())),
+            area,
+        );
+    }
+
     fn render_input_bar(&mut self, frame: &mut Frame<'_>, area: ratatui::layout::Rect) {
         use ratatui::widgets::Paragraph;
 
@@ -508,6 +613,11 @@ impl App {
         }
     }
 }
+
+/// Widest the completion menu may get.
+const MAX_COMPLETION_WIDTH: usize = 64;
+/// Most candidates shown at once; the list scrolls beyond that.
+const MAX_COMPLETION_ROWS: usize = 8;
 
 /// Fades everything already drawn in `area` so a modal layer on top of it
 /// stands out. Ratatui cannot draw translucent widgets, so this walks the
