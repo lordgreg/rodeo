@@ -8,10 +8,10 @@ use chrono;
 
 use ratatui::{
     Frame,
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Constraint, Direction, HorizontalAlignment, Layout, Rect},
     style::{Style, Stylize},
     text::{Line, Span},
-    widgets::{Block, Borders, Cell, Row, Table, TableState},
+    widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState},
 };
 use serde::{Deserialize, Serialize};
 
@@ -25,6 +25,11 @@ use crate::{
         uiconfig::{ActivePane, UiConfig},
     },
 };
+
+/// Width of the size column: `123.4 KB` plus a space.
+const SIZE_COLUMN: u16 = 9;
+/// Width of the modification-date column: `2026-07-31 06:44`.
+const DATE_COLUMN: u16 = 17;
 
 pub(crate) fn format_size(size: u64) -> String {
     const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB"];
@@ -219,11 +224,14 @@ impl Pane {
             paths,
             filter: None,
             hidden_count,
+            // Size and date need a fixed number of cells, not a share of the
+            // pane: percentages left `550 B` floating in a 40-column field on
+            // a wide terminal. The name column absorbs whatever is left.
             constraints: [
                 Constraint::Max(1),
                 Constraint::Fill(1),
-                Constraint::Percentage(20),
-                Constraint::Percentage(30),
+                Constraint::Length(SIZE_COLUMN),
+                Constraint::Length(DATE_COLUMN),
             ],
             sort_order,
             sort_type,
@@ -471,6 +479,22 @@ impl Pane {
         }
     }
 
+    /// Message to show when the listing has nothing worth displaying.
+    fn placeholder(&self) -> Option<&'static str> {
+        let entries = self
+            .paths
+            .iter()
+            .filter(|e| e.kind != EntryKind::Parent)
+            .count();
+        if entries > 0 {
+            return None;
+        }
+        match self.filter {
+            Some(_) => Some("(no matches)"),
+            None => Some("(empty directory)"),
+        }
+    }
+
     fn entry_rows(&self, theme: &Theme) -> Vec<Row<'static>> {
         self.paths
             .iter()
@@ -504,8 +528,9 @@ impl Pane {
                 Row::new(vec![
                     Cell::from(marker.to_string()).style(theme.colors.accent1()),
                     name_cell,
-                    Cell::from(size),
-                    Cell::from(e.modified.clone()),
+                    // Right-aligned so magnitudes line up and are comparable.
+                    Cell::from(Line::from(size).alignment(HorizontalAlignment::Right)),
+                    Cell::from(Line::from(e.modified.clone()).style(theme.colors.muted())),
                 ])
             })
             .collect()
@@ -776,26 +801,59 @@ impl Pane {
             self.path.clone()
         };
 
+        // The cursor row is only shown in the focused pane, and the unfocused
+        // pane recedes: with two identical tables side by side, a border
+        // colour alone is not enough to say where the keyboard is pointing.
+        let row_highlight = if active {
+            Style::new()
+                .fg(theme.colors.highlight())
+                .bg(theme.colors.surface())
+                .bold()
+        } else {
+            Style::new().fg(theme.colors.muted())
+        };
+
+        let base_style = if active {
+            Style::new().fg(theme.colors.primary())
+        } else {
+            Style::new().fg(theme.colors.primary()).dim()
+        };
+
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(path)
+            .border_style(color_border)
+            .title_style(Style::new().fg(theme.colors.primary()));
+        let inner = block.inner(area);
+
         let table = Table::new(rows, self.constraints)
             .header(header)
             .column_spacing(1)
-            .style(Style::new().fg(theme.colors.primary()))
-            .row_highlight_style(
-                Style::new()
-                    .fg(theme.colors.highlight())
-                    .bg(theme.colors.surface())
-                    .bold(),
-            )
-            .cell_highlight_style(Style::new().reversed().yellow())
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(path)
-                    .border_style(color_border)
-                    .title_style(Style::new().fg(theme.colors.primary())),
-            );
+            .style(base_style)
+            .row_highlight_style(row_highlight)
+            .block(block);
 
         frame.render_stateful_widget(table, area, &mut self.state);
+
+        // An empty listing would otherwise render as a blank box.
+        if let Some(message) = self.placeholder() {
+            let y = inner
+                .y
+                .saturating_add(2)
+                .min(inner.bottom().saturating_sub(1));
+            let line = Rect {
+                x: inner.x,
+                y,
+                width: inner.width,
+                height: 1,
+            };
+            frame.render_widget(
+                Paragraph::new(message)
+                    .alignment(HorizontalAlignment::Center)
+                    .style(Style::new().fg(theme.colors.muted())),
+                line,
+            );
+        }
     }
 }
 
@@ -1402,6 +1460,35 @@ mod tests {
             pane.reload(&Config::default(), false);
 
             assert_eq!(pane.state.selected(), Some(0));
+        }
+    }
+
+    mod placeholder {
+        use super::*;
+
+        #[test]
+        fn empty_directory_is_announced() {
+            let dir = tempfile::tempdir().unwrap();
+            let pane = Pane::new(&Config::default(), dir.path().to_str().unwrap());
+            assert_eq!(pane.placeholder(), Some("(empty directory)"));
+        }
+
+        #[test]
+        fn populated_directory_has_no_placeholder() {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::File::create(dir.path().join("a.rs")).unwrap();
+            let pane = Pane::new(&Config::default(), dir.path().to_str().unwrap());
+            assert_eq!(pane.placeholder(), None);
+        }
+
+        #[test]
+        fn filter_hiding_everything_says_no_matches() {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::File::create(dir.path().join("a.rs")).unwrap();
+            let mut pane = Pane::new(&Config::default(), dir.path().to_str().unwrap());
+            pane.set_filter(FilterSpec::Regex("zzz".to_string()))
+                .unwrap();
+            assert_eq!(pane.placeholder(), Some("(no matches)"));
         }
     }
 

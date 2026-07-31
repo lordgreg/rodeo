@@ -2,8 +2,9 @@ use std::time::{Duration, Instant};
 
 use ratatui::{
     Frame,
-    layout::{Constraint, Direction, HorizontalAlignment, Layout, Rect},
+    layout::{HorizontalAlignment, Rect},
     style::Style,
+    text::{Line, Span},
     widgets::{Block, Padding, Paragraph},
 };
 
@@ -11,6 +12,8 @@ use crate::ui::{component::Component, panes::PaneStats, theme::Theme, uiconfig::
 
 /// How long a status message stays visible.
 const STATUS_TTL: Duration = Duration::from_secs(3);
+/// Blank cells between two footer hints.
+const ENTRY_GAP: u16 = 2;
 
 #[derive(Debug)]
 struct StatusMsg {
@@ -122,25 +125,56 @@ impl Component for Footer {
         }
         keymaps.extend(self.visible_keymaps());
 
-        let constraints: Vec<Constraint> =
-            std::iter::repeat_n(Constraint::Max(15), keymaps.len()).collect();
+        // A fixed grid of narrow cells used to cut labels mid-word ("F7 Mkdi",
+        // "^h Hidd"). Lay the hints out as one line instead and drop whole
+        // entries from the end when they do not fit.
+        let status_width = self
+            .status
+            .as_ref()
+            .map(|s| s.text.chars().count() as u16 + 2)
+            .unwrap_or(0);
+        let available = inner_area.width.saturating_sub(status_width + 2);
 
-        let layout = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints(constraints)
-            .split(inner_area);
-
-        for (i, keymap) in keymaps.iter().enumerate() {
-            if let Some(&cell_area) = layout.get(i) {
-                frame.render_widget(
-                    Paragraph::new(keymap.as_str())
-                        .style(Style::default().fg(theme.colors.foreground()))
-                        .block(Block::default().padding(Padding::horizontal(1)))
-                        .alignment(HorizontalAlignment::Left),
-                    cell_area,
-                );
+        let mut spans: Vec<Span> = Vec::new();
+        let mut used = 0u16;
+        let mut dropped = false;
+        for entry in &keymaps {
+            let width = entry.chars().count() as u16 + ENTRY_GAP;
+            if used + width > available {
+                dropped = true;
+                break;
             }
+            used += width;
+
+            // "F5 Copy" renders the key in the accent colour, the action muted.
+            match entry.split_once(' ') {
+                Some((key, label)) => {
+                    spans.push(Span::styled(
+                        key.to_string(),
+                        Style::default().fg(theme.colors.primary()),
+                    ));
+                    spans.push(Span::styled(
+                        format!(" {label}"),
+                        Style::default().fg(theme.colors.muted()),
+                    ));
+                }
+                None => spans.push(Span::styled(
+                    entry.clone(),
+                    Style::default().fg(theme.colors.accent1()),
+                )),
+            }
+            spans.push(Span::raw(" ".repeat(ENTRY_GAP as usize)));
         }
+        if dropped {
+            spans.push(Span::styled("…", Style::default().fg(theme.colors.muted())));
+        }
+
+        frame.render_widget(
+            Paragraph::new(Line::from(spans))
+                .block(Block::default().padding(Padding::horizontal(1)))
+                .alignment(HorizontalAlignment::Left),
+            inner_area,
+        );
 
         if let Some(status) = &self.status {
             let style = if status.is_error {
