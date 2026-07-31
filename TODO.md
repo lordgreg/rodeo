@@ -478,21 +478,25 @@ These are small, self-contained fixes with high impact-to-effort ratio. Do them 
 
 ### 6.1 Popups
 
-- [ ] **6.1.1 Clamp popup sizes instead of pure percentages**
+- [x] **6.1.1 Clamp popup sizes instead of pure percentages**
+  - Resolved: `component::centered_popup(area, want, min, max)`. Preview 60% capped at 110x50, About sized to content (34x9 instead of 100x15), Help content-sized and packed into as many columns as the height needs — the single column silently hid six bindings at 30 rows.
   - Problem: preview is 60% w × 90% h, help 75% × 75%, about 50% × 50%. On a 200-column ultrawide that is a 120-column preview and a **150-column keybinding list** for two columns of text.
   - **P1** | **Files:** `src/ui/popup_preview.rs`, `src/ui/popup_keybinds.rs`, `src/ui/popup_about.rs` | **Hints:** Add a shared `centered_popup(area, want_w, want_h, max_w, max_h)` helper. Preview: `min(60%, ~110)` columns. Help/About: size to their actual content (longest line + padding, line count + borders) capped at ~80 columns. Keep a floor so an 80×24 terminal still works. | **Effort:** S
 
-- [ ] **6.1.2 Dim the background while a popup is open**
+- [x] **6.1.2 Dim the background while a popup is open**
+  - Resolved: `dim_area()` walks the frame buffer and sets the DIM attribute on everything drawn before any overlay (popups, dialogs, trash, bulk rename, find-in-files, transfer gauge).
   - Makes the popup read as a focused layer instead of a bright slab. Measured 2026-07-31: popup backgrounds already use the theme background, so the "too bright" feeling is dominance, not colour.
   - **P1** | **Files:** `src/ui/mod.rs` | **Hints:** After rendering panes and before the popup, walk `frame.buffer_mut()` over the area *outside* the popup rect and add `Modifier::DIM` (optionally fade fg toward `muted`). Ratatui has no real transparency, so this is the cheap equivalent of a scrim. | **Effort:** S
 
 ### 6.2 Syntax Highlighting Colours
 
-- [ ] **6.2.1 Build the syntect theme programmatically instead of formatting XML**
+- [x] **6.2.1 Build the syntect theme programmatically instead of formatting XML**
+  - Resolved: a `SYNTAX_RULES` table of (selector, role, font style) becomes `ThemeItem`s directly — no XML, no parse, no panic — and the built theme is cached in `App` behind an `Arc` instead of being rebuilt per preview.
   - `to_syntect_theme()` `format!`s a ~230-line plist, parses it with syntect's plist reader and `.expect()`s the result. The background preview thread rebuilds — and re-parses — it on **every** preview open.
   - **P1** | **Files:** `src/ui/theme.rs`, `src/ui/popup_preview.rs`, `src/ui/mod.rs` | **Hints:** `syntect::highlighting::{Theme, ThemeItem, ThemeSettings, StyleModifier, ScopeSelectors}` are all public: build `Vec<ThemeItem>` from a `&[(&str scope, Role, FontStyle)]` table (~40 lines of data replacing 230 lines of XML). No runtime parse, no panic, unit-testable. Cache the built theme in `App` and rebuild it only when the theme changes. | **Effort:** M
 
-- [ ] **6.2.2 Fix the scope mapping — colours do not match the palette**
+- [x] **6.2.2 Fix the scope mapping — colours do not match the palette**
+  - Resolved: scopes read out of the bundled grammars with `ParseState` instead of guessed. Keywords share one colour, type names and macros are no longer invisible, tags are not operator-coloured, punctuation is uniform. Documented that `let` and `u64` carry the identical `storage.type` scope, so declarations win that colour. 6 tests resolve concrete scope stacks so the mapping cannot regress.
   - Measured on a Rust snippet (2026-07-31): `use` is primary but `fn`/`let`/`impl`/`struct` are warning (**keywords split across two colours**); `u64`/`str`/`Self` share the keyword colour (no type distinction); `Config`/`HashMap` are **uncoloured** because the rules say `entity.name.type.*` while Rust emits `entity.name.struct`; `println!` is **uncoloured** (`support.function.macro` vs Rust's `support.macro`); punctuation is inconsistent (`:` `,` `->` muted, `;` plain).
   - **P1** | **Files:** `src/ui/theme.rs` | **Hints:** Check scopes against what the bundled Sublime grammars actually emit rather than guessing. Add missing roles: `constant.language`, `variable.language`, `support.type`, `support.class`, `entity.other.attribute-name`, `markup.heading`, `markup.list`, `meta.diff`. Keep one colour per *role* (keyword / type / function / string / number / comment / punctuation) so a file reads consistently. Note `syntect_style_to_ratatui` drops the background, so a rule that only sets a background is invisible. | **Effort:** M
 
@@ -501,15 +505,18 @@ These are small, self-contained fixes with high impact-to-effort ratio. Do them 
 
 ### 6.3 Pane Layout
 
-- [ ] **6.3.1 Fixed-width Size and Date columns**
+- [x] **6.3.1 Fixed-width Size and Date columns**
+  - Resolved: Size is 9 cells right-aligned, the date 17 cells and muted, Name takes the remainder.
   - Columns are `Name: Fill(1), Size: 20%, Time: 30%`, so at 200 columns `550 B` is rendered in a 40-column field and everything drifts apart in whitespace.
   - **P1** | **Files:** `src/ui/panes.rs` | **Hints:** `Constraint::Length(9)` for Size (right-aligned) and `Length(16)` for the timestamp; Name takes `Fill(1)`. | **Effort:** S
 
-- [ ] **6.3.2 Full-width cursor row and a dimmed inactive pane**
+- [x] **6.3.2 Full-width cursor row and a dimmed inactive pane**
+  - Resolved: the cursor row is highlighted only in the focused pane, the inactive pane renders dimmed, and the reversed-yellow cell highlight is gone.
   - Only the border colour currently distinguishes the active pane.
   - **P1** | **Files:** `src/ui/panes.rs` | **Hints:** `row_highlight_style` already sets a background — make sure it spans the full row width. For the inactive pane, render entries with `muted`/`DIM` so focus is obvious at a glance. | **Effort:** S
 
-- [ ] **6.3.3 Empty and loading placeholders**
+- [x] **6.3.3 Empty and loading placeholders**
+  - Resolved: `(empty directory)` and `(no matches)` are centered in the listing, with tests.
   - A directory with no entries renders as a blank box.
   - **P2** | **Files:** `src/ui/panes.rs` | **Hints:** Render a centered muted `(empty directory)` when `paths` holds only `..`, and `(no matches)` when a filter hides everything. | **Effort:** S
 
@@ -521,7 +528,8 @@ These are small, self-contained fixes with high impact-to-effort ratio. Do them 
 
 ### 6.4 Chrome
 
-- [ ] **6.4.1 Adaptive footer labels**
+- [x] **6.4.1 Adaptive footer labels**
+  - Resolved: hints render as one line (key in the accent colour, action muted) and whole entries are dropped with an ellipsis when the terminal is narrow, instead of cutting words in half.
   - The footer truncates mid-word today (`F7 Mkdi`, `^h Hidd`).
   - **P1** | **Files:** `src/ui/footer.rs` | **Hints:** Keep short and long label variants per entry; pick per available width, and drop the lowest-priority entries instead of cutting a word in half. | **Effort:** S
 
@@ -646,8 +654,8 @@ Phase 0 (Bug Fixes) ────────────────────
 | Phase 3: Preview | 12 | 0 | — |
 | Phase 4: Power User | 8 | 0 | — |
 | Phase 5: Infrastructure | 13 | 8 | CI extras, unwrap sweep, docs |
-| Phase 6: Pre-release UI Polish | 0 | 15 | from the 2026-07-31 UI review |
-| **Total** | **93** | **23** | |
+| Phase 6: Pre-release UI Polish | 8 | 7 | icons, extra columns, header, preview pane, mouse |
+| **Total** | **101** | **15** | |
 
 ---
 
