@@ -2,6 +2,8 @@
 name = "rodeo"
 version = "0.1.0"
 edition = "2024"
+# No licence chosen yet (TODO 5.4.5); publishing without one would be wrong.
+publish = false
 
 [dependencies]
 chrono = "0.4.45"
@@ -25,7 +27,15 @@ ratatui = { version = "0.30.0", features = ["unstable-rendered-line-info"] }
 ratatui-image = { version = "11.0.4", default-features = false, features = ["image-defaults", "crossterm"] }
 regex = "1.13.1"
 serde = { version = "1.0.228", features = ["derive"] }
-syntect = "5.3.0"
+# Only the pieces rodeo actually uses: bundled syntax definitions loaded from
+# the binary dump, plus the fancy-regex engine (pure Rust, no onig C library).
+# Dropping yaml-load also drops yaml-rust, which is unmaintained
+# (RUSTSEC-2024-0320); plist-load went with the hand-built theme (6.2.1).
+syntect = { version = "5.3.0", default-features = false, features = [
+    "parsing",
+    "default-syntaxes",
+    "regex-fancy",
+] }
 tar = "0.4.46"
 toml = "1.1.4"
 trash = "5.2.6"

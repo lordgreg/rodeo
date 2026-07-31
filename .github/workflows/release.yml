@@ -1,0 +1,63 @@
+# Tagged release builds.
+#
+# Triggered by pushing a version tag:
+#   git tag -a v0.1.0 -m "rodeo 0.1.0" && git push origin v0.1.0
+#
+# NOTE: rodeo is developed on Codeberg. This workflow only runs on a GitHub
+# mirror; a Forgejo Actions / Woodpecker port is still open (TODO 5.2.4).
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-apple-darwin
+            os: macos-13
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      # The themes ship next to the binary: rodeo looks for them in
+      # $XDG_DATA_HOME/rodeo/themes, so the archive has to carry them.
+      - name: Package
+        run: |
+          staging="rodeo-${{ github.ref_name }}-${{ matrix.target }}"
+          mkdir -p "$staging/themes"
+          cp target/${{ matrix.target }}/release/rodeo "$staging/"
+          cp themes/*.toml "$staging/themes/"
+          cp README.md "$staging/"
+          tar czf "$staging.tar.gz" "$staging"
+          echo "ASSET=$staging.tar.gz" >> "$GITHUB_ENV"
+
+      - name: Upload to the release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.ASSET }}
+          draft: true
+          generate_release_notes: true

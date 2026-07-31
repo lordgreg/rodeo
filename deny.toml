@@ -1,0 +1,65 @@
+# cargo-deny configuration — see https://embarkstudios.github.io/cargo-deny/
+#
+# Run locally with:
+#   cargo install cargo-deny && cargo deny check
+
+# Only the platforms rodeo is built for; without this, cargo-deny walks
+# dependencies gated to platforms we never compile (terminfo, wezterm-bidi,
+# libfuzzer-sys …) and fails on licences that are never actually linked.
+[graph]
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+]
+
+[advisories]
+# Fail on any security advisory affecting the dependency tree.
+yanked = "deny"
+
+# Unmaintained transitive crates that cannot be removed without dropping a
+# feature. Listed individually on purpose: a *new* unmaintained advisory should
+# still fail the build and force a decision, rather than being swallowed by a
+# blanket "unmaintained = warn".
+ignore = [
+    # bincode 1.x <- syntect. Needed to load the bundled syntax definitions
+    # from their binary dump. Gone if syntect ever moves to bincode 2.
+    "RUSTSEC-2025-0141",
+    # paste <- image (exr, rav1e). Comes with the image decoders used by the
+    # image preview; a proc-macro crate, not linked into anything at runtime.
+    "RUSTSEC-2024-0436",
+    # ttf-parser <- lopdf <- pdf-extract, for PDF text extraction.
+    "RUSTSEC-2026-0192",
+]
+
+[licenses]
+# Permissive licences only. rodeo itself is still unlicensed (see TODO 5.4.5);
+# this list governs what may be pulled in as a dependency.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    "MPL-2.0",
+    "CC0-1.0",
+    "Unlicense",
+]
+confidence-threshold = 0.9
+# rodeo itself has no licence yet (TODO 5.4.5) and is marked publish = false,
+# so it is skipped here rather than failing its own audit.
+private = { ignore = true }
+
+[bans]
+# Duplicate versions are a warning, not an error: transitive dependencies in a
+# TUI stack routinely disagree on minor versions.
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
