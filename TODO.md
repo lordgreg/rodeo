@@ -11,6 +11,7 @@
 | Phase 3 (Preview) | M4 | Syntax highlighting, archive preview, file watching |
 | Phase 4 (Power User) | M5 | Bulk rename, trash, shell commands, directory sizes |
 | Phase 5 (Infrastructure) | — | Tests, CI/CD, error handling, logging, docs |
+| Phase 6 (UI Polish) | pre-release | Popup sizing, syntax colours, pane layout, chrome |
 
 ---
 
@@ -468,6 +469,80 @@ These are small, self-contained fixes with high impact-to-effort ratio. Do them 
 
 ---
 
+## Phase 6: Pre-release UI Polish
+
+> Goal: make rodeo look finished. Everything here came out of the 2026-07-31
+> UI review — the layout wastes space on wide terminals, popups are sized by
+> percentage with no cap, and the syntax colours do not match the palette.
+> Depends on: nothing. All items are independent unless noted.
+
+### 6.1 Popups
+
+- [ ] **6.1.1 Clamp popup sizes instead of pure percentages**
+  - Problem: preview is 60% w × 90% h, help 75% × 75%, about 50% × 50%. On a 200-column ultrawide that is a 120-column preview and a **150-column keybinding list** for two columns of text.
+  - **P1** | **Files:** `src/ui/popup_preview.rs`, `src/ui/popup_keybinds.rs`, `src/ui/popup_about.rs` | **Hints:** Add a shared `centered_popup(area, want_w, want_h, max_w, max_h)` helper. Preview: `min(60%, ~110)` columns. Help/About: size to their actual content (longest line + padding, line count + borders) capped at ~80 columns. Keep a floor so an 80×24 terminal still works. | **Effort:** S
+
+- [ ] **6.1.2 Dim the background while a popup is open**
+  - Makes the popup read as a focused layer instead of a bright slab. Measured 2026-07-31: popup backgrounds already use the theme background, so the "too bright" feeling is dominance, not colour.
+  - **P1** | **Files:** `src/ui/mod.rs` | **Hints:** After rendering panes and before the popup, walk `frame.buffer_mut()` over the area *outside* the popup rect and add `Modifier::DIM` (optionally fade fg toward `muted`). Ratatui has no real transparency, so this is the cheap equivalent of a scrim. | **Effort:** S
+
+### 6.2 Syntax Highlighting Colours
+
+- [ ] **6.2.1 Build the syntect theme programmatically instead of formatting XML**
+  - `to_syntect_theme()` `format!`s a ~230-line plist, parses it with syntect's plist reader and `.expect()`s the result. The background preview thread rebuilds — and re-parses — it on **every** preview open.
+  - **P1** | **Files:** `src/ui/theme.rs`, `src/ui/popup_preview.rs`, `src/ui/mod.rs` | **Hints:** `syntect::highlighting::{Theme, ThemeItem, ThemeSettings, StyleModifier, ScopeSelectors}` are all public: build `Vec<ThemeItem>` from a `&[(&str scope, Role, FontStyle)]` table (~40 lines of data replacing 230 lines of XML). No runtime parse, no panic, unit-testable. Cache the built theme in `App` and rebuild it only when the theme changes. | **Effort:** M
+
+- [ ] **6.2.2 Fix the scope mapping — colours do not match the palette**
+  - Measured on a Rust snippet (2026-07-31): `use` is primary but `fn`/`let`/`impl`/`struct` are warning (**keywords split across two colours**); `u64`/`str`/`Self` share the keyword colour (no type distinction); `Config`/`HashMap` are **uncoloured** because the rules say `entity.name.type.*` while Rust emits `entity.name.struct`; `println!` is **uncoloured** (`support.function.macro` vs Rust's `support.macro`); punctuation is inconsistent (`:` `,` `->` muted, `;` plain).
+  - **P1** | **Files:** `src/ui/theme.rs` | **Hints:** Check scopes against what the bundled Sublime grammars actually emit rather than guessing. Add missing roles: `constant.language`, `variable.language`, `support.type`, `support.class`, `entity.other.attribute-name`, `markup.heading`, `markup.list`, `meta.diff`. Keep one colour per *role* (keyword / type / function / string / number / comment / punctuation) so a file reads consistently. Note `syntect_style_to_ratatui` drops the background, so a rule that only sets a background is invisible. | **Effort:** M
+
+- [ ] **6.2.3 Optional: expose syntax roles in the theme file**
+  - **P3** | **Files:** `src/ui/theme.rs`, `themes/*.toml` | **Hints:** Once 6.2.1 turns the mapping into data, a `[syntax]` table (`keyword = "primary"`, `type = "accent2"`, …) lets a theme override roles without touching code. Defaults keep working when the table is absent. | **Effort:** S
+
+### 6.3 Pane Layout
+
+- [ ] **6.3.1 Fixed-width Size and Date columns**
+  - Columns are `Name: Fill(1), Size: 20%, Time: 30%`, so at 200 columns `550 B` is rendered in a 40-column field and everything drifts apart in whitespace.
+  - **P1** | **Files:** `src/ui/panes.rs` | **Hints:** `Constraint::Length(9)` for Size (right-aligned) and `Length(16)` for the timestamp; Name takes `Fill(1)`. | **Effort:** S
+
+- [ ] **6.3.2 Full-width cursor row and a dimmed inactive pane**
+  - Only the border colour currently distinguishes the active pane.
+  - **P1** | **Files:** `src/ui/panes.rs` | **Hints:** `row_highlight_style` already sets a background — make sure it spans the full row width. For the inactive pane, render entries with `muted`/`DIM` so focus is obvious at a glance. | **Effort:** S
+
+- [ ] **6.3.3 Empty and loading placeholders**
+  - A directory with no entries renders as a blank box.
+  - **P2** | **Files:** `src/ui/panes.rs` | **Hints:** Render a centered muted `(empty directory)` when `paths` holds only `..`, and `(no matches)` when a filter hides everything. | **Effort:** S
+
+- [ ] **6.3.4 Responsive extra columns on wide terminals**
+  - **P2** | **Files:** `src/ui/panes.rs` | **Hints:** Above ~120 columns per pane, add permissions (`rwxr-xr-x`), owner and a one-character git status column — the staged-vs-unstaged distinction that colours cannot express. Hide them again when narrow. | **Effort:** M
+
+- [ ] **6.3.5 File-type icons (config-gated)**
+  - **P2** | **Files:** `src/ui/panes.rs`, `src/config.rs` | **Hints:** Nerd-font glyph per extension/kind with a `icons = true` config key (default off, since it needs a patched font). Biggest single "modern TUI" visual cue. | **Effort:** M
+
+### 6.4 Chrome
+
+- [ ] **6.4.1 Adaptive footer labels**
+  - The footer truncates mid-word today (`F7 Mkdi`, `^h Hidd`).
+  - **P1** | **Files:** `src/ui/footer.rs` | **Hints:** Keep short and long label variants per entry; pick per available width, and drop the lowest-priority entries instead of cutting a word in half. | **Effort:** S
+
+- [ ] **6.4.2 Useful header: breadcrumb, free space, sort/filter state**
+  - The middle third of the header currently renders an empty string.
+  - **P2** | **Files:** `src/ui/header.rs` | **Hints:** Left: pane stats (as now). Middle: breadcrumb of the active path with the last segment emphasised. Right: git (as now) plus free space on the device and chips for the active sort and filter. | **Effort:** M
+
+### 6.5 Bigger Changes (need a decision first)
+
+- [ ] **6.5.1 Persistent preview pane — DECISION NEEDED: pane or popup?**
+  - The strongest fix for empty ultrawide screens: `left | right | preview`, or a toggle for `single pane + large preview` (ranger/lf style). It also demotes the preview popup to a "zoom" view, which makes 6.1.1 much less important.
+  - **P1** | **Files:** `src/ui/mod.rs`, `src/ui/panes.rs`, `src/ui/popup_preview.rs` | **Hints:** The preview content pipeline (background load, spinner, cache-per-selection, scrolling) already exists and is widget-shaped — it mostly needs a non-popup render path and a layout slot. Only show it above a width threshold; keep the popup for the zoomed view. | **Effort:** M
+
+- [ ] **6.5.2 Mouse support**
+  - **P3** | **Files:** `src/ui/input.rs` | **Hints:** `crossterm::event::EnableMouseCapture`. Click to move the cursor, double-click to open, click a column header to sort, wheel to scroll. Must be toggleable — mouse capture breaks terminal text selection. | **Effort:** M
+
+- [ ] **6.5.3 Relative dates in narrow columns**
+  - **P3** | **Files:** `src/ui/panes.rs` | **Hints:** `2 days ago` / `14:32` for today, falling back to the absolute timestamp when the column is wide. | **Effort:** S
+
+---
+
 ## Dependency Graph
 
 ```
@@ -571,7 +646,8 @@ Phase 0 (Bug Fixes) ────────────────────
 | Phase 3: Preview | 12 | 0 | — |
 | Phase 4: Power User | 8 | 0 | — |
 | Phase 5: Infrastructure | 13 | 8 | CI extras, unwrap sweep, docs |
-| **Total** | **93** | **8** | |
+| Phase 6: Pre-release UI Polish | 0 | 15 | from the 2026-07-31 UI review |
+| **Total** | **93** | **23** | |
 
 ---
 
