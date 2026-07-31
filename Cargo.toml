@@ -2,8 +2,12 @@
 name = "rodeo"
 version = "0.1.0"
 edition = "2024"
-# No licence chosen yet (TODO 5.4.5); publishing without one would be wrong.
-publish = false
+license = "Apache-2.0"
+description = "A dual-pane terminal file manager with Vim-style keybindings"
+repository = "https://codeberg.org/grepx/rodeo"
+readme = "README.md"
+keywords = ["file-manager", "tui", "terminal", "ratatui", "vim"]
+categories = ["command-line-utilities", "filesystem"]
 
 [dependencies]
 chrono = "0.4.45"

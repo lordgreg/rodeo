@@ -154,6 +154,8 @@ can reach the internals.
 
 ## License
 
-Not yet chosen — the repository currently ships without a licence file, which
-means default copyright (all rights reserved). Pick one before publishing a
-release.
+Licensed under the Apache License, Version 2.0 — see [LICENSE](LICENSE).
+
+Unless you explicitly state otherwise, any contribution intentionally submitted
+for inclusion in rodeo shall be licensed as above, without any additional terms
+or conditions.

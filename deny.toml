@@ -33,8 +33,8 @@ ignore = [
 ]
 
 [licenses]
-# Permissive licences only. rodeo itself is still unlicensed (see TODO 5.4.5);
-# this list governs what may be pulled in as a dependency.
+# Permissive licences only. rodeo itself is Apache-2.0, and this list governs
+# what may be pulled in as a dependency.
 allow = [
     "MIT",
     "Apache-2.0",
@@ -49,9 +49,6 @@ allow = [
     "Unlicense",
 ]
 confidence-threshold = 0.9
-# rodeo itself has no licence yet (TODO 5.4.5) and is marked publish = false,
-# so it is skipped here rather than failing its own audit.
-private = { ignore = true }
 
 [bans]
 # Duplicate versions are a warning, not an error: transitive dependencies in a

@@ -471,7 +471,8 @@ These are small, self-contained fixes with high impact-to-effort ratio. Do them 
   - Resolved: features, installation (including the theme search path), the full config file, keybinding table, commands and development commands. The old hint here was stale — it asked for `bat`/`file` runtime deps that no longer exist.
   - **P2** | **Files:** `README.md` | **Hints:** Add "Installation" section (`cargo install --path .` or `cargo build --release`). Add runtime deps section: `bat`, `file` commands (until syntect replaces bat). Add keybinding table. Link to this TODO. | **Effort:** M
 
-- [ ] **5.4.5 Choose a licence**
+- [x] **5.4.5 Choose a licence**
+  - Resolved (2026-07-31): **Apache-2.0**. `LICENSE` added (text taken verbatim from a registry copy and cross-checked byte-for-byte against a second one), `license`/`description`/`repository`/`keywords`/`categories` filled in, and `publish = false` removed — `cargo package` now succeeds.
   - Found 2026-07-31 while writing the README: there is no `LICENSE` file and no `license` field in `Cargo.toml`, so the repository is implicitly all-rights-reserved despite being public. Blocks any release, and `cargo publish` refuses without it.
   - **P1** | **Files:** `LICENSE` (new), `Cargo.toml`, `README.md` | **Hints:** MIT or Apache-2.0 (or the usual dual `MIT OR Apache-2.0`) match the Rust ecosystem; GPL-3.0 if you want copyleft. Add `license = "..."` to `Cargo.toml` so the crate metadata matches. | **Effort:** S
 
@@ -656,9 +657,9 @@ Phase 0 (Bug Fixes) ────────────────────
 | Phase 2: Search | 5 | 0 | — |
 | Phase 3: Preview | 12 | 0 | — |
 | Phase 4: Power User | 8 | 0 | — |
-| Phase 5: Infrastructure | 21 | 1 | only the licence choice (5.4.5) |
+| Phase 5: Infrastructure | 22 | 0 | complete |
 | Phase 6: Pre-release UI Polish | 11 | 0 | complete |
-| **Total** | **112** | **1** | |
+| **Total** | **113** | **0** | |
 
 ---
 
