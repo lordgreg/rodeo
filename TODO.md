@@ -1,7 +1,7 @@
 # rodeo — Development TODO
 
 > **Last updated:** 2026-07-31
-> **Current state:** Dual-pane navigation + rich preview + theming + git-colored entries + full file operations. **Phases 1–4 essentially complete.** Preview: syntax highlighting, images, archives (zip/tar/tgz), PDF, directory size, binary info+hexdump, symlink status — slow content is built on a worker thread behind a spinner, cached per selection, with page/half-page scrolling (Ctrl+f/b/d/u). Configurable keybindings (`[keybindings]` in config.toml), trash view (`:trash`), bulk rename (`B`), find-in-files (`Ctrl+g`), on-demand directory sizes (`S`), wildcard selection (`*`), live directory refresh via `notify`, transient footer status messages instead of modal error dialogs. Fuzzy search + regex filter with match highlighting. Config and themes are TOML. 119 unit tests + 7 integration tests. Clippy-clean, fmt-clean, CI workflow added.
+> **Current state:** Dual-pane navigation + rich preview + theming + git-colored entries + full file operations. **Phases 1–4 essentially complete.** Preview: syntax highlighting, images, archives (zip/tar/tgz), PDF, directory size, binary info+hexdump, symlink status — slow content is built on a worker thread behind a spinner, cached per selection, with page/half-page scrolling (Ctrl+f/b/d/u). Configurable keybindings (`[keybindings]` in config.toml), trash view (`:trash`), bulk rename (`B`), find-in-files (`Ctrl+g`), on-demand directory sizes (`S`), wildcard selection (`*`), live directory refresh via `notify`, transient footer status messages instead of modal error dialogs. Fuzzy search + regex filter with match highlighting. Config and themes are TOML, resolved through an XDG search path. 125 unit tests + 7 integration tests. Clippy-clean, fmt-clean, CI workflow added.
 
 | Phase | README Milestone | Focus |
 |-------|-----------------|-------|
@@ -294,9 +294,11 @@ These are small, self-contained fixes with high impact-to-effort ratio. Do them 
   - Resolved via command palette (1.4): `:theme <name>` switches at runtime (`self.theme = Theme::load_theme(...)`), `:theme` alone lists available themes, Tab completes theme names. Guards against the `load_from_file` process-exit on unknown names by validating against `get_theme_list()` first.
   - **P2** | **Files:** `src/ui/input.rs`, `src/ui/theme.rs`, `src/ui/mod.rs` | **Hints:** Add keybinding — NOTE: `Ctrl+T` is taken by touch (1.2.6), use `:theme <name>` via command palette or another key. At minimum, use `get_theme_list()` to discover available themes, cycle through them on keypress. Reload the `Theme` struct and trigger a full redraw. Since `App` owns `Theme`, replacement is straightforward: `self.theme = Theme::load(theme_name)?`. | **Effort:** S
 
-- [ ] **3.1.5 Resolve the themes directory at runtime instead of a relative path**
-  - Found 2026-07-31 during the TOML migration: `DEFAULT_THEME_DIR` is the literal `"themes"`, so themes only load when rodeo is started from the repository root. An installed binary (`cargo install --path .`) finds nothing — with the new fallback it still starts, but every theme silently degrades to "not found", and `:theme` lists nothing.
-  - **P1** | **Files:** `src/ui/theme.rs`, `src/config.rs` | **Hints:** Replace the constant with a `theme_dirs() -> Vec<PathBuf>` search path, first match wins: (1) `$XDG_DATA_HOME/rodeo/themes` (user themes, via the `xdg` crate already in use), (2) `$XDG_DATA_DIRS` entries / `/usr/share/rodeo/themes` (packaged), (3) `./themes` relative to the current directory (development). `get_theme_list()` should merge all directories and de-duplicate by stem so `:theme` completion still works. Consider `include_str!("../themes/default.toml")` as a last-resort built-in so the app can always start with a sane palette even with no theme files installed at all. Optional: a `theme_dir` config key to override the search entirely. | **Effort:** M
+- [x] **3.1.5 Resolve the themes directory at runtime instead of a relative path**
+  - Found 2026-07-31 during the TOML migration: `DEFAULT_THEME_DIR` was the literal `"themes"`, so an installed binary only found themes when started from the source checkout.
+  - Resolved: `theme_dirs()` searches `$XDG_DATA_HOME/rodeo/themes` → `$XDG_DATA_DIRS/rodeo/themes` → `./themes`, first match wins. `get_theme_list()` merges all of them and de-duplicates by name, so `:theme` completion works everywhere. The default theme is also compiled in with `include_str!`, and `load_from_file()` no longer calls `process::exit(1)` — loading degrades requested → default → built-in. Verified in a pty for four cases: no themes installed, themes in `$XDG_DATA_HOME`, source checkout, and user themes shadowing the checkout.
+  - Remaining (not needed yet): a `theme_dir` config key to override the search entirely.
+  - **P1** | **Files:** `src/ui/theme.rs`, `src/ui/input.rs` | **Effort:** M
 
 ### 3.2 Archive Preview
 
@@ -438,11 +440,6 @@ These are small, self-contained fixes with high impact-to-effort ratio. Do them 
 
 ### 5.3 Error Handling
 
-- [ ] **5.3.1 Replace `env_logger` + `log` with `tracing` — NEEDS A DECISION**
-  - Assessment (2026-07-31): `tracing` is the standard for async services and libraries, where spans across concurrent tasks are what you need. rodeo is a single-threaded TUI with one background worker; `log` + `env_logger` is still a perfectly idiomatic, actively maintained choice and is what most CLI/TUI apps use. The migration is mechanical (~50 `log::` call sites) but buys little today — the one real win would be `tracing-appender` log rotation, which `env_logger` lacks.
-  - Recommendation: **keep `log`**, revisit if concurrency grows. Drop this task if you agree.
-  - **P3** | **Files:** `Cargo.toml`, `src/logging.rs`, all `log::` imports | **Effort:** M
-
 - [x] **5.3.2 Convert `main() -> io::Result<()>` to use `color_eyre::Result<()>`**
   - Resolved alongside the color-eyre quick win.
   - **P1** | **Files:** `src/main.rs` | **Hints:** `color_eyre::install()?;` at top. Change return type. This gives colorful, detailed error traces for all `?` propagations. | **Effort:** S
@@ -535,9 +532,6 @@ Phase 0 (Bug Fixes) ────────────────────
 
 | Crate | Version | Phase | Purpose |
 |-------|---------|-------|---------|
-| `tracing` | 0.1 | Phase 5 | Structured logging (replace `log`) |
-| `tracing-subscriber` | 0.3 | Phase 5 | Log output formatting |
-| `tracing-appender` | 0.2 | Phase 5 | File-based log rotation (optional) |
 | `gix` | 0.70 | Phase 4 | Pure-Rust git status (replace `git` CLI) |
 
 > **Note:** Crate versions above are current as of 2026-06-19. Check [crates.io](https://crates.io) for latest versions before adding. Use `cargo add <crate>` for automatic version resolution.
@@ -546,8 +540,7 @@ Phase 0 (Bug Fixes) ────────────────────
 
 | Crate | Reason |
 |-------|--------|
-| `env_logger` | Only if 5.3.1 is accepted (switch to `tracing-subscriber`) |
-| `log` | Only if 5.3.1 is accepted (switch to `tracing` macros) |
+| — | None. `log` + `env_logger` are staying (see Open Decision 11). |
 
 ---
 
@@ -563,6 +556,7 @@ Phase 0 (Bug Fixes) ────────────────────
 | 8 | **Linux-first or cross-platform from day 1?** | Linux only vs Linux + macOS + Windows | Dependency choices, testing burden | **Linux-first** with cross-platform awareness. Use cross-platform crates (`crossterm`, `notify`, `trash`). Don't test on macOS/Windows initially, but avoid platform-specific code. |
 | 9 | **Trash: permanent delete fallback?** | Only trash (fail on unsupported FS) vs fallback to `rm` | Safety vs. functionality | **Trash with permanent fallback** — if `trash` crate fails (network FS, some Linux configs), show a prominent "Trash unavailable. Permanently delete?" confirmation with red styling. |
 | 10 | **Single binary or multiple?** | One `rodeo` binary vs `rodeo` + `rodeo-server` for remote | Distribution simplicity vs. capability | **Single binary** — remote filesystem features are Phase 6+. No server mode needed now. |
+| 11 | ~~**`tracing` or `log`?**~~ → **DECIDED: keep `log`** | `tracing` + `tracing-subscriber` vs `log` + `env_logger` | Logging stack, ~50 call sites | **`log` + `env_logger`** (2026-07-31): `tracing` earns its keep in async services and libraries where cross-task spans matter. rodeo is a single-threaded TUI with one worker thread, and `log` is still fully idiomatic for that. Revisit only if concurrency grows or log rotation (`tracing-appender`) becomes necessary. |
 
 ---
 
@@ -574,10 +568,10 @@ Phase 0 (Bug Fixes) ────────────────────
 | Phase 0: Bug Fixes | 21 | 0 | — |
 | Phase 1: File Ops | 22 | 0 | — |
 | Phase 2: Search | 5 | 0 | — |
-| Phase 3: Preview | 11 | 1 | 3.1.5 (theme dir lookup) |
+| Phase 3: Preview | 12 | 0 | — |
 | Phase 4: Power User | 8 | 0 | — |
-| Phase 5: Infrastructure | 13 | 9 | CI extras, tracing, docs |
-| **Total** | **92** | **10** | |
+| Phase 5: Infrastructure | 13 | 8 | CI extras, unwrap sweep, docs |
+| **Total** | **93** | **8** | |
 
 ---
 
