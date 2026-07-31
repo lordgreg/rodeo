@@ -19,7 +19,7 @@ use crate::{
     config::Config,
     ui::{
         component::Component,
-        git::{self, GitEntryStatus},
+        git::{self, GitEntryStatus, GitStatus as GitEntryState},
         search::FilterSpec,
         theme::Theme,
         uiconfig::{ActivePane, UiConfig},
@@ -30,6 +30,83 @@ use crate::{
 const SIZE_COLUMN: u16 = 9;
 /// Width of the modification-date column: `2026-07-31 06:44`.
 const DATE_COLUMN: u16 = 17;
+/// Width of the git status column: the two porcelain characters.
+const GIT_COLUMN: u16 = 2;
+/// Width of the permission column: `rwxr-xr-x`.
+const PERMS_COLUMN: u16 = 9;
+/// Width of the owner column.
+const OWNER_COLUMN: u16 = 10;
+/// Name column width below which extra columns are not worth their space.
+const NAME_BUDGET: u16 = 22;
+
+/// Which optional columns fit in a pane of the given width.
+///
+/// Extra columns are added one at a time, each only when the name column can
+/// still show a reasonable file name afterwards, so a narrow pane degrades to
+/// name/size/date instead of squeezing everything.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct ColumnSet {
+    pub git: bool,
+    pub permissions: bool,
+    pub owner: bool,
+}
+
+impl ColumnSet {
+    pub(crate) fn for_width(width: u16) -> Self {
+        // Marker, name, size, date and the spacing between them.
+        let fixed = 1 + SIZE_COLUMN + DATE_COLUMN + 4;
+        let mut spare = width.saturating_sub(fixed + NAME_BUDGET);
+        let mut set = Self::default();
+
+        for (needed, flag) in [
+            (GIT_COLUMN + 1, &mut set.git),
+            (PERMS_COLUMN + 1, &mut set.permissions),
+            (OWNER_COLUMN + 1, &mut set.owner),
+        ] {
+            if spare >= needed {
+                *flag = true;
+                spare -= needed;
+            }
+        }
+
+        set
+    }
+
+    fn constraints(self) -> Vec<Constraint> {
+        let mut constraints = vec![Constraint::Max(1), Constraint::Fill(1)];
+        if self.git {
+            constraints.push(Constraint::Length(GIT_COLUMN));
+        }
+        if self.permissions {
+            constraints.push(Constraint::Length(PERMS_COLUMN));
+        }
+        if self.owner {
+            constraints.push(Constraint::Length(OWNER_COLUMN));
+        }
+        constraints.push(Constraint::Length(SIZE_COLUMN));
+        constraints.push(Constraint::Length(DATE_COLUMN));
+        constraints
+    }
+
+    fn headers(self) -> Vec<EntryHeader> {
+        let mut headers = vec![
+            EntryHeader::new(String::new(), SortType::Flagged),
+            EntryHeader::new("Name".to_string(), SortType::Name),
+        ];
+        if self.git {
+            headers.push(EntryHeader::plain(""));
+        }
+        if self.permissions {
+            headers.push(EntryHeader::plain("Perms"));
+        }
+        if self.owner {
+            headers.push(EntryHeader::plain("Owner"));
+        }
+        headers.push(EntryHeader::new("Size".to_string(), SortType::Size));
+        headers.push(EntryHeader::new("Modify Time".to_string(), SortType::Time));
+        headers
+    }
+}
 
 pub(crate) fn format_size(size: u64) -> String {
     const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB"];
@@ -85,12 +162,25 @@ pub struct PaneStats {
 #[derive(Debug)]
 pub struct EntryHeader {
     pub name: String,
-    pub kind: SortType,
+    /// Column the header sorts by, or `None` for informational columns that
+    /// must never show a sort indicator.
+    pub kind: Option<SortType>,
 }
 
 impl EntryHeader {
     pub fn new(name: String, kind: SortType) -> Self {
-        Self { name, kind }
+        Self {
+            name,
+            kind: Some(kind),
+        }
+    }
+
+    /// A header that cannot be sorted by (permissions, owner, git status).
+    pub fn plain(name: &str) -> Self {
+        Self {
+            name: name.to_string(),
+            kind: None,
+        }
     }
 }
 
@@ -104,11 +194,15 @@ pub struct Entry {
     pub selected: bool,
     pub raw_size: u64,
     pub raw_modified: SystemTime,
-    pub git_status: Option<GitEntryStatus>,
+    pub git_status: Option<GitEntryState>,
     pub is_symlink: bool,
     pub link_target: Option<PathBuf>,
     /// Cumulative size for directories, computed on demand (`S`).
     pub dir_size: Option<String>,
+    /// Unix mode as `rwxr-xr-x`, shown when the pane is wide enough.
+    pub permissions: String,
+    /// Owning user name (falling back to the numeric uid).
+    pub owner: String,
 }
 
 impl Entry {
@@ -137,6 +231,11 @@ impl Entry {
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| "-".to_string());
+
+        let (permissions, owner) = path
+            .symlink_metadata()
+            .map(|meta| (format_permissions(&meta), owner_of(&meta)))
+            .unwrap_or_else(|_| ("-".to_string(), "-".to_string()));
 
         let (size, modified, raw_size, raw_modified) = path
             .metadata()
@@ -167,6 +266,8 @@ impl Entry {
             is_symlink,
             link_target,
             dir_size: None,
+            permissions,
+            owner,
         }
     }
 
@@ -189,6 +290,8 @@ impl Entry {
             is_symlink: false,
             link_target: None,
             dir_size: None,
+            permissions: "-".to_string(),
+            owner: "-".to_string(),
         }
     }
 
@@ -205,7 +308,6 @@ pub struct Pane {
     all_paths: Vec<Entry>,
     filter: Option<FilterSpec>,
     hidden_count: usize,
-    constraints: [Constraint; 4],
     sort_type: SortType,
     sort_order: SortOrder,
 }
@@ -224,15 +326,6 @@ impl Pane {
             paths,
             filter: None,
             hidden_count,
-            // Size and date need a fixed number of cells, not a share of the
-            // pane: percentages left `550 B` floating in a 40-column field on
-            // a wide terminal. The name column absorbs whatever is left.
-            constraints: [
-                Constraint::Max(1),
-                Constraint::Fill(1),
-                Constraint::Length(SIZE_COLUMN),
-                Constraint::Length(DATE_COLUMN),
-            ],
             sort_order,
             sort_type,
         };
@@ -495,7 +588,7 @@ impl Pane {
         }
     }
 
-    fn entry_rows(&self, theme: &Theme) -> Vec<Row<'static>> {
+    fn entry_rows(&self, theme: &Theme, columns: ColumnSet) -> Vec<Row<'static>> {
         self.paths
             .iter()
             .map(|e| {
@@ -512,7 +605,7 @@ impl Pane {
                     let name_style = if e.kind == EntryKind::Symlink {
                         Some(Style::new().fg(theme.colors.error()))
                     } else {
-                        e.git_status.map(|s| Style::new().fg(s.color(theme)))
+                        e.git_status.map(|s| Style::new().fg(s.kind.color(theme)))
                     };
 
                     let mut spans = self.highlight_name(&e.name, name_style, theme);
@@ -525,13 +618,32 @@ impl Pane {
                     Cell::from(Line::from(spans))
                 };
 
-                Row::new(vec![
+                let mut cells = vec![
                     Cell::from(marker.to_string()).style(theme.colors.accent1()),
                     name_cell,
-                    // Right-aligned so magnitudes line up and are comparable.
-                    Cell::from(Line::from(size).alignment(HorizontalAlignment::Right)),
-                    Cell::from(Line::from(e.modified.clone()).style(theme.colors.muted())),
-                ])
+                ];
+                if columns.git {
+                    cells.push(Cell::from(git_cell(e, theme)));
+                }
+                if columns.permissions {
+                    cells.push(Cell::from(
+                        Line::from(e.permissions.clone()).style(theme.colors.muted()),
+                    ));
+                }
+                if columns.owner {
+                    cells.push(Cell::from(
+                        Line::from(e.owner.clone()).style(theme.colors.muted()),
+                    ));
+                }
+                // Right-aligned so magnitudes line up and are comparable.
+                cells.push(Cell::from(
+                    Line::from(size).alignment(HorizontalAlignment::Right),
+                ));
+                cells.push(Cell::from(
+                    Line::from(e.modified.clone()).style(theme.colors.muted()),
+                ));
+
+                Row::new(cells)
             })
             .collect()
     }
@@ -718,7 +830,7 @@ impl Pane {
         };
 
         match entry.kind {
-            EntryKind::File => OpenAction::FileOpened(entry.clone()),
+            EntryKind::File => OpenAction::FileOpened(entry.path.clone()),
             EntryKind::Parent => {
                 let previous = self.path.clone();
 
@@ -747,7 +859,7 @@ impl Pane {
         let mut name = header.name.to_string();
         let mut cell = Cell::from(name);
 
-        if current_sort_type == header.kind {
+        if header.kind == Some(current_sort_type) {
             cell = cell.bold();
 
             let symbol = if current_sort_order == SortOrder::Ascending {
@@ -771,7 +883,9 @@ impl Pane {
         theme: &Theme,
         _ui: &UiConfig,
     ) {
-        let rows = self.entry_rows(theme);
+        // Borders eat two cells; decide what fits in what is left.
+        let columns = ColumnSet::for_width(area.width.saturating_sub(2));
+        let rows = self.entry_rows(theme, columns);
 
         let color_border = if active {
             theme.colors.secondary()
@@ -779,13 +893,7 @@ impl Pane {
             theme.colors.border()
         };
 
-        let headers = [
-            EntryHeader::new("".to_string(), SortType::Flagged),
-            EntryHeader::new("Name".to_string(), SortType::Name),
-            EntryHeader::new("Size".to_string(), SortType::Size),
-            EntryHeader::new("Modify Time".to_string(), SortType::Time),
-        ];
-
+        let headers = columns.headers();
         let header = Row::new(
             headers
                 .iter()
@@ -826,7 +934,7 @@ impl Pane {
             .title_style(Style::new().fg(theme.colors.primary()));
         let inner = block.inner(area);
 
-        let table = Table::new(rows, self.constraints)
+        let table = Table::new(rows, columns.constraints())
             .header(header)
             .column_spacing(1)
             .style(base_style)
@@ -966,7 +1074,8 @@ pub enum MoveDirection {
 
 pub enum OpenAction {
     Reload,
-    FileOpened(Entry),
+    /// Only the path is needed to hand the file to the editor.
+    FileOpened(PathBuf),
     Nothing,
     DirectoryOpened,
 }
@@ -1093,6 +1202,112 @@ impl Component for Panes {
             theme,
             ui,
         );
+    }
+}
+
+/// Unix mode as `rwxr-xr-x`. Empty on platforms without unix permissions.
+fn format_permissions(meta: &std::fs::Metadata) -> String {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mode = meta.permissions().mode();
+        let bit = |shift: u32, chars: [char; 3]| -> String {
+            let bits = (mode >> shift) & 0o7;
+            [
+                if bits & 0o4 != 0 { chars[0] } else { '-' },
+                if bits & 0o2 != 0 { chars[1] } else { '-' },
+                if bits & 0o1 != 0 { chars[2] } else { '-' },
+            ]
+            .iter()
+            .collect()
+        };
+
+        format!(
+            "{}{}{}",
+            bit(6, ['r', 'w', 'x']),
+            bit(3, ['r', 'w', 'x']),
+            bit(0, ['r', 'w', 'x'])
+        )
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = meta;
+        "-".to_string()
+    }
+}
+
+/// Owning user name, falling back to the numeric uid.
+fn owner_of(meta: &std::fs::Metadata) -> String {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+
+        let uid = meta.uid();
+        user_name(uid).unwrap_or_else(|| uid.to_string())
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = meta;
+        "-".to_string()
+    }
+}
+
+/// uid → user name from `/etc/passwd`, read once.
+///
+/// Deliberately dependency-free: this is a cosmetic column, not worth a crate.
+/// Users that only exist in a directory service (LDAP/SSSD) are not in
+/// `/etc/passwd`, so callers fall back to the numeric uid.
+#[cfg(unix)]
+fn user_name(uid: u32) -> Option<String> {
+    use std::sync::OnceLock;
+
+    static USERS: OnceLock<std::collections::HashMap<u32, String>> = OnceLock::new();
+
+    let users = USERS.get_or_init(|| {
+        let mut map = std::collections::HashMap::new();
+        let Ok(passwd) = std::fs::read_to_string("/etc/passwd") else {
+            return map;
+        };
+        for line in passwd.lines() {
+            let mut fields = line.split(':');
+            let (Some(name), Some(_), Some(uid)) = (fields.next(), fields.next(), fields.next())
+            else {
+                continue;
+            };
+            if let Ok(uid) = uid.parse::<u32>() {
+                map.entry(uid).or_insert_with(|| name.to_string());
+            }
+        }
+        map
+    });
+
+    users.get(&uid).cloned()
+}
+
+/// The two porcelain characters, coloured so staged and unstaged changes are
+/// distinguishable at a glance: index state in the success colour, worktree
+/// state in the warning colour.
+fn git_cell(entry: &Entry, theme: &Theme) -> Line<'static> {
+    let Some(status) = entry.git_status else {
+        return Line::from("  ");
+    };
+
+    match status.kind {
+        GitEntryStatus::Untracked | GitEntryStatus::Ignored => Line::from(Span::styled(
+            status.code.iter().collect::<String>(),
+            Style::new().fg(status.kind.color(theme)),
+        )),
+        _ => Line::from(vec![
+            Span::styled(
+                status.code[0].to_string(),
+                Style::new().fg(theme.colors.success()),
+            ),
+            Span::styled(
+                status.code[1].to_string(),
+                Style::new().fg(theme.colors.warning()),
+            ),
+        ]),
     }
 }
 
@@ -1463,6 +1678,50 @@ mod tests {
         }
     }
 
+    mod columns {
+        use super::*;
+
+        #[test]
+        fn narrow_panes_keep_only_the_essentials() {
+            let set = ColumnSet::for_width(40);
+            assert_eq!(set, ColumnSet::default());
+        }
+
+        #[test]
+        fn columns_appear_one_at_a_time_as_width_grows() {
+            // git is cheapest, so it arrives first, then permissions, then owner.
+            let narrow = ColumnSet::for_width(58);
+            assert!(narrow.git && !narrow.permissions && !narrow.owner);
+
+            let medium = ColumnSet::for_width(70);
+            assert!(medium.git && medium.permissions && !medium.owner);
+
+            let wide = ColumnSet::for_width(120);
+            assert!(wide.git && wide.permissions && wide.owner);
+        }
+
+        #[test]
+        fn cells_and_constraints_stay_in_step() {
+            // A mismatch would silently shift every column in the table.
+            for width in [30, 58, 70, 120, 250] {
+                let set = ColumnSet::for_width(width);
+                assert_eq!(
+                    set.constraints().len(),
+                    set.headers().len(),
+                    "width {width}"
+                );
+            }
+        }
+
+        #[test]
+        fn only_sortable_columns_carry_a_sort_kind() {
+            let headers = ColumnSet::for_width(200).headers();
+            let sortable = headers.iter().filter(|h| h.kind.is_some()).count();
+            // Flagged marker, Name, Size, Modify Time.
+            assert_eq!(sortable, 4);
+        }
+    }
+
     mod placeholder {
         use super::*;
 
@@ -1642,6 +1901,8 @@ mod tests {
                 is_symlink: false,
                 link_target: None,
                 dir_size: None,
+                permissions: "rw-r--r--".to_string(),
+                owner: "tester".to_string(),
             }
         }
 

@@ -1322,8 +1322,8 @@ impl App {
                     self.header
                         .update(self.panes.get_active_pane().path.to_string());
                 }
-                OpenAction::FileOpened(_entry) => {
-                    self.pending_editor_file = Some(_entry.path);
+                OpenAction::FileOpened(path) => {
+                    self.pending_editor_file = Some(path);
                 }
                 OpenAction::Nothing => {}
             },

@@ -35,14 +35,6 @@ impl GitEntryStatus {
         }
     }
 
-    fn merge(self, other: Self) -> Self {
-        if other.severity() > self.severity() {
-            other
-        } else {
-            self
-        }
-    }
-
     pub fn color(self, theme: &Theme) -> Color {
         match self {
             Self::Modified => theme.colors.warning(),
@@ -54,11 +46,43 @@ impl GitEntryStatus {
     }
 }
 
+/// A worktree status plus the raw porcelain code it came from.
+///
+/// The two characters are the staged (index) and unstaged (worktree) states —
+/// `M ` is staged, ` M` is not, `MM` is both. Colours alone cannot express
+/// that distinction, which is the whole point of the status column.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GitStatus {
+    pub kind: GitEntryStatus,
+    pub code: [char; 2],
+}
+
+impl GitStatus {
+    /// Higher severity wins; the surviving status keeps its own code.
+    fn merge(self, other: Self) -> Self {
+        if other.kind.severity() > self.kind.severity() {
+            other
+        } else {
+            self
+        }
+    }
+
+    /// `true` when the index differs from HEAD (something is staged).
+    pub fn is_staged(&self) -> bool {
+        !matches!(self.code[0], ' ' | '?' | '!')
+    }
+
+    /// `true` when the worktree differs from the index.
+    pub fn is_unstaged(&self) -> bool {
+        !matches!(self.code[1], ' ' | '?' | '!')
+    }
+}
+
 /// Maps the *name* of every direct child of `pane_dir` to its git status.
 ///
 /// Files are matched directly; directories aggregate the most severe status of
 /// any status-bearing path beneath them. Returns `None` outside a git worktree.
-pub fn status_map(pane_dir: &Path) -> Option<HashMap<String, GitEntryStatus>> {
+pub fn status_map(pane_dir: &Path) -> Option<HashMap<String, GitStatus>> {
     let root = repo_root(pane_dir)?;
     let output = Command::new("git")
         .args([
@@ -95,7 +119,7 @@ fn repo_root(dir: &Path) -> Option<String> {
 /// Parses `git status --porcelain=v1 -z` output into (absolute path, status)
 /// pairs. Rename/copy entries (`R`/`C`) contribute only their new path; the
 /// following source-path field is skipped.
-fn parse_porcelain_z(output: &[u8], repo_root: &Path) -> Vec<(PathBuf, GitEntryStatus)> {
+fn parse_porcelain_z(output: &[u8], repo_root: &Path) -> Vec<(PathBuf, GitStatus)> {
     let text = String::from_utf8_lossy(output);
     let fields: Vec<&str> = text.split('\0').collect();
 
@@ -113,14 +137,14 @@ fn parse_porcelain_z(output: &[u8], repo_root: &Path) -> Vec<(PathBuf, GitEntryS
         let y = field.as_bytes()[1] as char;
         let path = &field[3..];
 
-        let status = match (x, y) {
+        let kind = match (x, y) {
             ('?', _) => GitEntryStatus::Untracked,
             ('!', _) => GitEntryStatus::Ignored,
             ('D', _) | (_, 'D') => GitEntryStatus::Deleted,
             ('A', _) => GitEntryStatus::Added,
             _ => GitEntryStatus::Modified,
         };
-        statuses.push((repo_root.join(path), status));
+        statuses.push((repo_root.join(path), GitStatus { kind, code: [x, y] }));
 
         if matches!(x, 'R' | 'C') || matches!(y, 'R' | 'C') {
             i += 1; // skip the source path of the rename/copy
@@ -132,11 +156,8 @@ fn parse_porcelain_z(output: &[u8], repo_root: &Path) -> Vec<(PathBuf, GitEntryS
 
 /// Reduces absolute status paths to a map of pane-dir child names, folding
 /// nested paths into their top-level directory with severity merge.
-fn aggregate(
-    pane_dir: &Path,
-    statuses: Vec<(PathBuf, GitEntryStatus)>,
-) -> HashMap<String, GitEntryStatus> {
-    let mut map: HashMap<String, GitEntryStatus> = HashMap::new();
+fn aggregate(pane_dir: &Path, statuses: Vec<(PathBuf, GitStatus)>) -> HashMap<String, GitStatus> {
+    let mut map: HashMap<String, GitStatus> = HashMap::new();
 
     for (path, status) in statuses {
         let Ok(rel) = path.strip_prefix(pane_dir) else {
@@ -166,10 +187,22 @@ mod tests {
         PathBuf::from("/repo")
     }
 
+    /// Drops the porcelain code so assertions stay about the classification.
+    fn kinds(statuses: Vec<(PathBuf, GitStatus)>) -> Vec<(PathBuf, GitEntryStatus)> {
+        statuses.into_iter().map(|(p, s)| (p, s.kind)).collect()
+    }
+
+    fn status(kind: GitEntryStatus) -> GitStatus {
+        GitStatus {
+            kind,
+            code: [' ', ' '],
+        }
+    }
+
     #[test]
     fn parses_basic_statuses() {
         let out = b" M src/main.rs\0?? new.txt\0!! target\0A  staged.rs\0 D gone.rs\0";
-        let statuses = parse_porcelain_z(out, &root());
+        let statuses = kinds(parse_porcelain_z(out, &root()));
 
         assert_eq!(
             statuses,
@@ -186,7 +219,7 @@ mod tests {
     #[test]
     fn double_letter_codes_parse() {
         let out = b"MM both.rs\0AM added_mod.rs\0";
-        let statuses = parse_porcelain_z(out, &root());
+        let statuses = kinds(parse_porcelain_z(out, &root()));
 
         assert_eq!(
             statuses,
@@ -200,7 +233,7 @@ mod tests {
     #[test]
     fn rename_contributes_new_path_and_skips_source() {
         let out = b"R  new.rs\0old.rs\0 M other.rs\0";
-        let statuses = parse_porcelain_z(out, &root());
+        let statuses = kinds(parse_porcelain_z(out, &root()));
 
         assert_eq!(
             statuses,
@@ -220,18 +253,21 @@ mod tests {
     fn aggregate_maps_files_and_folds_directories() {
         let pane = PathBuf::from("/repo/sub");
         let statuses = vec![
-            (PathBuf::from("/repo/sub/dir/x.rs"), GitEntryStatus::Ignored),
+            (
+                PathBuf::from("/repo/sub/dir/x.rs"),
+                status(GitEntryStatus::Ignored),
+            ),
             (
                 PathBuf::from("/repo/sub/dir/y.rs"),
-                GitEntryStatus::Modified,
+                status(GitEntryStatus::Modified),
             ),
             (
                 PathBuf::from("/repo/sub/file.rs"),
-                GitEntryStatus::Untracked,
+                status(GitEntryStatus::Untracked),
             ),
             (
                 PathBuf::from("/repo/elsewhere.rs"),
-                GitEntryStatus::Modified,
+                status(GitEntryStatus::Modified),
             ),
         ];
 
@@ -239,8 +275,14 @@ mod tests {
 
         assert_eq!(map.len(), 2);
         // Severity merge: Modified (4) beats Ignored (1) inside dir/.
-        assert_eq!(map.get("dir"), Some(&GitEntryStatus::Modified));
-        assert_eq!(map.get("file.rs"), Some(&GitEntryStatus::Untracked));
+        assert_eq!(
+            map.get("dir").map(|s| s.kind),
+            Some(GitEntryStatus::Modified)
+        );
+        assert_eq!(
+            map.get("file.rs").map(|s| s.kind),
+            Some(GitEntryStatus::Untracked)
+        );
         // Paths outside the pane are dropped.
         assert!(!map.contains_key("elsewhere.rs"));
     }
