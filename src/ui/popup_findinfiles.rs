@@ -19,7 +19,12 @@ pub struct FindMatch {
 
 impl FindMatch {
     pub fn display_path(&self) -> String {
-        format!("{}:{}: {}", self.path.display(), self.line_num, self.line_content.trim())
+        format!(
+            "{}:{}: {}",
+            self.path.display(),
+            self.line_num,
+            self.line_content.trim()
+        )
     }
 }
 
@@ -87,7 +92,13 @@ impl FindInFiles {
 }
 
 impl Component for FindInFiles {
-    fn render(&mut self, frame: &mut Frame<'_>, theme: &Theme, _ui: &crate::ui::uiconfig::UiConfig, area: Rect) {
+    fn render(
+        &mut self,
+        frame: &mut Frame<'_>,
+        theme: &Theme,
+        _ui: &crate::ui::uiconfig::UiConfig,
+        area: Rect,
+    ) {
         let block = Block::default()
             .borders(Borders::ALL)
             .title("Find in Files (Ctrl+G)")
@@ -99,10 +110,7 @@ impl Component for FindInFiles {
         // Split into input area and results area
         let chunks = Layout::default()
             .direction(ratatui::layout::Direction::Vertical)
-            .constraints([
-                Constraint::Length(3),
-                Constraint::Min(0),
-            ])
+            .constraints([Constraint::Length(3), Constraint::Min(0)])
             .split(inner);
 
         // Render input box
@@ -120,23 +128,20 @@ impl Component for FindInFiles {
 
         // Position cursor
         if !self.searching {
-            frame.set_cursor_position((
-                input_inner.x + self.input.cursor as u16,
-                input_inner.y,
-            ));
+            frame.set_cursor_position((input_inner.x + self.input.cursor as u16, input_inner.y));
         }
 
         // Render results or status message
         if self.searching {
-            let msg = Paragraph::new("Searching...")
-                .style(Style::new().fg(theme.colors.info()));
+            let msg = Paragraph::new("Searching...").style(Style::new().fg(theme.colors.info()));
             frame.render_widget(msg, chunks[1]);
         } else if self.results.is_empty() && !self.input.value.is_empty() {
-            let msg = Paragraph::new("No matches found")
-                .style(Style::new().fg(theme.colors.muted()));
+            let msg =
+                Paragraph::new("No matches found").style(Style::new().fg(theme.colors.muted()));
             frame.render_widget(msg, chunks[1]);
         } else if !self.results.is_empty() {
-            let items: Vec<ListItem> = self.results
+            let items: Vec<ListItem> = self
+                .results
                 .iter()
                 .map(|m| {
                     let line = Line::from(vec![

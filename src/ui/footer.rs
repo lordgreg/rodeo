@@ -104,7 +104,11 @@ impl Component for Footer {
         frame.render_widget(bg_block, area);
 
         // Expired status messages are dropped.
-        if self.status.as_ref().is_some_and(|s| s.at.elapsed() > STATUS_TTL) {
+        if self
+            .status
+            .as_ref()
+            .is_some_and(|s| s.at.elapsed() > STATUS_TTL)
+        {
             self.status = None;
         }
 

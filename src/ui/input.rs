@@ -1025,7 +1025,10 @@ impl App {
         // Guard: load_from_file exits the process on unreadable files.
         let is_path = name.ends_with(".yaml");
         if !is_path && !known.iter().any(|t| t == name) {
-            self.err_status(format!("Unknown theme '{name}'. Available: {}", known.join(", ")));
+            self.err_status(format!(
+                "Unknown theme '{name}'. Available: {}",
+                known.join(", ")
+            ));
             return;
         }
         if is_path && !Path::new(name).exists() {
@@ -1058,7 +1061,7 @@ impl App {
                 .iter()
                 .map(|p| {
                     let s = p.to_string_lossy();
-                    format!("'{}'", s.replace('\'', "'\\''" ))
+                    format!("'{}'", s.replace('\'', "'\\''"))
                 })
                 .collect::<Vec<_>>()
                 .join(" ");
@@ -1352,9 +1355,7 @@ impl App {
                         .unwrap_or_default()
                 };
                 if targets.len() < 2 {
-                    self.err_status(
-                        "Select 2+ files with x before bulk rename".to_string(),
-                    );
+                    self.err_status("Select 2+ files with x before bulk rename".to_string());
                 } else {
                     self.bulk_rename = Some(BulkRename::new(targets));
                 }

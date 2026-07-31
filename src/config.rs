@@ -90,7 +90,6 @@ impl Default for Config {
 }
 
 impl Config {
-
     pub fn set_initial_dir(&mut self, left: Option<String>, right: Option<String>) {
         if let Some(left) = left {
             self.initial_directory_left = PathBuf::from(left).to_string_lossy().to_string();

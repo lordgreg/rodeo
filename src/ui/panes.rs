@@ -337,13 +337,20 @@ impl Pane {
 
     /// Returns highlighted name spans for a given entry name based on active filter.
     /// If no filter is active, returns the name with the given style.
-    fn highlight_name(&self, name: &str, base_style: Option<Style>, theme: &Theme) -> Vec<Span<'static>> {
+    fn highlight_name(
+        &self,
+        name: &str,
+        base_style: Option<Style>,
+        theme: &Theme,
+    ) -> Vec<Span<'static>> {
         let filter = match &self.filter {
             Some(f) => f,
-            None => return vec![match base_style {
-                Some(style) => Span::styled(name.to_string(), style),
-                None => Span::from(name.to_string()),
-            }],
+            None => {
+                return vec![match base_style {
+                    Some(style) => Span::styled(name.to_string(), style),
+                    None => Span::from(name.to_string()),
+                }];
+            }
         };
 
         match filter {
@@ -356,10 +363,17 @@ impl Pane {
                 let mut matcher = nucleo::Matcher::new(nucleo::Config::DEFAULT);
                 let mut buf = Vec::new();
                 let mut indices = Vec::new();
-                
+
                 // Try to get match indices
-                if parsed.score(nucleo::Utf32Str::new(name, &mut buf), &mut matcher).is_some() {
-                    parsed.indices(nucleo::Utf32Str::new(name, &mut buf), &mut matcher, &mut indices);
+                if parsed
+                    .score(nucleo::Utf32Str::new(name, &mut buf), &mut matcher)
+                    .is_some()
+                {
+                    parsed.indices(
+                        nucleo::Utf32Str::new(name, &mut buf),
+                        &mut matcher,
+                        &mut indices,
+                    );
                 }
 
                 if indices.is_empty() {
@@ -391,7 +405,7 @@ impl Pane {
                     }
 
                     // Add highlighted match character
-                    let ch: String = chars[idx..idx+1].iter().collect();
+                    let ch: String = chars[idx..idx + 1].iter().collect();
                     let highlight_style = match base_style {
                         Some(style) => style.bg(theme.colors.warning()),
                         None => Style::new().bg(theme.colors.warning()),
@@ -422,7 +436,7 @@ impl Pane {
 
                 if let Some(m) = re.find(name) {
                     let mut spans = Vec::new();
-                    
+
                     // Before match
                     if m.start() > 0 {
                         spans.push(match base_style {
@@ -463,9 +477,7 @@ impl Pane {
             .map(|e| {
                 let marker = if e.selected { "●" } else { "" };
                 let size = match e.kind {
-                    EntryKind::Directory => {
-                        e.dir_size.clone().unwrap_or_else(|| "DIR".to_string())
-                    }
+                    EntryKind::Directory => e.dir_size.clone().unwrap_or_else(|| "DIR".to_string()),
                     EntryKind::Parent => String::from("UP"),
                     _ => e.size.clone(),
                 };
@@ -478,7 +490,7 @@ impl Pane {
                     } else {
                         e.git_status.map(|s| Style::new().fg(s.color(theme)))
                     };
-                    
+
                     let mut spans = self.highlight_name(&e.name, name_style, theme);
                     if let Some(target) = &e.link_target {
                         spans.push(Span::styled(
@@ -1476,7 +1488,11 @@ mod tests {
 
             assert_eq!(pane.select_all(), 2);
             // Parent entry is never selected.
-            assert!(pane.selected_entries().iter().all(|e| e.kind != EntryKind::Parent));
+            assert!(
+                pane.selected_entries()
+                    .iter()
+                    .all(|e| e.kind != EntryKind::Parent)
+            );
         }
     }
 

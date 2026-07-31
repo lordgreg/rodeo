@@ -30,11 +30,7 @@ impl TrashView {
     /// Loads the current trash contents. Returns `Err` if the OS doesn't
     /// support listing trash (e.g. macOS without `os_limited`).
     pub fn load() -> Self {
-        #[cfg(any(
-            target_os = "linux",
-            target_os = "android",
-            target_os = "windows"
-        ))]
+        #[cfg(any(target_os = "linux", target_os = "android", target_os = "windows"))]
         {
             match trash::os_limited::list() {
                 Ok(items) => {
@@ -65,17 +61,11 @@ impl TrashView {
                 },
             }
         }
-        #[cfg(not(any(
-            target_os = "linux",
-            target_os = "android",
-            target_os = "windows"
-        )))]
+        #[cfg(not(any(target_os = "linux", target_os = "android", target_os = "windows")))]
         Self {
             entries: vec![],
             list_state: ListState::default(),
-            error: Some(
-                "Trash listing is only supported on Linux and Windows.".into(),
-            ),
+            error: Some("Trash listing is only supported on Linux and Windows.".into()),
         }
     }
 
@@ -125,11 +115,7 @@ impl TrashView {
 
     /// Restore the target entries to their original locations.
     pub fn restore_targets(&self) -> Result<usize, String> {
-        #[cfg(any(
-            target_os = "linux",
-            target_os = "android",
-            target_os = "windows"
-        ))]
+        #[cfg(any(target_os = "linux", target_os = "android", target_os = "windows"))]
         {
             let targets = self.op_targets();
             let count = targets.len();
@@ -142,25 +128,16 @@ impl TrashView {
                     time_deleted: 0,
                 })
                 .collect();
-            trash::os_limited::restore_all(items)
-                .map_err(|e| format!("Restore failed: {e}"))?;
+            trash::os_limited::restore_all(items).map_err(|e| format!("Restore failed: {e}"))?;
             Ok(count)
         }
-        #[cfg(not(any(
-            target_os = "linux",
-            target_os = "android",
-            target_os = "windows"
-        )))]
+        #[cfg(not(any(target_os = "linux", target_os = "android", target_os = "windows")))]
         Err("Restore not supported on this platform".into())
     }
 
     /// Permanently delete the target entries from trash.
     pub fn purge_targets(&self) -> Result<usize, String> {
-        #[cfg(any(
-            target_os = "linux",
-            target_os = "android",
-            target_os = "windows"
-        ))]
+        #[cfg(any(target_os = "linux", target_os = "android", target_os = "windows"))]
         {
             let targets = self.op_targets();
             let count = targets.len();
@@ -173,15 +150,10 @@ impl TrashView {
                     time_deleted: 0,
                 })
                 .collect();
-            trash::os_limited::purge_all(items)
-                .map_err(|e| format!("Purge failed: {e}"))?;
+            trash::os_limited::purge_all(items).map_err(|e| format!("Purge failed: {e}"))?;
             Ok(count)
         }
-        #[cfg(not(any(
-            target_os = "linux",
-            target_os = "android",
-            target_os = "windows"
-        )))]
+        #[cfg(not(any(target_os = "linux", target_os = "android", target_os = "windows")))]
         Err("Purge not supported on this platform".into())
     }
 }
@@ -224,8 +196,8 @@ impl Component for TrashView {
         }
 
         if self.entries.is_empty() {
-            let msg = Paragraph::new("Trash is empty.")
-                .style(Style::new().fg(theme.colors.muted()));
+            let msg =
+                Paragraph::new("Trash is empty.").style(Style::new().fg(theme.colors.muted()));
             frame.render_widget(msg, inner);
             return;
         }

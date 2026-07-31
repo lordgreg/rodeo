@@ -1,7 +1,6 @@
 //! Bulk rename popup: displays old → new names with live preview and applies
 //! `s/regex/replacement/` or `%d` (sequential numbering) patterns.
 
-use regex::Regex;
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
@@ -9,6 +8,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
 };
+use regex::Regex;
 use std::path::PathBuf;
 
 use crate::ui::{component::Component, textinput::TextInput, theme::Theme, uiconfig::UiConfig};
@@ -78,8 +78,9 @@ impl BulkRename {
             // Find the delimiter between regex and replacement (first unescaped '/').
             let parts: Vec<&str> = rest.splitn(3, '/').collect();
             if parts.len() < 2 {
-                self.errors
-                    .push(RenameError::BadPattern("Syntax: s/regex/replacement/".into()));
+                self.errors.push(RenameError::BadPattern(
+                    "Syntax: s/regex/replacement/".into(),
+                ));
                 return;
             }
             let (regex_str, replacement) = (parts[0], parts[1]);
@@ -137,8 +138,7 @@ impl BulkRename {
         // Validate: detect empty names and collisions.
         for preview in &self.previews {
             if preview.is_empty() {
-                self.errors
-                    .push(RenameError::EmptyName(preview.clone()));
+                self.errors.push(RenameError::EmptyName(preview.clone()));
             }
         }
 
@@ -154,11 +154,15 @@ impl BulkRename {
     pub fn is_valid(&self) -> bool {
         self.errors.is_empty()
             && !self.pattern.value.trim().is_empty()
-            && self.previews.iter().zip(self.originals.iter()).any(|(new, orig)| {
-                orig.file_name()
-                    .map(|n| n.to_string_lossy() != new.as_str())
-                    .unwrap_or(false)
-            })
+            && self
+                .previews
+                .iter()
+                .zip(self.originals.iter())
+                .any(|(new, orig)| {
+                    orig.file_name()
+                        .map(|n| n.to_string_lossy() != new.as_str())
+                        .unwrap_or(false)
+                })
     }
 
     /// Returns pairs of `(old_path, new_path)` for renames that actually change
@@ -235,9 +239,7 @@ impl Component for BulkRename {
         // Layout: list (fill) + error bar (if any) + pattern input (3 lines).
         let input_height = 3u16;
         let error_height = if self.errors.is_empty() { 0u16 } else { 1u16 };
-        let list_height = inner
-            .height
-            .saturating_sub(input_height + error_height);
+        let list_height = inner.height.saturating_sub(input_height + error_height);
 
         let chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -278,7 +280,10 @@ impl Component for BulkRename {
                         Style::new().fg(theme.colors.success()).bold(),
                     )
                 } else {
-                    Span::styled(truncate(new, col_width), Style::new().fg(theme.colors.primary()))
+                    Span::styled(
+                        truncate(new, col_width),
+                        Style::new().fg(theme.colors.primary()),
+                    )
                 };
                 ListItem::new(Line::from(vec![old_span, arrow, new_span]))
             })
@@ -305,14 +310,8 @@ impl Component for BulkRename {
         let input_inner = input_block.inner(chunks[2]);
         frame.render_widget(input_block, chunks[2]);
 
-        frame.render_widget(
-            Paragraph::new(self.pattern.value.clone()),
-            input_inner,
-        );
-        frame.set_cursor_position((
-            input_inner.x + self.pattern.cursor as u16,
-            input_inner.y,
-        ));
+        frame.render_widget(Paragraph::new(self.pattern.value.clone()), input_inner);
+        frame.set_cursor_position((input_inner.x + self.pattern.cursor as u16, input_inner.y));
     }
 }
 
@@ -320,6 +319,9 @@ fn truncate(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         s.to_string()
     } else {
-        format!("{}…", s.chars().take(max.saturating_sub(1)).collect::<String>())
+        format!(
+            "{}…",
+            s.chars().take(max.saturating_sub(1)).collect::<String>()
+        )
     }
 }

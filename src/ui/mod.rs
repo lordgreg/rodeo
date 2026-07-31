@@ -45,10 +45,10 @@ use keymap::Action;
 use panes::Panes;
 use popup_about::PopupAbout;
 use popup_bulkrename::BulkRename;
-use popup_trash::TrashView;
 use popup_findinfiles::FindInFiles;
 use popup_keybinds::PopupKeybinds;
 use popup_preview::PopupPreview;
+use popup_trash::TrashView;
 use search::{FilterSpec, Search, SearchKind};
 use textinput::TextInput;
 use uiconfig::UiConfig;
@@ -107,23 +107,17 @@ impl App {
         // Set up filesystem watcher. Errors are non-fatal: auto-refresh just
         // won't work, but everything else continues normally.
         let (fs_tx, fs_notify_rx) = mpsc::channel();
-        let watcher_result =
-            notify::RecommendedWatcher::new(fs_tx, notify::Config::default());
+        let watcher_result = notify::RecommendedWatcher::new(fs_tx, notify::Config::default());
         let watched_dirs = panes.pane_dirs();
         let mut _fs_watcher = watcher_result.unwrap_or_else(|e| {
             log::warn!("Cannot start filesystem watcher: {e}");
             // Create a dummy watcher that immediately errors — the channel
             // will stay empty and auto-refresh simply won't fire.
-            notify::RecommendedWatcher::new(
-                mpsc::channel().0,
-                notify::Config::default(),
-            )
-            .expect("fallback watcher")
+            notify::RecommendedWatcher::new(mpsc::channel().0, notify::Config::default())
+                .expect("fallback watcher")
         });
         for dir in &watched_dirs {
-            if let Err(e) = _fs_watcher
-                .watch(dir, notify::RecursiveMode::NonRecursive)
-            {
+            if let Err(e) = _fs_watcher.watch(dir, notify::RecursiveMode::NonRecursive) {
                 log::warn!("Cannot watch {dir:?}: {e}");
             }
         }
@@ -173,7 +167,10 @@ impl App {
             }
 
             // After 150 ms of FS silence, reload both panes and re-sync watches.
-            if self.fs_debounce.is_some_and(|t| t.elapsed() >= Duration::from_millis(150)) {
+            if self
+                .fs_debounce
+                .is_some_and(|t| t.elapsed() >= Duration::from_millis(150))
+            {
                 self.fs_debounce = None;
                 // Keep flagged entries: an external change must not wipe the
                 // user's selection.
