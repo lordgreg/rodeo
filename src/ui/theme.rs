@@ -3,6 +3,7 @@ use std::io;
 use std::io::Cursor;
 use std::io::Error;
 use std::io::ErrorKind;
+use std::path::Path;
 
 use log::info;
 use ratatui::style::Color;
@@ -10,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use syntect::highlighting::Theme as SynTheme;
 use syntect::highlighting::ThemeSet;
 
-pub const DEFAULT_THEME_FILENAME: &str = "default.yaml";
+pub const DEFAULT_THEME_FILENAME: &str = "default.toml";
 pub const DEFAULT_THEME_DIR: &str = "themes";
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -397,20 +398,29 @@ impl Theme {
     }
 
     pub fn load_theme(name: Option<&str>) -> io::Result<Self> {
-        // 1. if name without yaml, we know its in themes directory,
-        // 2. if name with yaml, we know its a path to a file
+        // 1. if name without extension, we know its in themes directory,
+        // 2. if name with .toml, we know its a path to a file
         // 3. if name is None, we load the default theme from themes directory
         let filename;
 
         if let Some(name) = name {
-            if !name.ends_with(".yaml") {
-                filename = format!("{}/{}.yaml", DEFAULT_THEME_DIR, name);
+            if !name.ends_with(".toml") {
+                filename = format!("{}/{}.toml", DEFAULT_THEME_DIR, name);
             } else {
                 filename = name.to_string();
             }
         } else {
             filename = format!("{}/{}", DEFAULT_THEME_DIR, DEFAULT_THEME_FILENAME);
         }
+
+        // A missing theme must not be fatal: fall back to the bundled default
+        // (load_from_file exits the process when it cannot read the file).
+        let fallback = format!("{}/{}", DEFAULT_THEME_DIR, DEFAULT_THEME_FILENAME);
+        if !Path::new(&filename).exists() && filename != fallback {
+            log::warn!("theme '{filename}' not found, falling back to {fallback}");
+            return Self::load_from_file(&fallback);
+        }
+
         Self::load_from_file(&filename)
     }
 
@@ -431,7 +441,7 @@ impl Theme {
             };
             let path = entry.path();
 
-            if path.extension().is_none_or(|ext| ext != "yaml") {
+            if path.extension().is_none_or(|ext| ext != "toml") {
                 continue;
             }
 
@@ -455,7 +465,7 @@ impl Theme {
             }
         };
 
-        let theme: Theme = yaml_serde::from_str(&theme_str).map_err(|_| {
+        let theme: Theme = toml::from_str(&theme_str).map_err(|_| {
             Error::new(
                 ErrorKind::InvalidData,
                 "cannot parse theme data.".to_string(),
@@ -484,27 +494,28 @@ mod tests {
     }
 
     #[test]
-    fn deserialize_theme_from_yaml() {
-        let yaml = r"name: test-theme
-description: A test theme
-colors:
-  background: '#1e1e2e'
-  foreground: '#cdd6f4'
-  primary: '#89b4fa'
-  secondary: '#f38ba8'
-  accent1: '#f9e2af'
-  accent2: '#a6e3a1'
-  accent3: '#b4befe'
-  muted: '#6c7086'
-  border: '#45475a'
-  highlight: '#cba6f7'
-  surface: '#313244'
-  error: '#f38ba8'
-  warning: '#fab387'
-  info: '#94e2d5'
-  success: '#a6e3a1'
-";
-        let theme: Theme = yaml_serde::from_str(yaml).unwrap();
+    fn deserialize_theme_from_toml() {
+        let toml_str = r##"name = "test-theme"
+description = "A test theme"
+
+[colors]
+background = "#1e1e2e"
+foreground = "#cdd6f4"
+primary = "#89b4fa"
+secondary = "#f38ba8"
+accent1 = "#f9e2af"
+accent2 = "#a6e3a1"
+accent3 = "#b4befe"
+muted = "#6c7086"
+border = "#45475a"
+highlight = "#cba6f7"
+surface = "#313244"
+error = "#f38ba8"
+warning = "#fab387"
+info = "#94e2d5"
+success = "#a6e3a1"
+"##;
+        let theme: Theme = toml::from_str(toml_str).unwrap();
         assert_eq!(theme.name, "test-theme");
         assert_eq!(theme.colors.background(), Color::Rgb(30, 30, 46));
         assert_eq!(theme.colors.primary(), Color::Rgb(137, 180, 250));

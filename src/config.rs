@@ -12,11 +12,12 @@ use crate::ui::{
     uiconfig::ActivePane,
 };
 
-pub const CONFIG_FILENAME: &str = "config.yaml";
+pub const CONFIG_FILENAME: &str = "config.toml";
 pub const CONFIG_DIR: &str = "rodeo";
 
 fn default_theme() -> String {
-    "light".to_string()
+    // Must match a file in the themes directory (themes/default.toml).
+    "default".to_string()
 }
 
 fn default_initial_directory() -> String {
@@ -68,6 +69,9 @@ pub struct Config {
     pub editor: String,
     /// Optional keybinding overrides: action name → key name (single,
     /// unmodified keys only). See `ui::keymap` for valid names.
+    ///
+    /// Must stay the last field: TOML requires every scalar value to be
+    /// emitted before any table, and serialization follows declaration order.
     #[serde(default)]
     pub keybindings: HashMap<String, String>,
 }
@@ -112,6 +116,19 @@ impl Config {
         let config_str = match std::fs::read_to_string(filename) {
             Ok(s) => s,
             Err(_) => {
+                // rodeo used YAML before 0.2. Point the user at their old file
+                // instead of silently starting with defaults.
+                let legacy = Path::new(filename).with_extension("yaml");
+                if legacy.exists() {
+                    let msg = format!(
+                        "rodeo now reads {CONFIG_FILENAME}; your old {} is ignored. \
+                         Convert it (key: value → key = \"value\") to keep your settings.",
+                        legacy.display()
+                    );
+                    warn!("{msg}");
+                    eprintln!("warning: {msg}");
+                }
+
                 let default_config_path = Self::get_config_path(None);
                 warn!(
                     "Config file not found, creating default config at {:?}",
@@ -123,7 +140,7 @@ impl Config {
                 return Ok(config);
             }
         };
-        let config: Config = yaml_serde::from_str(&config_str).map_err(|e| {
+        let config: Config = toml::from_str(&config_str).map_err(|e| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
                 format!("Failed to parse config file: {}", e),
@@ -142,7 +159,7 @@ impl Config {
     }
 
     pub fn save_config(config: &Config, filename: Option<&str>) -> io::Result<()> {
-        let config_str = yaml_serde::to_string(config)
+        let config_str = toml::to_string_pretty(config)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
         let config_path = Self::get_config_path(filename);
@@ -179,7 +196,7 @@ mod tests {
     #[test]
     fn default_config_has_expected_values() {
         let config = Config::default();
-        assert_eq!(config.theme, "light");
+        assert_eq!(config.theme, "default");
         assert_eq!(config.sort_type, SortType::Name);
         assert_eq!(config.sort_order, SortOrder::Ascending);
         assert!(!config.show_hidden);
@@ -189,18 +206,17 @@ mod tests {
     }
 
     #[test]
-    fn deserialize_empty_yaml_uses_defaults() {
-        let yaml = "";
-        let config: Config = yaml_serde::from_str(yaml).unwrap();
-        assert_eq!(config.theme, "light");
+    fn deserialize_empty_toml_uses_defaults() {
+        let config: Config = toml::from_str("").unwrap();
+        assert_eq!(config.theme, "default");
         assert_eq!(config.sort_type, SortType::Name);
         assert_eq!(config.sort_order, SortOrder::Ascending);
     }
 
     #[test]
-    fn deserialize_partial_yaml_merges_with_defaults() {
-        let yaml = "theme: dark\nshow_hidden: true";
-        let config: Config = yaml_serde::from_str(yaml).unwrap();
+    fn deserialize_partial_toml_merges_with_defaults() {
+        let toml_str = "theme = \"dark\"\nshow_hidden = true";
+        let config: Config = toml::from_str(toml_str).unwrap();
         assert_eq!(config.theme, "dark");
         assert!(config.show_hidden);
         // Other fields should use defaults
@@ -209,21 +225,22 @@ mod tests {
     }
 
     #[test]
-    fn deserialize_full_yaml() {
-        let yaml = "theme: nord
-initial_directory_left: /tmp
-initial_directory_right: /home
-sort_type: Size
-sort_order: Descending
-show_hidden: true
-directories_on_top: false
-active_pane: Right
-editor: emacs
-keybindings:
-  quit: Q
-  help: H
-";
-        let config: Config = yaml_serde::from_str(yaml).unwrap();
+    fn deserialize_full_toml() {
+        let toml_str = r#"theme = "nord"
+initial_directory_left = "/tmp"
+initial_directory_right = "/home"
+sort_type = "Size"
+sort_order = "Descending"
+show_hidden = true
+directories_on_top = false
+active_pane = "Right"
+editor = "emacs"
+
+[keybindings]
+quit = "Q"
+help = "H"
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
         assert_eq!(config.theme, "nord");
         assert_eq!(config.initial_directory_left, "/tmp");
         assert_eq!(config.initial_directory_right, "/home");

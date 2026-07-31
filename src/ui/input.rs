@@ -1023,7 +1023,7 @@ impl App {
         }
 
         // Guard: load_from_file exits the process on unreadable files.
-        let is_path = name.ends_with(".yaml");
+        let is_path = name.ends_with(".toml");
         if !is_path && !known.iter().any(|t| t == name) {
             self.err_status(format!(
                 "Unknown theme '{name}'. Available: {}",
