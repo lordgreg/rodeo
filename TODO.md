@@ -500,9 +500,6 @@ These are small, self-contained fixes with high impact-to-effort ratio. Do them 
   - Measured on a Rust snippet (2026-07-31): `use` is primary but `fn`/`let`/`impl`/`struct` are warning (**keywords split across two colours**); `u64`/`str`/`Self` share the keyword colour (no type distinction); `Config`/`HashMap` are **uncoloured** because the rules say `entity.name.type.*` while Rust emits `entity.name.struct`; `println!` is **uncoloured** (`support.function.macro` vs Rust's `support.macro`); punctuation is inconsistent (`:` `,` `->` muted, `;` plain).
   - **P1** | **Files:** `src/ui/theme.rs` | **Hints:** Check scopes against what the bundled Sublime grammars actually emit rather than guessing. Add missing roles: `constant.language`, `variable.language`, `support.type`, `support.class`, `entity.other.attribute-name`, `markup.heading`, `markup.list`, `meta.diff`. Keep one colour per *role* (keyword / type / function / string / number / comment / punctuation) so a file reads consistently. Note `syntect_style_to_ratatui` drops the background, so a rule that only sets a background is invisible. | **Effort:** M
 
-- [ ] **6.2.3 Optional: expose syntax roles in the theme file**
-  - **P3** | **Files:** `src/ui/theme.rs`, `themes/*.toml` | **Hints:** Once 6.2.1 turns the mapping into data, a `[syntax]` table (`keyword = "primary"`, `type = "accent2"`, …) lets a theme override roles without touching code. Defaults keep working when the table is absent. | **Effort:** S
-
 ### 6.3 Pane Layout
 
 - [x] **6.3.1 Fixed-width Size and Date columns**
@@ -648,8 +645,8 @@ Phase 0 (Bug Fixes) ────────────────────
 | Phase 3: Preview | 12 | 0 | — |
 | Phase 4: Power User | 8 | 0 | — |
 | Phase 5: Infrastructure | 13 | 8 | CI extras, unwrap sweep, docs |
-| Phase 6: Pre-release UI Polish | 11 | 1 | only 6.2.3 (optional) left |
-| **Total** | **104** | **9** | |
+| Phase 6: Pre-release UI Polish | 11 | 0 | complete |
+| **Total** | **104** | **8** | |
 
 ---
 
