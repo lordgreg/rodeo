@@ -1,0 +1,47 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH rodeo 1  "rodeo 0.1.0" 
+.SH NAME
+rodeo \- A dual\-pane terminal file manager with Vim\-style keybindings
+.SH SYNOPSIS
+\fBrodeo\fR [\fB\-c\fR|\fB\-\-config\fR] [\fB\-t\fR|\fB\-\-theme\fR] [\fB\-l\fR|\fB\-\-left\fR] [\fB\-r\fR|\fB\-\-right\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] 
+.SH DESCRIPTION
+A dual\-pane terminal file manager with Vim\-style keybindings
+.SH OPTIONS
+.TP
+\fB\-c\fR, \fB\-\-config\fR \fI<FILE>\fR
+Configuration file to use instead of the default
+.TP
+\fB\-t\fR, \fB\-\-theme\fR \fI<NAME|FILE>\fR
+Theme name, or a path to a theme file ending in .toml
+.TP
+\fB\-l\fR, \fB\-\-left\fR \fI<PATH>\fR
+Directory for the left pane (overrides the configured one)
+.TP
+\fB\-r\fR, \fB\-\-right\fR \fI<PATH>\fR
+Directory for the right pane (overrides the configured one)
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help
+.TP
+\fB\-V\fR, \fB\-\-version\fR
+Print version
+.SH EXTRA
+CONFIGURATION:
+    ~/.config/rodeo/config.toml   created with defaults on first run
+
+THEMES, first match wins:
+    $XDG_DATA_HOME/rodeo/themes   e.g. ~/.local/share/rodeo/themes
+    $XDG_DATA_DIRS/rodeo/themes   e.g. /usr/share/rodeo/themes
+    ./themes                      when running from a source checkout
+
+KEYS:
+    F1 in the app lists every binding; see also the README.
+
+EXAMPLES:
+    rodeo                              open both panes at the configured directories
+    rodeo \-l ~/src \-r /tmp             open the two panes somewhere specific
+    rodeo \-\-theme nord                 override the configured theme for this run
+    rodeo \-\-config ./rodeo.toml        use a different configuration file
+.SH VERSION
+v0.1.0

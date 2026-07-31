@@ -8,6 +8,7 @@ publish = false
 [dependencies]
 chrono = "0.4.45"
 clap = { version = "4.6.1", features = ["derive"] }
+clap_mangen = "0.3.0"
 color-eyre = "0.6.5"
 crossterm = "0.29.0"
 env_logger = "0.11.10"
@@ -43,4 +44,5 @@ xdg = "3.0.0"
 zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
+clap_mangen = "0.3.0"
 tempfile = "3"

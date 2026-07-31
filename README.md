@@ -59,11 +59,20 @@ cp themes/*.toml ~/.local/share/rodeo/themes/
 Rodeo starts even with no themes installed — it falls back to a compiled-in
 copy of the default theme.
 
+A man page is checked in at `docs/rodeo.1`:
+
+```sh
+sudo install -Dm644 docs/rodeo.1 /usr/local/share/man/man1/rodeo.1
+```
+
 ### Usage
 
 ```
 rodeo [--left <PATH>] [--right <PATH>] [--theme <NAME>] [--config <FILE>]
 ```
+
+`rodeo --help` lists the flags and where configuration and themes are read
+from.
 
 ## Configuration
 
@@ -133,9 +142,11 @@ highlighted) paths — `:!wc -l %f`.
 ## Development
 
 ```sh
-cargo test           # unit + integration tests
+cargo test                        # unit + integration tests
 cargo clippy --all-targets -- -D warnings
 cargo fmt --check
+cargo deny check                  # licences and security advisories
+cargo run --example gen_man       # regenerate docs/rodeo.1 after CLI changes
 ```
 
 The crate is a library (`src/lib.rs`) with a thin binary, so integration tests
