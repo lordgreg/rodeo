@@ -538,14 +538,6 @@ These are small, self-contained fixes with high impact-to-effort ratio. Do them 
   - The middle third of the header currently renders an empty string.
   - **P2** | **Files:** `src/ui/header.rs` | **Hints:** Left: pane stats (as now). Middle: breadcrumb of the active path with the last segment emphasised. Right: git (as now) plus free space on the device and chips for the active sort and filter. | **Effort:** M
 
-### 6.5 Bigger Changes
-
-- [ ] **6.5.2 Mouse support**
-  - **P3** | **Files:** `src/ui/input.rs` | **Hints:** `crossterm::event::EnableMouseCapture`. Click to move the cursor, double-click to open, click a column header to sort, wheel to scroll. Must be toggleable — mouse capture breaks terminal text selection. | **Effort:** M
-
-- [ ] **6.5.3 Relative dates in narrow columns**
-  - **P3** | **Files:** `src/ui/panes.rs` | **Hints:** `2 days ago` / `14:32` for today, falling back to the absolute timestamp when the column is wide. | **Effort:** S
-
 ---
 
 ## Dependency Graph
@@ -652,8 +644,8 @@ Phase 0 (Bug Fixes) ────────────────────
 | Phase 3: Preview | 12 | 0 | — |
 | Phase 4: Power User | 8 | 0 | — |
 | Phase 5: Infrastructure | 13 | 8 | CI extras, unwrap sweep, docs |
-| Phase 6: Pre-release UI Polish | 8 | 6 | extra columns, header, icons, mouse |
-| **Total** | **101** | **14** | |
+| Phase 6: Pre-release UI Polish | 8 | 4 | extra columns, header, icons |
+| **Total** | **101** | **12** | |
 
 ---
 
