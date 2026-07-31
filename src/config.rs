@@ -67,6 +67,10 @@ pub struct Config {
     pub active_pane: ActivePane,
     #[serde(default = "default_editor")]
     pub editor: String,
+    /// Show a file-type glyph before each name. Off by default: the glyphs
+    /// come from a Nerd Font, and without one they render as tofu.
+    #[serde(default)]
+    pub icons: bool,
     /// Optional keybinding overrides: action name → key name (single,
     /// unmodified keys only). See `ui::keymap` for valid names.
     ///
@@ -88,6 +92,7 @@ impl Default for Config {
             directories_on_top: default_directories_on_top(),
             active_pane: default_active_pane(),
             editor: default_editor(),
+            icons: false,
             keybindings: HashMap::new(),
         }
     }
@@ -202,6 +207,7 @@ mod tests {
         assert!(!config.show_hidden);
         assert!(config.directories_on_top);
         assert!(matches!(config.active_pane, ActivePane::Left));
+        assert!(!config.icons);
         assert!(config.keybindings.is_empty());
     }
 

@@ -310,6 +310,8 @@ pub struct Pane {
     hidden_count: usize,
     sort_type: SortType,
     sort_order: SortOrder,
+    /// Mirrors `config.icons`; kept per pane so rendering needs no config.
+    icons: bool,
 }
 
 impl Pane {
@@ -328,6 +330,7 @@ impl Pane {
             hidden_count,
             sort_order,
             sort_type,
+            icons: config.icons,
         };
 
         pane.state.select(Some(0));
@@ -608,7 +611,16 @@ impl Pane {
                         e.git_status.map(|s| Style::new().fg(s.kind.color(theme)))
                     };
 
-                    let mut spans = self.highlight_name(&e.name, name_style, theme);
+                    let mut spans = Vec::new();
+                    if self.icons {
+                        // Coloured like the name so git status and broken
+                        // symlinks stay readable at a glance.
+                        spans.push(Span::styled(
+                            format!("{} ", icon_for(e)),
+                            name_style.unwrap_or_else(|| Style::new().fg(theme.colors.muted())),
+                        ));
+                    }
+                    spans.extend(self.highlight_name(&e.name, name_style, theme));
                     if let Some(target) = &e.link_target {
                         spans.push(Span::styled(
                             format!(" -> {}", target.display()),
@@ -789,6 +801,7 @@ impl Pane {
 
         self.sort_order = config.sort_order;
         self.sort_type = config.sort_type;
+        self.icons = config.icons;
 
         // Re-apply the active filter on the fresh listing.
         if let Some(filter) = self.filter.clone() {
@@ -1311,6 +1324,87 @@ fn git_cell(entry: &Entry, theme: &Theme) -> Line<'static> {
     }
 }
 
+/// Nerd Font glyph for an entry, by kind, then well-known name, then
+/// extension.
+///
+/// Codepoints are written as escapes on purpose: the glyphs live in the
+/// Unicode private use area, where they are invisible in most editors and easy
+/// to mangle when the source is copied around. Only reached when
+/// `config.icons` is on, which requires a patched font.
+fn icon_for(entry: &Entry) -> &'static str {
+    match entry.kind {
+        EntryKind::Parent => return "\u{f062}",  // arrow-up
+        EntryKind::Symlink => return "\u{f0c1}", // link
+        EntryKind::Unknown => return "\u{f128}", // question
+        EntryKind::Directory => {
+            return match entry.name.as_str() {
+                ".git" => "\u{e702}",                              // git
+                "src" | "source" => "\u{f121}",                    // code
+                "target" | "build" | "dist" | "out" => "\u{f1b3}", // cubes
+                "tests" | "test" => "\u{f0c3}",                    // flask
+                "docs" | "doc" => "\u{f02d}",                      // book
+                ".config" | "config" | "etc" => "\u{f013}",        // gear
+                "themes" | "assets" | "images" => "\u{f03e}",      // picture
+                _ => "\u{f07b}",                                   // folder
+            };
+        }
+        EntryKind::File => {}
+    }
+
+    // Whole-name matches beat extensions: a Makefile has no extension, and
+    // Cargo.toml deserves the Rust glyph rather than the generic TOML one.
+    match entry.name.as_str() {
+        "Cargo.toml" | "Cargo.lock" => return "\u{e7a8}", // rust
+        "Makefile" | "makefile" | "CMakeLists.txt" | "justfile" => return "\u{f0ad}", // wrench
+        "Dockerfile" | "docker-compose.yml" | "compose.yaml" => return "\u{f308}", // docker
+        ".gitignore" | ".gitattributes" | ".gitmodules" => return "\u{e702}", // git
+        "LICENSE" | "LICENCE" | "COPYING" => return "\u{f02d}", // book
+        _ => {}
+    }
+
+    let extension = entry
+        .path
+        .extension()
+        .map(|e| e.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+
+    match extension.as_str() {
+        "rs" => "\u{e7a8}",
+        "py" => "\u{e73c}",
+        "js" | "mjs" | "cjs" => "\u{e74e}",
+        "ts" | "tsx" => "\u{e628}",
+        "go" => "\u{e627}",
+        "c" | "h" => "\u{e61e}",
+        "cpp" | "cc" | "hpp" => "\u{e61d}",
+        "java" | "class" => "\u{e738}",
+        "rb" => "\u{e739}",
+        "php" => "\u{e73d}",
+        "lua" => "\u{e620}",
+        "sh" | "bash" | "zsh" | "fish" => "\u{f489}", // terminal
+        "html" | "htm" => "\u{e736}",
+        "css" | "scss" | "sass" => "\u{e749}",
+        "json" => "\u{e60b}",
+        "toml" | "ini" | "cfg" | "conf" => "\u{f013}", // gear
+        "yaml" | "yml" => "\u{f013}",
+        "xml" => "\u{e619}",
+        "md" | "markdown" => "\u{e73e}",
+        "txt" | "text" | "log" => "\u{f0f6}",
+        "pdf" => "\u{f1c1}",
+        "doc" | "docx" | "odt" => "\u{f1c2}",
+        "xls" | "xlsx" | "ods" | "csv" => "\u{f1c3}",
+        "png" | "jpg" | "jpeg" | "gif" | "bmp" | "webp" | "svg" | "ico" => "\u{f1c5}",
+        "mp3" | "flac" | "wav" | "ogg" | "m4a" => "\u{f1c7}",
+        "mp4" | "mkv" | "avi" | "mov" | "webm" => "\u{f1c8}",
+        "zip" | "tar" | "gz" | "tgz" | "bz2" | "xz" | "zst" | "7z" | "rar" => "\u{f1c6}",
+        "iso" | "img" => "\u{f1c0}",
+        "lock" => "\u{f023}",
+        "ttf" | "otf" | "woff" | "woff2" => "\u{f031}",
+        "sql" | "db" | "sqlite" => "\u{f1c0}",
+        "exe" | "bin" | "so" | "dll" | "o" => "\u{f471}",
+        _ => "\u{f016}", // generic file
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1675,6 +1769,41 @@ mod tests {
             pane.reload(&Config::default(), false);
 
             assert_eq!(pane.state.selected(), Some(0));
+        }
+    }
+
+    mod icons {
+        use super::*;
+
+        fn file(name: &str) -> Entry {
+            let mut entry = Entry::new(PathBuf::from(name));
+            entry.kind = EntryKind::File;
+            entry.name = name.to_string();
+            entry
+        }
+
+        #[test]
+        fn well_known_names_beat_extensions() {
+            // Cargo.toml is Rust, not "some TOML file".
+            assert_ne!(icon_for(&file("Cargo.toml")), icon_for(&file("other.toml")));
+        }
+
+        #[test]
+        fn extensions_are_case_insensitive() {
+            assert_eq!(icon_for(&file("PHOTO.JPG")), icon_for(&file("photo.jpg")));
+        }
+
+        #[test]
+        fn kinds_win_over_names() {
+            let mut dir = Entry::new(PathBuf::from("Cargo.toml"));
+            dir.kind = EntryKind::Directory;
+            dir.name = "Cargo.toml".to_string();
+            assert_ne!(icon_for(&dir), icon_for(&file("Cargo.toml")));
+        }
+
+        #[test]
+        fn unknown_extensions_still_get_a_glyph() {
+            assert!(!icon_for(&file("mystery.qqq")).is_empty());
         }
     }
 
