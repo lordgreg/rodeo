@@ -1,3 +1,6 @@
+//! The bottom bar: context-dependent key hints, clipboard state and transient
+//! status messages.
+
 use std::time::{Duration, Instant};
 
 use ratatui::{

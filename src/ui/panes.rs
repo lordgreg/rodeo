@@ -1,3 +1,9 @@
+//! The two directory panes.
+//!
+//! A [`Pane`] owns its listing, cursor, selection and filter. Columns adapt to
+//! the available width ([`ColumnSet`]), so a narrow terminal degrades to
+//! name/size/date instead of squeezing everything.
+
 use std::{
     fs::{self},
     path::{Path, PathBuf},
@@ -129,6 +135,7 @@ pub(crate) fn format_date(t: SystemTime) -> String {
 }
 
 #[derive(PartialEq, Debug, Serialize, Deserialize, Clone, Copy)]
+/// Column the listing is ordered by.
 pub enum SortType {
     Flagged,
     Name,
@@ -137,12 +144,16 @@ pub enum SortType {
 }
 
 #[derive(PartialEq, Debug, Serialize, Deserialize, Clone, Copy)]
+/// Direction of the active sort.
 pub enum SortOrder {
     Ascending,
     Descending,
 }
 
 #[derive(PartialEq, Debug, Clone)]
+/// What a listing entry is. Symlinks keep their *resolved* kind so that
+/// navigating and editing follow the link; only broken or exotic targets stay
+/// [`EntryKind::Symlink`].
 pub enum EntryKind {
     Parent,
     Directory,
@@ -152,6 +163,7 @@ pub enum EntryKind {
 }
 
 #[derive(Debug, Default, Clone, Copy)]
+/// Counts shown in the header and footer for the active pane.
 pub struct PaneStats {
     pub files: usize,
     pub dirs: usize,
@@ -160,6 +172,7 @@ pub struct PaneStats {
 }
 
 #[derive(Debug)]
+/// A column heading, and the sort it triggers (if any).
 pub struct EntryHeader {
     pub name: String,
     /// Column the header sorts by, or `None` for informational columns that
@@ -185,6 +198,8 @@ impl EntryHeader {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+/// One row of a listing: a filesystem entry with everything needed to render
+/// and sort it, gathered once when the directory is read.
 pub struct Entry {
     pub kind: EntryKind,
     pub path: PathBuf,
@@ -301,6 +316,7 @@ impl Entry {
 }
 
 #[derive(Debug, Clone)]
+/// One directory pane: its listing, cursor, selection and filter.
 pub struct Pane {
     pub state: TableState,
     pub path: String,
@@ -1080,11 +1096,13 @@ fn read_entries(dir: &str, config: &Config) -> (Vec<Entry>, usize) {
 }
 
 #[derive(PartialEq)]
+/// Cursor movement direction.
 pub enum MoveDirection {
     Up,
     Down,
 }
 
+/// What the caller must do after `Enter` on an entry.
 pub enum OpenAction {
     Reload,
     /// Only the path is needed to hand the file to the editor.
@@ -1094,6 +1112,7 @@ pub enum OpenAction {
 }
 
 #[derive(Debug)]
+/// The pair of panes and which one has focus.
 pub struct Panes {
     pub pane_left: Pane,
     pub pane_right: Pane,

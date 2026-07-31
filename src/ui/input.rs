@@ -1,3 +1,9 @@
+//! Key handling.
+//!
+//! Every key press runs through one chain, most specific handler first:
+//! dialogs, the command bar, search, the popups, then Ctrl-, Shift- and
+//! finally unmodified keys resolved through the configurable keymap.
+
 use std::path::{Path, PathBuf};
 
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};

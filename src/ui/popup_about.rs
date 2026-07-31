@@ -1,3 +1,5 @@
+//! The about popup, sized to its content.
+
 use ratatui::{
     Frame,
     layout::{Alignment, Rect},

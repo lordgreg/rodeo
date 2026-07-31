@@ -1,3 +1,6 @@
+//! The help popup: keybindings and commands, laid out in as many columns as
+//! the terminal height needs.
+
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},

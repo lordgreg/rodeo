@@ -1,3 +1,5 @@
+//! The rendering trait shared by every widget, plus popup geometry helpers.
+
 use ratatui::{Frame, layout::Rect};
 
 use crate::ui::{theme::Theme, uiconfig::UiConfig};

@@ -1,3 +1,8 @@
+//! Command-line arguments.
+//!
+//! Kept deliberately small: rodeo is configured through `config.toml`, and the
+//! flags exist to override the parts of it that are worth changing per run.
+
 use clap::Parser;
 
 #[derive(Parser, Debug)]

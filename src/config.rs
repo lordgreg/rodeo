@@ -1,3 +1,9 @@
+//! Configuration file handling.
+//!
+//! rodeo reads `$XDG_CONFIG_HOME/rodeo/config.toml`, writing a default one on
+//! first run. Every field has a serde default, so a partial file is valid and
+//! new keys never break existing configurations.
+
 use std::{
     collections::HashMap,
     io,
@@ -48,6 +54,9 @@ fn default_editor() -> String {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
+/// User configuration, read from `config.toml`.
+///
+/// Every field has a serde default so a partial file stays valid.
 pub struct Config {
     #[serde(default = "default_theme")]
     pub theme: String,

@@ -1,3 +1,5 @@
+//! Search and filter state: fuzzy matching and regex filtering of a listing.
+
 use crate::ui::textinput::TextInput;
 
 /// Active filter applied to a pane's entry list.

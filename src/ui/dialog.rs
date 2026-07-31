@@ -1,3 +1,9 @@
+//! Modal dialogs: confirmations, single-line input and messages.
+//!
+//! A dialog carries the action to perform when it is confirmed
+//! ([`DialogAction`]), so the caller can hand it off and forget about it until
+//! a [`DialogResult`] comes back.
+
 use std::path::PathBuf;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};

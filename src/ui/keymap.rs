@@ -1,3 +1,8 @@
+//! Configurable keybindings.
+//!
+//! Single-key actions are table-driven: [`default_keymap`] holds the defaults
+//! and [`build_keymap`] merges the user's `[keybindings]` overrides on top.
+
 use crossterm::event::KeyCode;
 
 use crate::config::Config;

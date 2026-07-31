@@ -1,3 +1,9 @@
+//! Themes: the colour palette and the syntax-highlighting colours derived from
+//! it.
+//!
+//! Theme files are TOML and are looked up along an XDG search path; a copy of
+//! the default theme is compiled in so rodeo always starts.
+
 use std::fs;
 use std::io;
 use std::io::Error;
@@ -57,6 +63,8 @@ fn find_theme_file(name: &str) -> Option<PathBuf> {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
+/// The palette. Values are `#rrggbb` strings in the theme file and are
+/// converted to terminal colours on access.
 pub struct Colors {
     background: String,
     foreground: String,
@@ -144,6 +152,7 @@ impl Colors {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
+/// A named colour palette, loaded from a TOML file.
 pub struct Theme {
     pub name: String,
     pub description: String,

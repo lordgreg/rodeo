@@ -1,3 +1,5 @@
+//! Small pieces of UI state that several widgets need to agree on.
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Default, PartialEq, Serialize, Deserialize, Copy, Clone)]

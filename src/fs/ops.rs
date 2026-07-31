@@ -1,3 +1,9 @@
+//! Copy, move, delete and size calculations.
+//!
+//! Everything here is UI-agnostic so it can be tested directly (see
+//! `tests/file_ops.rs`). Large transfers run on a worker thread and report
+//! progress over an `mpsc` channel rather than blocking the event loop.
+
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};

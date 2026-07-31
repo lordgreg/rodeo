@@ -1,3 +1,10 @@
+//! File preview.
+//!
+//! Handles text with syntax highlighting, images, archive listings, PDF text,
+//! directory summaries and hex dumps for binaries. Anything that can be slow is
+//! computed on a worker thread while a spinner shows, and the result is cached
+//! for as long as the selection does not change.
+
 use ratatui_image::{Image, Resize, picker::Picker};
 use std::io;
 use std::io::BufRead;

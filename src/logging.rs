@@ -1,3 +1,8 @@
+//! Logging setup.
+//!
+//! Output goes to a file in the XDG state directory, never to stderr: anything
+//! written to the terminal would corrupt the TUI.
+
 use std::fs::File;
 
 use env_logger::{Env, Target};

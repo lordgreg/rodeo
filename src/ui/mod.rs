@@ -1,3 +1,5 @@
+//! The application: state, the event loop and the render tree.
+
 use std::{
     path::PathBuf,
     process::Command,
@@ -65,6 +67,7 @@ pub struct Progress {
 }
 
 #[derive(Debug)]
+/// The whole application: widgets, state and everything a frame needs.
 pub struct App {
     exit: bool,
     theme: Theme,

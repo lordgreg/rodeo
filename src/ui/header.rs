@@ -1,3 +1,6 @@
+//! The top bar: pane statistics, a breadcrumb of the active path, git branch
+//! and free space on the device.
+
 use std::process::Command;
 
 use ratatui::{

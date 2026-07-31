@@ -1,3 +1,9 @@
+//! Git status for the entries of a directory.
+//!
+//! Shells out to `git status --porcelain=v1 -z` once per pane reload and maps
+//! the result onto the names in that directory; directories aggregate the most
+//! severe status found beneath them.
+
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},

@@ -1,3 +1,6 @@
+//! Find-in-files popup: recursive regex search over file contents, honouring
+//! `.gitignore`.
+
 use std::path::PathBuf;
 
 use ratatui::{

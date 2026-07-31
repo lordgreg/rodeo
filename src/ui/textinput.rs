@@ -1,3 +1,6 @@
+//! A single-line text field with a cursor, shared by dialogs, the command bar
+//! and the search bars.
+
 /// A single-line text field with a movable cursor.
 ///
 /// The cursor is stored as a *character* index (not byte index) so multi-byte
