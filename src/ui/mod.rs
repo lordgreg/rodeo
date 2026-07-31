@@ -13,8 +13,8 @@ use crate::{
 use notify::Watcher as _;
 use ratatui::{
     DefaultTerminal, Frame,
-    layout::{Constraint, Direction, Layout},
-    style::Style,
+    layout::{Constraint, Direction, Layout, Rect},
+    style::{Modifier, Style},
     widgets::{Block, Borders, Clear, Gauge},
 };
 
@@ -289,6 +289,18 @@ impl App {
         }
     }
 
+    /// `true` while something modal covers the panes.
+    fn has_overlay(&self) -> bool {
+        self.ui_config.active_keybind_popup
+            || self.ui_config.active_about_popup
+            || self.ui_config.active_preview_popup
+            || self.bulk_rename.is_some()
+            || self.trash_view.is_some()
+            || self.find_in_files.is_some()
+            || self.dialog.is_some()
+            || self.progress.is_some()
+    }
+
     fn render(&mut self, frame: &mut Frame<'_>) {
         let background = Block::default().style(Style::new().bg(self.theme.colors.background()));
 
@@ -341,6 +353,12 @@ impl App {
 
         if show_input_bar {
             self.render_input_bar(frame, outer_layout[2]);
+        }
+
+        // Anything modal reads as a focused layer only if what is behind it
+        // recedes. Ratatui has no transparency, so dim the cells instead.
+        if self.has_overlay() {
+            dim_area(frame, frame.area());
         }
 
         if self.ui_config.active_keybind_popup {
@@ -474,6 +492,20 @@ impl App {
 
         if let Some(offset) = cursor_offset {
             frame.set_cursor_position((area.x + offset, area.y));
+        }
+    }
+}
+
+/// Fades everything already drawn in `area` so a modal layer on top of it
+/// stands out. Ratatui cannot draw translucent widgets, so this walks the
+/// buffer and adds the terminal's DIM attribute to every cell.
+fn dim_area(frame: &mut Frame<'_>, area: Rect) {
+    let buffer = frame.buffer_mut();
+    for y in area.top()..area.bottom() {
+        for x in area.left()..area.right() {
+            if let Some(cell) = buffer.cell_mut((x, y)) {
+                cell.modifier.insert(Modifier::DIM);
+            }
         }
     }
 }
