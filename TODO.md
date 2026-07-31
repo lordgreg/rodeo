@@ -1,7 +1,7 @@
 # rodeo — Development TODO
 
-> **Last updated:** 2026-07-30
-> **Current state:** Dual-pane navigation + rich preview + theming + git-colored entries + full file operations. **Phases 1–4 essentially complete.** Preview: syntax highlighting, images, archives (zip/tar/tgz), PDF, directory size, binary info+hexdump, symlink status — slow content is built on a worker thread behind a spinner, cached per selection, with page/half-page scrolling (Ctrl+f/b/d/u). Configurable keybindings (`keybindings:` in config.yaml), trash view (`:trash`), bulk rename (`B`), find-in-files (`Ctrl+g`), on-demand directory sizes (`S`), wildcard selection (`*`), live directory refresh via `notify`, transient footer status messages instead of modal error dialogs. Fuzzy search + regex filter with match highlighting. 119 unit tests + 7 integration tests. Clippy-clean, CI workflow added.
+> **Last updated:** 2026-07-31
+> **Current state:** Dual-pane navigation + rich preview + theming + git-colored entries + full file operations. **Phases 1–4 essentially complete.** Preview: syntax highlighting, images, archives (zip/tar/tgz), PDF, directory size, binary info+hexdump, symlink status — slow content is built on a worker thread behind a spinner, cached per selection, with page/half-page scrolling (Ctrl+f/b/d/u). Configurable keybindings (`[keybindings]` in config.toml), trash view (`:trash`), bulk rename (`B`), find-in-files (`Ctrl+g`), on-demand directory sizes (`S`), wildcard selection (`*`), live directory refresh via `notify`, transient footer status messages instead of modal error dialogs. Fuzzy search + regex filter with match highlighting. Config and themes are TOML. 119 unit tests + 7 integration tests. Clippy-clean, fmt-clean, CI workflow added.
 
 | Phase | README Milestone | Focus |
 |-------|-----------------|-------|
@@ -112,7 +112,8 @@ These are small, self-contained fixes with high impact-to-effort ratio. Do them 
   - **P1** | **Files:** `src/config.rs:46`, `src/ui/input.rs` | **Hints:** (See also Quick Wins above.) Add getter. Check in `handle_main_key` before allowing: cut/copy/delete/rename (once implemented), toggle_select, Enter-on-file. Show a status message "Read-only mode — operation blocked" in footer. | **Effort:** S
 
 - [x] **0.14 Fix config format mismatch: code uses YAML, README/planning docs say TOML**
-  - **P2** | **Files:** `src/config.rs`, `Cargo.toml` | **Hints:** Decision needed: YAML or TOML? (See Open Decisions.) If staying YAML: update README and planning docs. If switching to TOML: swap `yaml_serde` for `toml`, update `config.yaml` → `config.toml`, update `CONFIG_FILENAME`. TOML is more Rust-idiomatic and recommended by planning docs. | **Effort:** M (if switching)
+  - Resolved (2026-07-31): switched to **TOML**. `yaml_serde` → `toml`, `config.yaml` → `config.toml`, all ten bundled themes converted (`[colors]` table). A leftover `config.yaml` is reported on stderr instead of being silently ignored. Fixed two bugs it exposed: the default theme name (`light`) had no theme file, and a missing theme file called `process::exit(1)` instead of falling back to the default.
+  - **P2** | **Files:** `src/config.rs`, `src/ui/theme.rs`, `Cargo.toml`, `themes/*.toml` | **Effort:** M
 
 - [x] **0.15 Fix `Entry::parent()`: `canonicalize().unwrap()` panics if parent doesn't exist or permissions deny**
   - **P1** | **Files:** `src/ui/panes.rs:139` | **Hints:** `PathBuf::from(dir).join("..")` then `canonicalize()` — if at filesystem root, `..` is still root (no panic). But permission errors or deleted directories will crash. Use `.ok()?` fallback: return an Entry with `kind: Parent` and the joined path (canonicalization is a nice-to-have). | **Effort:** S
@@ -303,9 +304,6 @@ These are small, self-contained fixes with high impact-to-effort ratio. Do them 
   - Resolved: `.zip`/`.tar`/`.tar.gz`/`.tgz` list name + size in the preview (detected by extension with `infer` fallback), capped at 1000 entries. Preview content is now computed once per selection and cached (was re-read every frame).
   - **P1** | **Files:** `src/ui/popup_preview.rs` | **Hints:** When file type is Archive (detected by `file` command or extension), list archive contents instead of raw bytes. For `.zip`: iterate entries, show name + size + compressed size. For `.tar`/`.tar.gz`: iterate entries, show name + size + mode. Format as a table similar to the file listing. Limit to first 1000 entries to avoid hanging. | **Effort:** M
 
-- [ ] **3.2.3 Implement archive browsing as virtual directories (enter to descend into archive)**
-  - **P1** | **Files:** `src/ui/panes.rs`, `src/fs/archive.rs` (new) | **Hints:** When entering a `.zip`/`.tar`/`.tar.gz` file, treat it as a directory. Show archive contents in the pane. Allow navigating up via `..` (back to real directory). Show archive path in pane title: `/path/to/archive.zip::`. Read full archive into memory for small archives; stream for large ones. Design note (2026-07-26): needs a `PaneSource` enum (Filesystem | Archive{path, prefix}) so `read_entries` can list archive internals; mutating ops must be rejected while in archive mode; preview/editor inside archives out of scope. | **Effort:** L
-
 ### 3.3 PDF/Document Preview
 
 - [x] **3.3.1 Add PDF text extraction**
@@ -426,16 +424,20 @@ These are small, self-contained fixes with high impact-to-effort ratio. Do them 
 - [ ] **5.2.2 Add `cargo-deny` to CI for license/security auditing**
   - **P2** | **Files:** `.github/workflows/ci.yml`, `deny.toml` (new) | **Hints:** `cargo install cargo-deny && cargo deny check`. Configure `deny.toml` to allow common licenses (MIT, Apache-2.0, BSD, etc). | **Effort:** S
 
-- [ ] **5.2.3 Add code coverage reporting (tarpaulin or llvm-cov)**
-  - **P2** | **Files:** `.github/workflows/ci.yml` | **Hints:** `cargo install cargo-tarpaulin && cargo tarpaulin --out Lcov`. Upload to coveralls or codecov. | **Effort:** M
+- [ ] **5.2.3 Add code coverage reporting (`cargo-llvm-cov`)**
+  - Decided (2026-07-31): **`cargo-llvm-cov`** — it is the de-facto standard now, built on rustc's own source-based instrumentation (`-C instrument-coverage`), so it is accurate, cross-platform and works on stable. `tarpaulin` is the older ptrace-based tool, Linux/x86 only.
+  - **P2** | **Files:** `.github/workflows/ci.yml` | **Hints:** `cargo install cargo-llvm-cov && cargo llvm-cov --all-features --lcov --output-path lcov.info`. Upload to codecov. Note that TUI code is largely untestable without a `TestBackend` harness (5.1.8), so expect a modest number. | **Effort:** M
 
-- [ ] **5.2.4 Add release build workflow**
+- [ ] **5.2.4 Add release build workflow (GitHub variant only for now)**
+  - Scope (2026-07-31): GitHub Actions only — a Forgejo/Woodpecker port for Codeberg can follow once the mirror question is settled.
   - **P2** | **Files:** `.github/workflows/release.yml` (new) | **Hints:** Trigger on tag push. Build with `--release`. Upload binary as release artifact. Consider `cargo-dist` or manual matrix for linux-x64, macos-arm64, macos-x64. | **Effort:** M
 
 ### 5.3 Error Handling
 
-- [ ] **5.3.1 Replace `env_logger` + `log` with `tracing` + `color-eyre`**
-  - **P1** | **Files:** `Cargo.toml`, `src/main.rs`, all `log::` imports | **Hints:** Planning docs recommend `tracing` for structured logging and `color-eyre` for error reporting. `color-eyre` is already in Cargo.toml. Replace `log::info!` → `tracing::info!`, etc. Use `tracing-subscriber` for output. Add file-based logging with `tracing-appender`. | **Effort:** M
+- [ ] **5.3.1 Replace `env_logger` + `log` with `tracing` — NEEDS A DECISION**
+  - Assessment (2026-07-31): `tracing` is the standard for async services and libraries, where spans across concurrent tasks are what you need. rodeo is a single-threaded TUI with one background worker; `log` + `env_logger` is still a perfectly idiomatic, actively maintained choice and is what most CLI/TUI apps use. The migration is mechanical (~50 `log::` call sites) but buys little today — the one real win would be `tracing-appender` log rotation, which `env_logger` lacks.
+  - Recommendation: **keep `log`**, revisit if concurrency grows. Drop this task if you agree.
+  - **P3** | **Files:** `Cargo.toml`, `src/logging.rs`, all `log::` imports | **Effort:** M
 
 - [x] **5.3.2 Convert `main() -> io::Result<()>` to use `color_eyre::Result<()>`**
   - Resolved alongside the color-eyre quick win.
@@ -522,14 +524,13 @@ Phase 0 (Bug Fixes) ────────────────────
 | `tempfile` | 3 | Yes | Dev-dependency: temp dirs for unit/integration tests |
 | `trash` | 5.2.6 | Yes | Delete to system trash (with permanent fallback) |
 | `xdg` | 3.0.0 | Yes | XDG base directories for config path |
-| `yaml_serde` | 0.10.4 | Yes | YAML config parsing (see Open Decisions) |
+| `toml` | 1.1.4 | Yes | Config + theme parsing (replaced `yaml_serde`) |
 | `zip` | 8.6.0 | Yes | Zip archive listing for preview (deflate only) |
 
 ### New Crates Needed (by priority)
 
 | Crate | Version | Phase | Purpose |
 |-------|---------|-------|---------|
-| `toml` | 0.8 | Phase 3 | Possibly config format switch (Open Decision 1) |
 | `tracing` | 0.1 | Phase 5 | Structured logging (replace `log`) |
 | `tracing-subscriber` | 0.3 | Phase 5 | Log output formatting |
 | `tracing-appender` | 0.2 | Phase 5 | File-based log rotation (optional) |
@@ -541,9 +542,8 @@ Phase 0 (Bug Fixes) ────────────────────
 
 | Crate | Reason |
 |-------|--------|
-| `yaml_serde` | If switching config to TOML (use `toml` crate instead) |
-| `env_logger` | If switching to `tracing-subscriber` |
-| `log` | If switching to `tracing` (use `tracing` macros) |
+| `env_logger` | Only if 5.3.1 is accepted (switch to `tracing-subscriber`) |
+| `log` | Only if 5.3.1 is accepted (switch to `tracing` macros) |
 
 ---
 
@@ -551,7 +551,6 @@ Phase 0 (Bug Fixes) ────────────────────
 
 | # | Question | Options | Impact | Recommendation |
 |---|----------|---------|--------|----------------|
-| 1 | **YAML vs TOML for config?** | YAML (current) or TOML (planning docs) | Affects `config.rs`, theme files, Cargo.toml deps, user-facing format | **TOML** — more Rust-idiomatic, serde support is first-class, no indentation issues, README and all planning docs assume TOML. However, 10 theme files already exist in YAML — migration script needed. |
 | 3 | **Vim-modal or modeless?** | Modal (Normal/Command/Visual) or single-mode with key combos | Fundamental UX design. Affects all keybinding code. | **Modal** — all three planning docs agree. Vim users are the target audience. Start modeless in Phase 1.2, introduce modes in 1.3. |
 | 4 | **`syntect` vs keep `bat`?** | `syntect` (pure Rust, bundled) vs `bat` (external binary) | Preview architecture, binary size, runtime deps | **`syntect`** — all planning docs recommend it. Removes external dependency, works offline, gives full control over theme mapping. `bat` was a quick prototype shortcut. |
 | 5 | **`gix` vs `git` CLI?** | `gix` (pure Rust) vs shelling out to `git` binary | Git status performance, binary size, portability | **`gix`** — removes runtime dependency on `git` binary, no shell overhead, consistent behavior. But lower priority: current `git` CLI approach works fine for header stats. |
@@ -571,10 +570,10 @@ Phase 0 (Bug Fixes) ────────────────────
 | Phase 0: Bug Fixes | 21 | 0 | — |
 | Phase 1: File Ops | 22 | 0 | — |
 | Phase 2: Search | 5 | 0 | — |
-| Phase 3: Preview | 11 | 1 | only 3.2.3 (archive browsing) left |
+| Phase 3: Preview | 11 | 0 | — |
 | Phase 4: Power User | 8 | 0 | — |
 | Phase 5: Infrastructure | 13 | 9 | CI extras, tracing, docs |
-| **Total** | **92** | **10** | |
+| **Total** | **92** | **9** | |
 
 ---
 
