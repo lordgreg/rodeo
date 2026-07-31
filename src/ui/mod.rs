@@ -308,7 +308,9 @@ impl App {
             || self.progress.is_some()
     }
 
-    fn render(&mut self, frame: &mut Frame<'_>) {
+    /// Draws one full frame. Public to the crate so integration tests can
+    /// render into a `TestBackend` without a real terminal.
+    pub fn render(&mut self, frame: &mut Frame<'_>) {
         let background = Block::default().style(Style::new().bg(self.theme.colors.background()));
 
         frame.render_widget(background, frame.area());

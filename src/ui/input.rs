@@ -31,7 +31,7 @@ impl App {
 
     /// Routes one key press through the handler chain. Split out of
     /// [`Self::handle_input`] so tests can drive the app without a terminal.
-    pub(crate) fn dispatch_key(&mut self, key_event: &KeyEvent) {
+    pub fn dispatch_key(&mut self, key_event: &KeyEvent) {
         // A pending `d` (awaiting the second key of `dd`) is cancelled
         // by any other key.
         if self.pending_d && !matches!(key_event.code, KeyCode::Char('d')) {
