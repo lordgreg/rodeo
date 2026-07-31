@@ -3,7 +3,7 @@ use std::io;
 use std::io::BufRead;
 use std::io::Read;
 use std::path::Path;
-use std::sync::{OnceLock, mpsc};
+use std::sync::{Arc, OnceLock, mpsc};
 use std::time::Instant;
 use syntect::{
     easy::HighlightLines,
@@ -50,7 +50,9 @@ pub struct PopupPreview {
     title: Option<String>,
     row: u16,
     viewport_height: u16,
-    syn_theme: Option<highlighting::Theme>,
+    /// Syntax colours, built once per theme by the app and shared with the
+    /// background loader. `None` for previews that are not file content.
+    syn_theme: Option<Arc<highlighting::Theme>>,
     content: Option<PreviewContent>,
     /// Receives content from a background thread for slow previews (e.g. PDF).
     loading_rx: Option<mpsc::Receiver<PreviewContent>>,
@@ -94,7 +96,7 @@ fn syntect_style_to_ratatui(style: SynStyle) -> Style {
 }
 
 impl PopupPreview {
-    pub fn new(entry: Option<Entry>) -> Self {
+    pub fn new(entry: Option<Entry>, syn_theme: Arc<highlighting::Theme>) -> Self {
         // Parent/unknown entries never reach the filesystem — showing a
         // message instead of a real preview. Critically, this also prevents
         // sizing up the parent directory when navigation wraps to `..` with
@@ -114,7 +116,7 @@ impl PopupPreview {
             title: None,
             row: 0,
             viewport_height: 1,
-            syn_theme: None,
+            syn_theme: Some(syn_theme),
             content,
             loading_rx: None,
             loading_started: None,
@@ -550,10 +552,8 @@ impl Component for PopupPreview {
                 FileType::Binary | FileType::Symlink => {
                     // These are always fast (256-byte hex dump / symlink read)
                     // so there is no perceptible delay worth a spinner.
-                    let syn_theme = self
-                        .syn_theme
-                        .get_or_insert_with(|| theme.to_syntect_theme());
-                    self.content = Some(Self::get_file_content(&path, syn_theme));
+                    let syn_theme = self.syn_theme.clone().unwrap_or_default();
+                    self.content = Some(Self::get_file_content(&path, &syn_theme));
                 }
                 _ => {
                     // Text (syntax highlighting), archive listing, directory
@@ -561,7 +561,7 @@ impl Component for PopupPreview {
                     // time on large inputs — offload every one of them so the
                     // popup opens instantly with a spinner.
                     let path_owned = path.to_string();
-                    let syn_theme = theme.to_syntect_theme();
+                    let syn_theme = self.syn_theme.clone().unwrap_or_default();
                     let (tx, rx) = mpsc::channel();
                     std::thread::spawn(move || {
                         let _ = tx.send(Self::get_file_content(&path_owned, &syn_theme));
@@ -689,6 +689,11 @@ impl std::fmt::Debug for PopupPreview {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Syntax colours for tests that never actually highlight anything.
+    fn test_syn_theme() -> Arc<highlighting::Theme> {
+        Arc::new(highlighting::Theme::default())
+    }
     use std::io::Write;
 
     #[test]
@@ -773,7 +778,7 @@ mod tests {
     fn parent_entry_gets_message_content_without_fs_access() {
         let dir = tempfile::tempdir().unwrap();
         let entry = Entry::parent(dir.path().to_str().unwrap());
-        let preview = PopupPreview::new(Some(entry));
+        let preview = PopupPreview::new(Some(entry), test_syn_theme());
 
         // Content is pre-set (message), never computed from the filesystem.
         assert!(preview.content.is_some());
@@ -791,14 +796,15 @@ mod tests {
     #[test]
     fn regular_entry_has_lazy_content() {
         let tmp = tempfile::NamedTempFile::new().unwrap();
-        let preview = PopupPreview::new(Some(Entry::new(tmp.path().to_path_buf())));
+        let preview =
+            PopupPreview::new(Some(Entry::new(tmp.path().to_path_buf())), test_syn_theme());
 
         assert!(preview.content.is_none());
     }
 
     #[test]
     fn paging_moves_by_viewport() {
-        let mut preview = PopupPreview::new(None);
+        let mut preview = PopupPreview::new(None, test_syn_theme());
         preview.viewport_height = 20;
 
         preview.page_down();

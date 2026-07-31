@@ -434,6 +434,20 @@ impl App {
         }
     }
 
+    /// Swaps the active theme and rebuilds everything derived from it.
+    pub(crate) fn set_theme(&mut self, theme: Theme) {
+        self.syn_theme = std::sync::Arc::new(theme.to_syntect_theme());
+        self.theme = theme;
+        // Drop the cached preview so it is rebuilt with the new colours.
+        if self
+            .preview
+            .as_ref()
+            .is_some_and(|p| p.selected().is_some())
+        {
+            self.preview = None;
+        }
+    }
+
     /// Transient footer notice for successful operations.
     pub(crate) fn ok_status(&mut self, msg: String) {
         self.footer.set_status(msg, false);
@@ -935,7 +949,7 @@ impl App {
                 self.config = config;
                 if theme_changed {
                     match Theme::load_theme(Some(&theme_name)) {
-                        Ok(theme) => self.theme = theme,
+                        Ok(theme) => self.set_theme(theme),
                         Err(e) => {
                             self.err_status(format!("Cannot load theme '{theme_name}': {e}"));
                         }
@@ -1039,7 +1053,7 @@ impl App {
 
         match Theme::load_theme(Some(name)) {
             Ok(theme) => {
-                self.theme = theme;
+                self.set_theme(theme);
                 self.config.theme = name.to_string();
                 self.ok_status(format!("Theme: {name}"));
             }
@@ -1385,7 +1399,7 @@ impl App {
                             self.ui_config.active_about_popup = false;
                             self.ui_config.active_preview_popup =
                                 !self.ui_config.active_preview_popup;
-                            self.preview = Some(PopupPreview::new(Some(e)));
+                            self.preview = Some(PopupPreview::new(Some(e), self.syn_theme.clone()));
                         }
                         EntryKind::Parent => log::warn!("Cannot preview parent directory."),
                         EntryKind::Unknown => log::warn!("Unknown file type - cannot preview"),

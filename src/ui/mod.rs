@@ -95,11 +95,16 @@ pub struct App {
     watched_dirs: [PathBuf; 2],
     /// When the last filesystem event arrived; reload fires after 150 ms silence.
     fs_debounce: Option<Instant>,
+    /// Syntax colours derived from the active theme. Built once here and
+    /// shared with every preview (and its background loader) instead of being
+    /// rebuilt per preview.
+    syn_theme: Arc<syntect::highlighting::Theme>,
 }
 
 impl App {
     pub fn new(theme: Theme, config: Config) -> Self {
         let panes = Panes::new(&config);
+        let syn_theme = Arc::new(theme.to_syntect_theme());
         let current_directory = config.get_initial_dir();
         let header = Header::new(current_directory);
         let keymap = keymap::build_keymap(&config);
@@ -148,6 +153,7 @@ impl App {
             _fs_watcher,
             watched_dirs,
             fs_debounce: None,
+            syn_theme,
         }
     }
 
@@ -379,7 +385,8 @@ impl App {
                 let shown_path = shown.path.clone();
                 let current = self.panes.get_active_pane().get_selected_entry();
                 if current.as_ref().map(|e| &e.path) != Some(&shown_path) {
-                    self.preview = current.map(|e| PopupPreview::new(Some(e)));
+                    self.preview =
+                        current.map(|e| PopupPreview::new(Some(e), self.syn_theme.clone()));
                 }
             }
             if let Some(preview) = self.preview.as_mut() {

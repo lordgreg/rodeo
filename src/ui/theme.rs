@@ -1,15 +1,17 @@
 use std::fs;
 use std::io;
-use std::io::Cursor;
 use std::io::Error;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 
 use log::info;
 use ratatui::style::Color;
 use serde::{Deserialize, Serialize};
-use syntect::highlighting::Theme as SynTheme;
-use syntect::highlighting::ThemeSet;
+use syntect::highlighting::{
+    Color as SynColor, FontStyle, ScopeSelectors, StyleModifier, Theme as SynTheme, ThemeItem,
+    ThemeSettings,
+};
 
 use crate::config::CONFIG_DIR;
 
@@ -148,293 +150,231 @@ pub struct Theme {
     pub colors: Colors,
 }
 
+/// A slot in the palette, used to describe syntax colours without repeating
+/// hex strings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Role {
+    Foreground,
+    Background,
+    Muted,
+    Primary,
+    Secondary,
+    Success,
+    Warning,
+    Error,
+    Info,
+    Highlight,
+    Accent1,
+    Accent2,
+    Accent3,
+}
+
+/// Scope → palette mapping for syntax highlighting.
+///
+/// One colour per *role* (keyword, type, function, string, number, …) so a
+/// file reads consistently. syntect scores selectors by specificity, so a more
+/// specific rule wins regardless of the order here.
+///
+/// Scope names were read out of the bundled Sublime grammars rather than
+/// guessed — guessing is what left type names and macros uncoloured before
+/// (Rust emits `entity.name.struct`, not `entity.name.type.struct`, and
+/// `support.macro`, not `support.function.macro`).
+///
+/// Note on `storage.type`: these grammars use it both for declaration keywords
+/// (Rust `let`/`fn`, Python `class`/`def`) and for primitive type names
+/// (`u64`, `str`) — `let` and `u64` carry the *identical* scope. It is
+/// therefore mapped to the keyword colour, since declaration keywords are far
+/// more common; real type names arrive as `entity.name.*` / `support.type` and
+/// get the type colour.
+const SYNTAX_RULES: &[(&str, Role, FontStyle)] = &[
+    // Fallback for identifiers; anything unmatched uses settings.foreground.
+    (
+        "source, text, variable",
+        Role::Foreground,
+        FontStyle::empty(),
+    ),
+    // Comments.
+    (
+        "comment, punctuation.definition.comment",
+        Role::Muted,
+        FontStyle::ITALIC,
+    ),
+    // Punctuation and separators stay quiet, uniformly.
+    (
+        "punctuation, punctuation.separator, punctuation.terminator, \
+         punctuation.accessor, punctuation.section, punctuation.definition, \
+         meta.brace",
+        Role::Muted,
+        FontStyle::empty(),
+    ),
+    // Keywords: `use`, `pub`, `let`, `fn`, `struct`, `impl`, `class`, `def`.
+    (
+        "keyword, keyword.other, keyword.declaration, storage, \
+         storage.modifier, storage.type",
+        Role::Primary,
+        FontStyle::empty(),
+    ),
+    (
+        "keyword.control, keyword.control.flow, keyword.control.conditional, \
+         keyword.control.import, keyword.control.exception",
+        Role::Primary,
+        FontStyle::BOLD,
+    ),
+    // Operators.
+    (
+        "keyword.operator, punctuation.definition.generic",
+        Role::Secondary,
+        FontStyle::empty(),
+    ),
+    // Type names — distinct from the keywords that introduce them.
+    (
+        "entity.name.type, entity.name.class, entity.name.struct, \
+         entity.name.enum, entity.name.trait, entity.name.interface, \
+         entity.name.impl, entity.name.union, entity.name.namespace, \
+         support.type, support.class, entity.other.inherited-class",
+        Role::Accent2,
+        FontStyle::empty(),
+    ),
+    // Functions and macros: definitions and calls share a colour.
+    (
+        "entity.name.function, variable.function, support.function, \
+         support.macro, entity.name.macro",
+        Role::Info,
+        FontStyle::empty(),
+    ),
+    // Strings.
+    (
+        "string, string.quoted, string.regexp, markup.raw, markup.inserted",
+        Role::Success,
+        FontStyle::empty(),
+    ),
+    // Interpolation inside strings must not look like string content.
+    (
+        "constant.character.escape, punctuation.definition.template-expression, \
+         meta.interpolation, string.interpolated",
+        Role::Warning,
+        FontStyle::empty(),
+    ),
+    // Numbers, booleans, null, self/this.
+    (
+        "constant, constant.numeric, constant.language, constant.other, \
+         variable.language, support.constant",
+        Role::Accent1,
+        FontStyle::empty(),
+    ),
+    // Parameters and attributes.
+    (
+        "variable.parameter, entity.other.attribute-name, \
+         entity.name.label, meta.annotation, meta.attribute",
+        Role::Accent3,
+        FontStyle::empty(),
+    ),
+    // Preprocessor / attributes-as-metadata.
+    (
+        "meta.preprocessor, keyword.other.preprocessor",
+        Role::Warning,
+        FontStyle::empty(),
+    ),
+    // Markup tags (HTML/XML/JSX) — previously coloured as operators.
+    (
+        "entity.name.tag, punctuation.definition.tag",
+        Role::Primary,
+        FontStyle::empty(),
+    ),
+    // Anything the grammar flags as broken.
+    (
+        "invalid, invalid.illegal, markup.deleted",
+        Role::Error,
+        FontStyle::empty(),
+    ),
+    ("invalid.deprecated", Role::Warning, FontStyle::empty()),
+    // Markdown and friends.
+    (
+        "markup.heading, entity.name.section",
+        Role::Highlight,
+        FontStyle::BOLD,
+    ),
+    ("markup.list, markup.quote", Role::Muted, FontStyle::empty()),
+    (
+        "markup.underline.link, markup.link",
+        Role::Info,
+        FontStyle::UNDERLINE,
+    ),
+    ("markup.italic", Role::Foreground, FontStyle::ITALIC),
+    ("markup.bold", Role::Foreground, FontStyle::BOLD),
+    (
+        "markup.changed, meta.diff",
+        Role::Warning,
+        FontStyle::empty(),
+    ),
+];
+
 impl Theme {
+    /// Builds a syntect theme from this palette.
+    ///
+    /// The mapping is a table of (scope selector, palette role, font style)
+    /// rather than a formatted XML plist: no runtime parsing, no panic on a
+    /// malformed colour, and the rules can be unit tested. Scope names follow
+    /// what the bundled Sublime grammars actually emit.
     pub fn to_syntect_theme(&self) -> SynTheme {
-        let colors = &self.colors;
+        let settings = ThemeSettings {
+            foreground: Some(self.syn(Role::Foreground)),
+            background: Some(self.syn(Role::Background)),
+            ..ThemeSettings::default()
+        };
 
-        let output = format!(
-            r#"<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-    <dict>
-        <key>name</key>
-        <string>{name}</string>
-        <key>author</key>
-        <string>rodeo</string>
-        <key>settings</key>
-        <array>
-            <dict>
-                <key>settings</key>
-                <dict>
-                    <key>background</key>
-                    <string>{bg}</string>
-                    <key>foreground</key>
-                    <string>{fg}</string>
-                </dict>
-            </dict>
-            <dict>
-                <key>name</key>
-                <string>Text</string>
-                <key>scope</key>
-                <string>source, text, variable, variable.other, variable.other.member,
-                    variable.function, punctuation.definition, punctuation.section,
-                    punctuation.terminator, punctuation.accessor</string>
-                <key>settings</key>
-                <dict>
-                    <key>foreground</key>
-                    <string>{fg}</string>
-                </dict>
-            </dict>
-            <dict>
-                <key>name</key>
-                <string>Comment</string>
-                <key>scope</key>
-                <string>comment, comment.line, comment.line.double-slash,
-                    comment.line.double-dash, comment.line.number-sign, comment.block,
-                    comment.block.documentation, punctuation.definition.comment,
-                    meta.documentation</string>
-                <key>settings</key>
-                <dict>
-                    <key>foreground</key>
-                    <string>{muted}</string>
-                    <key>fontStyle</key>
-                    <string>italic</string>
-                </dict>
-            </dict>
-            <dict>
-                <key>name</key>
-                <string>Punctuation</string>
-                <key>scope</key>
-                <string>punctuation.separator, punctuation.separator.comma,
-                    punctuation.separator.colon, punctuation.separator.semicolon,
-                    punctuation.separator.dot-access, markup.quote,
-                    markup.link.url</string>
-                <key>settings</key>
-                <dict>
-                    <key>foreground</key>
-                    <string>{muted}</string>
-                </dict>
-            </dict>
-            <dict>
-                <key>name</key>
-                <string>Keyword</string>
-                <key>scope</key>
-                <string>keyword, keyword.other, keyword.other.unit</string>
-                <key>settings</key>
-                <dict>
-                    <key>foreground</key>
-                    <string>{primary}</string>
-                </dict>
-            </dict>
-            <dict>
-                <key>name</key>
-                <string>Keyword Control</string>
-                <key>scope</key>
-                <string>keyword.control, keyword.control.flow, keyword.control.conditional,
-                    keyword.control.import, keyword.control.exception,
-                    keyword.control.return</string>
-                <key>settings</key>
-                <dict>
-                    <key>foreground</key>
-                    <string>{primary}</string>
-                    <key>fontStyle</key>
-                    <string>bold</string>
-                </dict>
-            </dict>
-            <dict>
-                <key>name</key>
-                <string>Operator</string>
-                <key>scope</key>
-                <string>keyword.operator, keyword.operator.assignment,
-                    keyword.operator.arithmetic, keyword.operator.logical,
-                    keyword.operator.comparison, entity.name.tag,
-                    entity.name.label</string>
-                <key>settings</key>
-                <dict>
-                    <key>foreground</key>
-                    <string>{secondary}</string>
-                </dict>
-            </dict>
-            <dict>
-                <key>name</key>
-                <string>String</string>
-                <key>scope</key>
-                <string>string, string.quoted, string.quoted.double, string.quoted.single,
-                    string.quoted.triple, string.quoted.raw, string.regexp, string.other,
-                    markup.raw, markup.raw.block, markup.inserted</string>
-                <key>settings</key>
-                <dict>
-                    <key>foreground</key>
-                    <string>{success}</string>
-                </dict>
-            </dict>
-            <dict>
-                <key>name</key>
-                <string>Storage Modifier</string>
-                <key>scope</key>
-                <string>storage, storage.modifier, storage.modifier.lifetime,
-                    storage.modifier.mut</string>
-                <key>settings</key>
-                <dict>
-                    <key>foreground</key>
-                    <string>{warning}</string>
-                </dict>
-            </dict>
-            <dict>
-                <key>name</key>
-                <string>Storage Type</string>
-                <key>scope</key>
-                <string>storage.type, storage.type.class, storage.type.struct,
-                    storage.type.enum, storage.type.trait, storage.type.function</string>
-                <key>settings</key>
-                <dict>
-                    <key>foreground</key>
-                    <string>{warning}</string>
-                    <key>fontStyle</key>
-                    <string>bold</string>
-                </dict>
-            </dict>
-            <dict>
-                <key>name</key>
-                <string>Invalid</string>
-                <key>scope</key>
-                <string>invalid, invalid.illegal, invalid.deprecated, markup.deleted</string>
-                <key>settings</key>
-                <dict>
-                    <key>foreground</key>
-                    <string>{error}</string>
-                </dict>
-            </dict>
-            <dict>
-                <key>name</key>
-                <string>Support</string>
-                <key>scope</key>
-                <string>support.function, support.function.builtin, support.function.macro,
-                    support.type, support.type.builtin, support.class,
-                    support.class.builtin, support.module, support.constant, markup.link,
-                    markup.link.text, markup.list, markup.list.numbered,
-                    markup.list.unnumbered</string>
-                <key>settings</key>
-                <dict>
-                    <key>foreground</key>
-                    <string>{info}</string>
-                </dict>
-            </dict>
-            <dict>
-                <key>name</key>
-                <string>Entity</string>
-                <key>scope</key>
-                <string>entity.name.function, entity.name.section,
-                    entity.other.attribute-name, entity.other.inherited-class</string>
-                <key>settings</key>
-                <dict>
-                    <key>foreground</key>
-                    <string>{highlight}</string>
-                </dict>
-            </dict>
-            <dict>
-                <key>name</key>
-                <string>Entity Type</string>
-                <key>scope</key>
-                <string>entity.name.type, entity.name.type.class, entity.name.type.struct,
-                    entity.name.type.enum, entity.name.type.trait,
-                    entity.name.type.interface, markup.heading, markup.heading.1,
-                    markup.heading.2, markup.heading.3, markup.heading.4,
-                    markup.heading.5, markup.heading.6</string>
-                <key>settings</key>
-                <dict>
-                    <key>foreground</key>
-                    <string>{highlight}</string>
-                    <key>fontStyle</key>
-                    <string>bold</string>
-                </dict>
-            </dict>
-            <dict>
-                <key>name</key>
-                <string>Constant</string>
-                <key>scope</key>
-                <string>constant.numeric, constant.numeric.float, constant.numeric.integer,
-                    constant.language, constant.language.boolean,
-                    variable.language</string>
-                <key>settings</key>
-                <dict>
-                    <key>foreground</key>
-                    <string>{accent1}</string>
-                </dict>
-            </dict>
-            <dict>
-                <key>name</key>
-                <string>Character</string>
-                <key>scope</key>
-                <string>constant.character, constant.character.escape, constant.other,
-                    constant.other.placeholder</string>
-                <key>settings</key>
-                <dict>
-                    <key>foreground</key>
-                    <string>{accent2}</string>
-                </dict>
-            </dict>
-            <dict>
-                <key>name</key>
-                <string>Parameter</string>
-                <key>scope</key>
-                <string>variable.parameter, variable.parameter.function,
-                    entity.name.function.preprocessor, meta.annotation,
-                    meta.annotation.identifier, meta.preprocessor</string>
-                <key>settings</key>
-                <dict>
-                    <key>foreground</key>
-                    <string>{accent3}</string>
-                </dict>
-            </dict>
-            <dict>
-                <key>name</key>
-                <string>Emphasis</string>
-                <key>scope</key>
-                <string>markup.italic, markup.underline, markup.strikethrough</string>
-                <key>settings</key>
-                <dict>
-                    <key>foreground</key>
-                    <string>{accent3}</string>
-                    <key>fontStyle</key>
-                    <string>italic</string>
-                </dict>
-            </dict>
-            <dict>
-                <key>name</key>
-                <string>Strong</string>
-                <key>scope</key>
-                <string>markup.bold</string>
-                <key>settings</key>
-                <dict>
-                    <key>foreground</key>
-                    <string>{accent3}</string>
-                    <key>fontStyle</key>
-                    <string>bold</string>
-                </dict>
-            </dict>
-        </array>
-    </dict>
-</plist>
-"#,
-            name = self.name,
-            bg = colors.background,
-            fg = colors.foreground,
-            muted = colors.muted,
-            primary = colors.primary,
-            secondary = colors.secondary,
-            success = colors.success,
-            warning = colors.warning,
-            error = colors.error,
-            info = colors.info,
-            highlight = colors.highlight,
-            accent1 = colors.accent1,
-            accent2 = colors.accent2,
-            accent3 = colors.accent3,
-        );
+        let scopes = SYNTAX_RULES
+            .iter()
+            .filter_map(|(selector, role, font)| {
+                let scope = ScopeSelectors::from_str(selector)
+                    .map_err(|e| log::warn!("invalid scope selector '{selector}': {e}"))
+                    .ok()?;
+                Some(ThemeItem {
+                    scope,
+                    style: StyleModifier {
+                        foreground: Some(self.syn(*role)),
+                        background: None,
+                        font_style: Some(*font),
+                    },
+                })
+            })
+            .collect();
 
-        let mut cursor = Cursor::new(output);
-        ThemeSet::load_from_reader(&mut cursor).expect("failed to load generated theme")
+        SynTheme {
+            name: Some(self.name.clone()),
+            author: Some("rodeo".to_string()),
+            settings,
+            scopes,
+        }
+    }
+
+    /// Palette lookup in syntect's colour type.
+    fn syn(&self, role: Role) -> SynColor {
+        let hex = match role {
+            Role::Foreground => &self.colors.foreground,
+            Role::Background => &self.colors.background,
+            Role::Muted => &self.colors.muted,
+            Role::Primary => &self.colors.primary,
+            Role::Secondary => &self.colors.secondary,
+            Role::Success => &self.colors.success,
+            Role::Warning => &self.colors.warning,
+            Role::Error => &self.colors.error,
+            Role::Info => &self.colors.info,
+            Role::Highlight => &self.colors.highlight,
+            Role::Accent1 => &self.colors.accent1,
+            Role::Accent2 => &self.colors.accent2,
+            Role::Accent3 => &self.colors.accent3,
+        };
+
+        match Color::hex_to_color(hex) {
+            Color::Rgb(r, g, b) => SynColor { r, g, b, a: 0xFF },
+            _ => SynColor {
+                r: 0,
+                g: 0,
+                b: 0,
+                a: 0xFF,
+            },
+        }
     }
 
     /// Loads a theme by name (looked up along [`theme_dirs`]) or by path when
@@ -588,6 +528,129 @@ mod tests {
         let theme = Theme::load_theme(Some("definitely-not-a-theme"))
             .expect("unknown theme must fall back, not fail");
         assert!(!theme.name.is_empty());
+    }
+
+    /// Colour syntect resolves for a scope stack, as an `#rrggbb` string.
+    fn color_for(theme: &Theme, scope: &str) -> String {
+        use syntect::highlighting::{HighlightState, Highlighter, RangedHighlightIterator};
+        use syntect::parsing::ScopeStack;
+
+        let syn = theme.to_syntect_theme();
+        let highlighter = Highlighter::new(&syn);
+        let stack = ScopeStack::from_str(scope).expect("valid scope");
+        let mut state = HighlightState::new(&highlighter, ScopeStack::new());
+        let ops = [(
+            0usize,
+            syntect::parsing::ScopeStackOp::Push(stack.scopes[0]),
+        )];
+        let text = "x";
+        let mut iter = RangedHighlightIterator::new(&mut state, &ops, text, &highlighter);
+        let (style, _, _) = iter.next().expect("one region");
+        format!(
+            "#{:02x}{:02x}{:02x}",
+            style.foreground.r, style.foreground.g, style.foreground.b
+        )
+    }
+
+    fn test_theme() -> Theme {
+        Theme::builtin().expect("built-in theme")
+    }
+
+    #[test]
+    fn every_scope_selector_parses() {
+        // A typo in a selector would otherwise be silently dropped.
+        for (selector, _, _) in SYNTAX_RULES {
+            assert!(
+                ScopeSelectors::from_str(selector).is_ok(),
+                "invalid selector: {selector}"
+            );
+        }
+        assert_eq!(
+            test_theme().to_syntect_theme().scopes.len(),
+            SYNTAX_RULES.len()
+        );
+    }
+
+    #[test]
+    fn keywords_share_one_colour() {
+        let theme = test_theme();
+        let primary = theme.colors.primary.clone();
+        // Rust `use`, `pub`, `let`/`fn`/`struct` (all storage.type*), Python `def`.
+        for scope in [
+            "keyword.other.rust",
+            "storage.modifier.rust",
+            "storage.type.rust",
+            "storage.type.function.rust",
+            "storage.type.class.python",
+        ] {
+            assert_eq!(color_for(&theme, scope), primary, "scope {scope}");
+        }
+    }
+
+    #[test]
+    fn type_names_differ_from_keywords() {
+        let theme = test_theme();
+        // Regression: these used to fall through to plain foreground because
+        // the rules said entity.name.type.struct, which no grammar emits.
+        for scope in [
+            "entity.name.struct.rust",
+            "entity.name.impl.rust",
+            "entity.name.class.python",
+        ] {
+            assert_eq!(
+                color_for(&theme, scope),
+                theme.colors.accent2,
+                "scope {scope}"
+            );
+        }
+    }
+
+    #[test]
+    fn functions_and_macros_share_one_colour() {
+        let theme = test_theme();
+        // Regression: `println!` (support.macro) used to be uncoloured.
+        for scope in [
+            "entity.name.function.rust",
+            "support.macro.rust",
+            "variable.function.python",
+        ] {
+            assert_eq!(color_for(&theme, scope), theme.colors.info, "scope {scope}");
+        }
+    }
+
+    #[test]
+    fn comments_strings_and_numbers_use_their_roles() {
+        let theme = test_theme();
+        assert_eq!(
+            color_for(&theme, "comment.line.double-slash.rust"),
+            theme.colors.muted
+        );
+        assert_eq!(
+            color_for(&theme, "string.quoted.double.rust"),
+            theme.colors.success
+        );
+        assert_eq!(
+            color_for(&theme, "constant.numeric.integer.decimal.rust"),
+            theme.colors.accent1
+        );
+        assert_eq!(
+            color_for(&theme, "variable.parameter.rust"),
+            theme.colors.accent3
+        );
+    }
+
+    #[test]
+    fn markup_tags_are_not_operator_coloured() {
+        let theme = test_theme();
+        // Regression: entity.name.tag was lumped in with keyword.operator.
+        assert_eq!(
+            color_for(&theme, "entity.name.tag.block.any.html"),
+            theme.colors.primary
+        );
+        assert_eq!(
+            color_for(&theme, "entity.other.attribute-name.class.html"),
+            theme.colors.accent3
+        );
     }
 
     #[test]
