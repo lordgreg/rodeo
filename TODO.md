@@ -411,7 +411,8 @@ These are small, self-contained fixes with high impact-to-effort ratio. Do them 
   - Resolved: added 3 tests for hex color parsing (`Color::hex_to_color`) and full theme YAML deserialization. File-loading tests skipped (load_from_file calls process::exit on error).
   - **P1** | **Files:** `src/ui/theme.rs` | **Hints:** Test hex color parsing (valid, invalid, short strings). Test loading a known theme file. | **Effort:** S
 
-- [ ] **5.1.8 Add integration test: app starts and renders without panic**
+- [x] **5.1.8 Add integration test: app starts and renders without panic**
+  - Resolved: `tests/render.rs` drives `App::render()` into a headless `TestBackend` — populated directory (files, dirs, hidden, symlinks incl. broken), seven terminal sizes from 1x1 to 400x100, empty directory, icons on, and each overlay in turn.
   - **P1** | **Files:** `tests/integration.rs` (new) | **Hints:** Use `ratatui::Terminal::new(CrosstermBackend::new(io::sink()))` or `ratatui::backend::TestBackend`. Run one frame of `App::render()`. Assert no panic. | **Effort:** M
 
 - [x] **5.1.9 Add integration tests for file operations (requires temp dirs)**
@@ -428,14 +429,17 @@ These are small, self-contained fixes with high impact-to-effort ratio. Do them 
   - Resolved: `.github/workflows/ci.yml` — stable + beta matrix, `cargo check --all-targets`, `test --all`, `clippy --all-targets -- -D warnings`, `fmt --check`. All 17 pre-existing clippy warnings were fixed and the codebase was `cargo fmt`-normalized so the strict gates pass. NOTE: the project lives on Codeberg — this workflow needs a GitHub mirror (or a Forgejo/Woodpecker port) to actually run.
   - **P1** | **Files:** `.github/workflows/ci.yml` (new) | **Hints:** Matrix: stable + beta Rust. Steps: checkout, install Rust, cache cargo, `cargo test --all`, `cargo clippy -- -D warnings`, `cargo fmt --check`. Add `cargo check` for quick validation. | **Effort:** S
 
-- [ ] **5.2.2 Add `cargo-deny` to CI for license/security auditing**
+- [x] **5.2.2 Add `cargo-deny` to CI for license/security auditing**
+  - Resolved: `deny.toml` (licence allow-list, advisories, source pinning, targets limited to the three platforms we build) plus a CI job. Running it found and fixed a real vulnerability (crossbeam-epoch, RUSTSEC-2026-0204, via `cargo update`) and let us drop yaml-rust entirely.
   - **P2** | **Files:** `.github/workflows/ci.yml`, `deny.toml` (new) | **Hints:** `cargo install cargo-deny && cargo deny check`. Configure `deny.toml` to allow common licenses (MIT, Apache-2.0, BSD, etc). | **Effort:** S
 
-- [ ] **5.2.3 Add code coverage reporting (`cargo-llvm-cov`)**
+- [x] **5.2.3 Add code coverage reporting (`cargo-llvm-cov`)**
+  - Resolved: a CI job runs `cargo llvm-cov`, prints a summary and uploads `lcov.info` as an artifact — no coverage-service account needed.
   - Decided (2026-07-31): **`cargo-llvm-cov`** — it is the de-facto standard now, built on rustc's own source-based instrumentation (`-C instrument-coverage`), so it is accurate, cross-platform and works on stable. `tarpaulin` is the older ptrace-based tool, Linux/x86 only.
   - **P2** | **Files:** `.github/workflows/ci.yml` | **Hints:** `cargo install cargo-llvm-cov && cargo llvm-cov --all-features --lcov --output-path lcov.info`. Upload to codecov. Note that TUI code is largely untestable without a `TestBackend` harness (5.1.8), so expect a modest number. | **Effort:** M
 
-- [ ] **5.2.4 Add release build workflow (GitHub variant only for now)**
+- [x] **5.2.4 Add release build workflow (GitHub variant only for now)**
+  - Resolved: `.github/workflows/release.yml` builds linux-x64 and both macOS targets on a `v*` tag and attaches a draft release archive that carries `themes/` alongside the binary.
   - Scope (2026-07-31): GitHub Actions only — a Forgejo/Woodpecker port for Codeberg can follow once the mirror question is settled.
   - **P2** | **Files:** `.github/workflows/release.yml` (new) | **Hints:** Trigger on tag push. Build with `--release`. Upload binary as release artifact. Consider `cargo-dist` or manual matrix for linux-x64, macos-arm64, macos-x64. | **Effort:** M
 
@@ -445,7 +449,8 @@ These are small, self-contained fixes with high impact-to-effort ratio. Do them 
   - Resolved alongside the color-eyre quick win.
   - **P1** | **Files:** `src/main.rs` | **Hints:** `color_eyre::install()?;` at top. Change return type. This gives colorful, detailed error traces for all `?` propagations. | **Effort:** S
 
-- [ ] **5.3.3 Systematic `.unwrap()` / `.expect()` removal**
+- [x] **5.3.3 Systematic `.unwrap()` / `.expect()` removal**
+  - Resolved: the four remaining production sites are gone. Three were startup panics: the config path when no HOME exists, the fallback filesystem watcher, and two borrows inside the find-in-files walk. The only `expect` left is a literal regex compiled once in a `OnceLock`, with a message saying why it cannot fail. Scope was much smaller than the original L estimate — 0.11 had already removed the rest.
   - **P1** | **Files:** All `src/**/*.rs` | **Hints:** Convert panicking functions to return `Result`. Use `?` propagation. For truly unrecoverable errors (e.g., terminal init failure), use `.expect()` with a descriptive message. File listing errors should not crash — show error in pane body. | **Effort:** L
 
 - [x] **5.3.4 Add error display in footer/pane for non-fatal errors**
@@ -458,17 +463,20 @@ These are small, self-contained fixes with high impact-to-effort ratio. Do them 
   - Resolved: `src/lib.rs` documents what rodeo is and what each top-level module (`config`, `fs`, `ui`, `cli`, `logging`) is responsible for.
   - **P2** | **Files:** `src/lib.rs` | **Effort:** S
 
-- [ ] **5.4.2 Add doc comments to all public items**
+- [x] **5.4.2 Add doc comments to all public items**
+  - Resolved with a narrowed scope: every module has a `//!` block and the core types (App, Config, Theme, Colors, Pane, Panes, Entry, EntryKind, SortType/SortOrder, OpenAction) are documented. `#![warn(missing_docs)]` is deliberately *not* enabled: it reports 319 items, but most are only `pub` so integration tests can reach them, and forcing a comment onto every field produces filler.
   - **P2** | **Files:** All `src/**/*.rs` | **Hints:** Every `pub struct`, `pub fn`, `pub enum` should have `///` doc comments. Run `cargo doc --open` to verify. Enable `#![warn(missing_docs)]` once most items are documented. | **Effort:** M
 
-- [ ] **5.4.3 Update README with current status, installation instructions, keybindings**
+- [x] **5.4.3 Update README with current status, installation instructions, keybindings**
+  - Resolved: features, installation (including the theme search path), the full config file, keybinding table, commands and development commands. The old hint here was stale — it asked for `bat`/`file` runtime deps that no longer exist.
   - **P2** | **Files:** `README.md` | **Hints:** Add "Installation" section (`cargo install --path .` or `cargo build --release`). Add runtime deps section: `bat`, `file` commands (until syntect replaces bat). Add keybinding table. Link to this TODO. | **Effort:** M
 
 - [ ] **5.4.5 Choose a licence**
   - Found 2026-07-31 while writing the README: there is no `LICENSE` file and no `license` field in `Cargo.toml`, so the repository is implicitly all-rights-reserved despite being public. Blocks any release, and `cargo publish` refuses without it.
   - **P1** | **Files:** `LICENSE` (new), `Cargo.toml`, `README.md` | **Hints:** MIT or Apache-2.0 (or the usual dual `MIT OR Apache-2.0`) match the Rust ecosystem; GPL-3.0 if you want copyleft. Add `license = "..."` to `Cargo.toml` so the crate metadata matches. | **Effort:** S
 
-- [ ] **5.4.4 Add man page or `--help` improvement**
+- [x] **5.4.4 Add man page or `--help` improvement**
+  - Resolved: richer `--help` (value names, config/theme locations, examples) and `docs/rodeo.1` generated from the same clap definition via `cargo run --example gen_man`, with `tests/man.rs` failing if the checked-in page drifts.
   - **P3** | **Files:** `src/cli.rs`, `docs/rodeo.1` (new) | **Hints:** Enhance clap doc strings. Optional: generate man page with `clap_mangen`. | **Effort:** S
 
 ---
@@ -648,9 +656,9 @@ Phase 0 (Bug Fixes) ────────────────────
 | Phase 2: Search | 5 | 0 | — |
 | Phase 3: Preview | 12 | 0 | — |
 | Phase 4: Power User | 8 | 0 | — |
-| Phase 5: Infrastructure | 13 | 9 | CI extras, unwrap sweep, docs, licence |
+| Phase 5: Infrastructure | 21 | 1 | only the licence choice (5.4.5) |
 | Phase 6: Pre-release UI Polish | 11 | 0 | complete |
-| **Total** | **104** | **9** | |
+| **Total** | **112** | **1** | |
 
 ---
 
