@@ -91,11 +91,25 @@ active_pane = "Left"                # Left | Right
 editor = "nvim"                     # defaults to $VISUAL, then $EDITOR, then vi
 icons = false                       # file-type glyphs; needs a Nerd Font
 
-# Optional: remap any single-key action. Unlisted actions keep their defaults.
+# Optional. The key is on the left, what it does on the right: either an
+# action name, a `:command`, or "none" to free the key.
 [keybindings]
-quit = "Q"
-preview = "v"
+"Q" = "quit"                 # add a key for a built-in action
+"ctrl+r" = "refresh"         # modifiers work: ctrl+, alt+, shift+
+"z" = ":term lazygit"        # run a command, exactly as if typed after `:`
+"f9" = ":!git status --short"
+"q" = "none"                 # free a key
 ```
+
+Overriding a key rodeo already uses is allowed, but it says so on startup —
+and warns loudly if an action is left with no key at all. `:so` reloads the
+bindings without restarting.
+
+Action names: `open` `parent` `mkdir` `touch` `first` `last` `select`
+`select_all` `glob` `sizes` `quit` `left` `right` `switch` `about` `help`
+`preview` `search` `filter` `find` `palette` `rename` `create` `yank` `paste`
+`paste_move` `delete_chord` `copy` `move` `delete` `down` `up` `hidden`
+`refresh` `sort_next` `sort_prev` `sort_reverse` `bulk_rename`
 
 `:so` reloads the config at runtime, `:w` writes the current settings back.
 

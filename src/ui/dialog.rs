@@ -12,10 +12,21 @@ use ratatui::{
     layout::{Alignment, Rect},
     style::Style,
     text::Line,
-    widgets::{Block, Borders, Clear, Padding, Paragraph},
+    widgets::{Block, Borders, Clear, Padding, Paragraph, Wrap},
 };
 
-use crate::ui::{component::Component, textinput::TextInput, theme::Theme, uiconfig::UiConfig};
+use crate::ui::{
+    component::{Component, centered_popup, content_size},
+    textinput::TextInput,
+    theme::Theme,
+    uiconfig::UiConfig,
+};
+
+/// Dialogs never get narrower than this, so a short question still reads as a
+/// dialog rather than a sliver.
+const MIN_DIALOG_WIDTH: u16 = 34;
+/// …nor wider than this, which is plenty for a question or a warning list.
+const MAX_DIALOG_WIDTH: u16 = 76;
 
 /// What the dialog was opened for — determines the follow-up action on confirm/submit.
 #[derive(Debug)]
@@ -179,15 +190,20 @@ impl Component for Dialog {
             DialogKind::Message { text } => text.lines().map(Line::from).collect::<Vec<Line>>(),
         };
 
-        // +2 for borders; clamped so long content (e.g., `:!` output) stays on screen.
-        let height = (content_lines.len() as u16 + 2).min(area.height.saturating_sub(2));
-        let width = area.width / 2;
-        let popup_area = Rect {
-            x: area.x + area.width / 4,
-            y: area.y + (area.height.saturating_sub(height)) / 2,
-            width,
-            height,
-        };
+        // Sized to its content: half the screen cut keybinding warnings and
+        // command output off mid-word on a narrow terminal, and wasted two
+        // thirds of the box on a short question.
+        let longest = content_lines
+            .iter()
+            .map(|line| line.width() as u16)
+            .max()
+            .unwrap_or_default();
+        let popup_area = centered_popup(
+            area,
+            content_size(longest, content_lines.len()),
+            (MIN_DIALOG_WIDTH, 3),
+            (MAX_DIALOG_WIDTH, area.height.saturating_sub(2)),
+        );
 
         frame.render_widget(Clear, popup_area);
 
@@ -204,6 +220,7 @@ impl Component for Dialog {
         frame.render_widget(
             Paragraph::new(content_lines)
                 .block(block)
+                .wrap(Wrap { trim: false })
                 .alignment(Alignment::Left),
             popup_area,
         );

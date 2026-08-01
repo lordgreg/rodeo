@@ -1,22 +1,35 @@
 //! Configurable keybindings.
 //!
-//! Single-key actions are table-driven: [`default_keymap`] holds the defaults
-//! and [`build_keymap`] merges the user's `[keybindings]` overrides on top.
+//! Every key rodeo reacts to in normal mode lives in one table: plain keys,
+//! Ctrl/Shift/Alt combinations, and keys bound to a command line. The defaults
+//! are in [`default_keymap`], and `[keybindings]` in the config file overrides
+//! them:
+//!
+//! ```toml
+//! [keybindings]
+//! "ctrl+f" = "filter"          # an action name
+//! "g" = ":term lazygit"        # or a command, run as if typed after `:`
+//! "q" = "none"                 # or nothing, to free the key
+//! ```
+//!
+//! Overriding a key that rodeo already uses is allowed but reported, because
+//! it is otherwise easy to make a feature unreachable by accident.
 
-use crossterm::event::KeyCode;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::config::Config;
 
-/// Every user action triggerable by a single (unmodified) key in normal mode.
-/// Chords (`dd`), Ctrl/Shift combos, and Esc are not configurable yet.
+/// Every user action triggerable by a key in normal mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
     OpenEntry,
     ParentDir,
     Mkdir,
+    Touch,
     GotoFirst,
     GotoLast,
     ToggleSelect,
+    SelectAll,
     SelectGlob,
     DirSizes,
     Quit,
@@ -27,6 +40,8 @@ pub enum Action {
     Help,
     Preview,
     Search,
+    FilterRegex,
+    FindInFiles,
     CommandPalette,
     Rename,
     Create,
@@ -39,138 +54,419 @@ pub enum Action {
     Delete,
     MoveDown,
     MoveUp,
+    ToggleHidden,
+    Refresh,
+    SortNext,
+    SortPrev,
+    SortReverse,
     BulkRename,
 }
 
 impl Action {
+    /// Name used in the config file.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::BulkRename => "bulk_rename",
+            Self::OpenEntry => "open",
+            Self::ParentDir => "parent",
+            Self::Mkdir => "mkdir",
+            Self::Touch => "touch",
+            Self::GotoFirst => "first",
+            Self::GotoLast => "last",
+            Self::ToggleSelect => "select",
+            Self::SelectAll => "select_all",
+            Self::SelectGlob => "glob",
+            Self::DirSizes => "sizes",
+            Self::Quit => "quit",
+            Self::PaneLeft => "left",
+            Self::PaneRight => "right",
+            Self::PaneToggle => "switch",
+            Self::About => "about",
+            Self::Help => "help",
+            Self::Preview => "preview",
+            Self::Search => "search",
+            Self::FilterRegex => "filter",
+            Self::FindInFiles => "find",
+            Self::CommandPalette => "palette",
+            Self::Rename => "rename",
+            Self::Create => "create",
+            Self::Yank => "yank",
+            Self::Paste => "paste",
+            Self::PasteMove => "paste_move",
+            Self::DeleteChord => "delete_chord",
+            Self::Copy => "copy",
+            Self::Move => "move",
+            Self::Delete => "delete",
+            Self::MoveDown => "down",
+            Self::MoveUp => "up",
+            Self::ToggleHidden => "hidden",
+            Self::Refresh => "refresh",
+            Self::SortNext => "sort_next",
+            Self::SortPrev => "sort_prev",
+            Self::SortReverse => "sort_reverse",
+        }
+    }
+
+    /// Every action, so a config name can be resolved and mistakes listed.
+    pub const ALL: &'static [Self] = &[
+        Self::OpenEntry,
+        Self::ParentDir,
+        Self::Mkdir,
+        Self::Touch,
+        Self::GotoFirst,
+        Self::GotoLast,
+        Self::ToggleSelect,
+        Self::SelectAll,
+        Self::SelectGlob,
+        Self::DirSizes,
+        Self::Quit,
+        Self::PaneLeft,
+        Self::PaneRight,
+        Self::PaneToggle,
+        Self::About,
+        Self::Help,
+        Self::Preview,
+        Self::Search,
+        Self::FilterRegex,
+        Self::FindInFiles,
+        Self::CommandPalette,
+        Self::Rename,
+        Self::Create,
+        Self::Yank,
+        Self::Paste,
+        Self::PasteMove,
+        Self::DeleteChord,
+        Self::Copy,
+        Self::Move,
+        Self::Delete,
+        Self::MoveDown,
+        Self::MoveUp,
+        Self::ToggleHidden,
+        Self::Refresh,
+        Self::SortNext,
+        Self::SortPrev,
+        Self::SortReverse,
+        Self::BulkRename,
+    ];
+
     pub fn from_name(name: &str) -> Option<Self> {
-        Some(match name {
-            "bulk_rename" => Self::BulkRename,
-            "open" => Self::OpenEntry,
-            "parent" => Self::ParentDir,
-            "mkdir" => Self::Mkdir,
-            "first" => Self::GotoFirst,
-            "last" => Self::GotoLast,
-            "select" => Self::ToggleSelect,
-            "glob" => Self::SelectGlob,
-            "sizes" => Self::DirSizes,
-            "quit" => Self::Quit,
-            "left" => Self::PaneLeft,
-            "right" => Self::PaneRight,
-            "switch" => Self::PaneToggle,
-            "about" => Self::About,
-            "help" => Self::Help,
-            "preview" => Self::Preview,
-            "search" => Self::Search,
-            "palette" => Self::CommandPalette,
-            "rename" => Self::Rename,
-            "create" => Self::Create,
-            "yank" => Self::Yank,
-            "paste" => Self::Paste,
-            "paste_move" => Self::PasteMove,
-            "delete_chord" => Self::DeleteChord,
-            "copy" => Self::Copy,
-            "move" => Self::Move,
-            "delete" => Self::Delete,
-            "down" => Self::MoveDown,
-            "up" => Self::MoveUp,
-            _ => return None,
-        })
+        Self::ALL.iter().copied().find(|a| a.name() == name)
     }
 }
 
-/// Parses a key name from the config: either a single character (`q`, `P`,
-/// `/`, `:`) or a named key (`space`, `tab`, `enter`, `backspace`, `delete`,
-/// `up`, `down`, `left`, `right`, `f1`–`f12`).
-pub fn parse_key(s: &str) -> Option<KeyCode> {
-    let lower = s.to_lowercase();
-    match lower.as_str() {
+/// What a key does: a built-in action, or a command line to run as if it had
+/// been typed after `:`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Binding {
+    Action(Action),
+    Command(String),
+}
+
+impl Binding {
+    /// Short description used in conflict reports.
+    pub fn describe(&self) -> String {
+        match self {
+            Self::Action(action) => action.name().to_string(),
+            Self::Command(command) => format!(":{command}"),
+        }
+    }
+}
+
+/// A key plus its modifiers, normalised so a binding and a key press compare
+/// equal however they were written.
+///
+/// Shift is folded into the character it produces (`shift+g` and `G` are the
+/// same chord), because that is what terminals actually report; for keys with
+/// no character, such as the arrows, Shift is kept.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Chord {
+    pub code: KeyCode,
+    pub modifiers: KeyModifiers,
+}
+
+impl Chord {
+    pub fn new(code: KeyCode, modifiers: KeyModifiers) -> Self {
+        let mut modifiers =
+            modifiers & (KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SHIFT);
+
+        let code = match code {
+            KeyCode::Char(c) if modifiers.contains(KeyModifiers::SHIFT) => {
+                modifiers -= KeyModifiers::SHIFT;
+                c.to_ascii_uppercase()
+            }
+            KeyCode::Char(c) => c,
+            other => {
+                return Self {
+                    code: other,
+                    modifiers,
+                };
+            }
+        };
+
+        Self {
+            code: KeyCode::Char(code),
+            modifiers,
+        }
+    }
+
+    pub fn from_event(key: &KeyEvent) -> Self {
+        Self::new(key.code, key.modifiers)
+    }
+
+    /// How the chord is written in a config file, e.g. `ctrl+f`, `G`, `f5`.
+    pub fn describe(&self) -> String {
+        let mut out = String::new();
+        if self.modifiers.contains(KeyModifiers::CONTROL) {
+            out.push_str("ctrl+");
+        }
+        if self.modifiers.contains(KeyModifiers::ALT) {
+            out.push_str("alt+");
+        }
+        if self.modifiers.contains(KeyModifiers::SHIFT) {
+            out.push_str("shift+");
+        }
+        out.push_str(&match self.code {
+            KeyCode::Char(' ') => "space".to_string(),
+            KeyCode::Char(c) => c.to_string(),
+            KeyCode::F(n) => format!("f{n}"),
+            other => format!("{other:?}").to_lowercase(),
+        });
+        out
+    }
+}
+
+/// Parses `ctrl+f`, `shift+right`, `space`, `f5`, `G`, `+` …
+pub fn parse_chord(text: &str) -> Option<Chord> {
+    let mut modifiers = KeyModifiers::NONE;
+    let mut rest = text;
+
+    while let Some((head, tail)) = rest.split_once('+') {
+        // An empty head means the key itself is `+`.
+        if head.is_empty() {
+            break;
+        }
+        match head.to_lowercase().as_str() {
+            "ctrl" | "control" => modifiers |= KeyModifiers::CONTROL,
+            "shift" => modifiers |= KeyModifiers::SHIFT,
+            "alt" | "meta" | "option" => modifiers |= KeyModifiers::ALT,
+            // Not a modifier, so it must be the key.
+            _ => break,
+        }
+        rest = tail;
+    }
+
+    Some(Chord::new(parse_key_code(rest)?, modifiers))
+}
+
+/// Parses the key part: a single character or a named key.
+fn parse_key_code(text: &str) -> Option<KeyCode> {
+    match text.to_lowercase().as_str() {
         "space" => return Some(KeyCode::Char(' ')),
         "tab" => return Some(KeyCode::Tab),
-        "enter" => return Some(KeyCode::Enter),
+        "enter" | "return" => return Some(KeyCode::Enter),
         "backspace" => return Some(KeyCode::Backspace),
-        "delete" => return Some(KeyCode::Delete),
+        "delete" | "del" => return Some(KeyCode::Delete),
+        "insert" => return Some(KeyCode::Insert),
+        "home" => return Some(KeyCode::Home),
+        "end" => return Some(KeyCode::End),
+        "pageup" => return Some(KeyCode::PageUp),
+        "pagedown" => return Some(KeyCode::PageDown),
         "up" => return Some(KeyCode::Up),
         "down" => return Some(KeyCode::Down),
         "left" => return Some(KeyCode::Left),
         "right" => return Some(KeyCode::Right),
+        "esc" | "escape" => return Some(KeyCode::Esc),
         _ => {}
     }
-    if let Some(n) = lower
-        .strip_prefix('f')
+
+    if let Some(n) = text
+        .strip_prefix(['f', 'F'])
         .and_then(|n| n.parse::<u8>().ok())
         .filter(|n| (1..=12).contains(n))
     {
         return Some(KeyCode::F(n));
     }
-    let mut chars = s.chars();
+
+    let mut chars = text.chars();
     match (chars.next(), chars.next()) {
         (Some(c), None) => Some(KeyCode::Char(c)),
         _ => None,
     }
 }
 
-/// Hardcoded defaults — the bindings documented in the F1 popup.
-pub fn default_keymap() -> Vec<(KeyCode, Action)> {
-    vec![
-        (KeyCode::Enter, Action::OpenEntry),
-        (KeyCode::F(4), Action::OpenEntry),
-        (KeyCode::Backspace, Action::ParentDir),
-        (KeyCode::F(7), Action::Mkdir),
-        (KeyCode::Char('g'), Action::GotoFirst),
-        (KeyCode::Char('G'), Action::GotoLast),
-        (KeyCode::Char('x'), Action::ToggleSelect),
-        (KeyCode::Char('B'), Action::BulkRename),
-        (KeyCode::Char('*'), Action::SelectGlob),
-        (KeyCode::Char('S'), Action::DirSizes),
-        (KeyCode::Char('q'), Action::Quit),
-        (KeyCode::F(10), Action::Quit),
-        (KeyCode::Char('h'), Action::PaneLeft),
-        (KeyCode::Char('l'), Action::PaneRight),
-        (KeyCode::Tab, Action::PaneToggle),
-        (KeyCode::Char('?'), Action::About),
-        (KeyCode::F(1), Action::Help),
-        (KeyCode::Char(' '), Action::Preview),
-        (KeyCode::Char('/'), Action::Search),
-        (KeyCode::F(3), Action::Search),
-        (KeyCode::Char(':'), Action::CommandPalette),
-        (KeyCode::Char('r'), Action::Rename),
-        (KeyCode::F(2), Action::Rename),
-        (KeyCode::Char('a'), Action::Create),
-        (KeyCode::Char('y'), Action::Yank),
-        (KeyCode::Char('p'), Action::Paste),
-        (KeyCode::Char('P'), Action::PasteMove),
-        (KeyCode::Char('d'), Action::DeleteChord),
-        (KeyCode::F(5), Action::Copy),
-        (KeyCode::F(6), Action::Move),
-        (KeyCode::Delete, Action::Delete),
-        (KeyCode::F(8), Action::Delete),
-        (KeyCode::Char('j'), Action::MoveDown),
-        (KeyCode::Down, Action::MoveDown),
-        (KeyCode::Char('k'), Action::MoveUp),
-        (KeyCode::Up, Action::MoveUp),
-    ]
+/// The active bindings, plus anything worth telling the user about the config.
+#[derive(Debug, Clone, Default)]
+pub struct Keymap {
+    bindings: Vec<(Chord, Binding)>,
+    /// Problems found while merging the user's overrides, in the order found.
+    pub warnings: Vec<String>,
 }
 
-/// Defaults plus user overrides from `config.keybindings` (action name → key
-/// name). An override replaces all default keys of that action. Invalid
-/// action names or keys are ignored with a warning.
-pub fn build_keymap(config: &Config) -> Vec<(KeyCode, Action)> {
-    let mut map = default_keymap();
-
-    for (action_name, key_name) in &config.keybindings {
-        let Some(action) = Action::from_name(action_name) else {
-            log::warn!("keybindings: unknown action '{action_name}'");
-            continue;
-        };
-        let Some(code) = parse_key(key_name) else {
-            log::warn!("keybindings: unknown key '{key_name}' for '{action_name}'");
-            continue;
-        };
-        map.retain(|(_, a)| *a != action);
-        map.push((code, action));
+impl Keymap {
+    pub fn binding_for(&self, key: &KeyEvent) -> Option<&Binding> {
+        let chord = Chord::from_event(key);
+        self.bindings
+            .iter()
+            .find(|(bound, _)| *bound == chord)
+            .map(|(_, binding)| binding)
     }
 
+    /// Keys bound to an action, for the help popup.
+    pub fn keys_for(&self, action: Action) -> Vec<String> {
+        self.bindings
+            .iter()
+            .filter(|(_, binding)| *binding == Binding::Action(action))
+            .map(|(chord, _)| chord.describe())
+            .collect()
+    }
+
+    fn set(&mut self, chord: Chord, binding: Binding) {
+        self.bindings.retain(|(bound, _)| *bound != chord);
+        self.bindings.push((chord, binding));
+    }
+
+    fn unset(&mut self, chord: Chord) {
+        self.bindings.retain(|(bound, _)| *bound != chord);
+    }
+
+    fn get(&self, chord: Chord) -> Option<&Binding> {
+        self.bindings
+            .iter()
+            .find(|(bound, _)| *bound == chord)
+            .map(|(_, binding)| binding)
+    }
+}
+
+/// The built-in bindings.
+pub fn default_keymap() -> Keymap {
+    use Action::*;
+    use KeyCode::*;
+
+    let plain = |code| Chord::new(code, KeyModifiers::NONE);
+    let ctrl = |code| Chord::new(code, KeyModifiers::CONTROL);
+    let shift = |code| Chord::new(code, KeyModifiers::SHIFT);
+
+    let defaults: Vec<(Chord, Action)> = vec![
+        (plain(Enter), OpenEntry),
+        (plain(F(4)), OpenEntry),
+        (plain(Backspace), ParentDir),
+        (plain(F(7)), Mkdir),
+        (ctrl(Char('t')), Touch),
+        (plain(Char('g')), GotoFirst),
+        (plain(Char('G')), GotoLast),
+        (plain(Char('x')), ToggleSelect),
+        (ctrl(Char('a')), SelectAll),
+        (plain(Char('B')), BulkRename),
+        (plain(Char('*')), SelectGlob),
+        (plain(Char('S')), DirSizes),
+        (plain(Char('q')), Quit),
+        (plain(F(10)), Quit),
+        (plain(Char('h')), PaneLeft),
+        (plain(Char('l')), PaneRight),
+        (plain(Tab), PaneToggle),
+        (plain(Char('?')), About),
+        (plain(F(1)), Help),
+        (plain(Char(' ')), Preview),
+        (plain(Char('/')), Search),
+        (plain(F(3)), Search),
+        (ctrl(Char('f')), FilterRegex),
+        (ctrl(Char('g')), FindInFiles),
+        (plain(Char(':')), CommandPalette),
+        (plain(Char('r')), Rename),
+        (plain(F(2)), Rename),
+        (plain(Char('a')), Create),
+        (plain(Char('y')), Yank),
+        (plain(Char('p')), Paste),
+        (plain(Char('P')), PasteMove),
+        (plain(Char('d')), DeleteChord),
+        (plain(F(5)), Copy),
+        (plain(F(6)), Move),
+        (plain(KeyCode::Delete), Action::Delete),
+        (plain(F(8)), Action::Delete),
+        (plain(Char('j')), MoveDown),
+        (plain(Down), MoveDown),
+        (plain(Char('k')), MoveUp),
+        (plain(Up), MoveUp),
+        (ctrl(Char('h')), ToggleHidden),
+        (ctrl(Char('l')), Refresh),
+        (shift(Right), SortNext),
+        (shift(Left), SortPrev),
+        (plain(Char('O')), SortReverse),
+    ];
+
+    Keymap {
+        bindings: defaults
+            .into_iter()
+            .map(|(chord, action)| (chord, Binding::Action(action)))
+            .collect(),
+        warnings: Vec::new(),
+    }
+}
+
+/// Defaults plus the user's `[keybindings]` overrides.
+///
+/// Every override that takes a key rodeo already uses is reported, and so is
+/// any action left with no key at all — silently losing a feature to a typo is
+/// the failure mode worth protecting against.
+pub fn build_keymap(config: &Config) -> Keymap {
+    let mut map = default_keymap();
+    let mut warnings = Vec::new();
+
+    // Deterministic order, otherwise the warnings shuffle between runs.
+    let mut overrides: Vec<(&String, &String)> = config.keybindings.iter().collect();
+    overrides.sort();
+
+    for (key_name, value) in overrides {
+        let Some(chord) = parse_chord(key_name) else {
+            warnings.push(format!("unknown key '{key_name}'"));
+            continue;
+        };
+
+        // `none` frees the key instead of binding it.
+        if matches!(value.to_lowercase().as_str(), "none" | "nop" | "") {
+            map.unset(chord);
+            continue;
+        }
+
+        let binding = match value.strip_prefix(':') {
+            Some(command) => Binding::Command(command.trim().to_string()),
+            None => match Action::from_name(value) {
+                Some(action) => Binding::Action(action),
+                None => {
+                    warnings.push(format!(
+                        "'{key_name}': unknown action '{value}' (a command must start with ':')"
+                    ));
+                    continue;
+                }
+            },
+        };
+
+        if let Some(existing) = map.get(chord)
+            && *existing != binding
+        {
+            warnings.push(format!(
+                "'{}' was {}, now {}",
+                chord.describe(),
+                existing.describe(),
+                binding.describe()
+            ));
+        }
+
+        map.set(chord, binding);
+    }
+
+    // Anything that can no longer be reached by any key.
+    for action in Action::ALL {
+        let bound_by_default = default_keymap()
+            .bindings
+            .iter()
+            .any(|(_, b)| *b == Binding::Action(*action));
+        if bound_by_default && map.keys_for(*action).is_empty() {
+            warnings.push(format!("'{}' has no key any more", action.name()));
+        }
+    }
+
+    map.warnings = warnings;
     map
 }
 
@@ -178,65 +474,210 @@ pub fn build_keymap(config: &Config) -> Vec<(KeyCode, Action)> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn parses_single_chars() {
-        assert_eq!(parse_key("q"), Some(KeyCode::Char('q')));
-        assert_eq!(parse_key("P"), Some(KeyCode::Char('P')));
-        assert_eq!(parse_key("/"), Some(KeyCode::Char('/')));
-        assert_eq!(parse_key(":"), Some(KeyCode::Char(':')));
+    fn config_with(bindings: &[(&str, &str)]) -> Config {
+        Config {
+            keybindings: bindings
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    fn press(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
+        KeyEvent::new(code, modifiers)
     }
 
     #[test]
-    fn parses_named_keys() {
-        assert_eq!(parse_key("space"), Some(KeyCode::Char(' ')));
-        assert_eq!(parse_key("Tab"), Some(KeyCode::Tab));
-        assert_eq!(parse_key("ENTER"), Some(KeyCode::Enter));
-        assert_eq!(parse_key("backspace"), Some(KeyCode::Backspace));
-        assert_eq!(parse_key("delete"), Some(KeyCode::Delete));
-        assert_eq!(parse_key("f5"), Some(KeyCode::F(5)));
-        assert_eq!(parse_key("F12"), Some(KeyCode::F(12)));
+    fn parses_plain_keys_and_named_keys() {
+        assert_eq!(
+            parse_chord("q"),
+            Some(Chord::new(KeyCode::Char('q'), KeyModifiers::NONE))
+        );
+        assert_eq!(
+            parse_chord("space"),
+            Some(Chord::new(KeyCode::Char(' '), KeyModifiers::NONE))
+        );
+        assert_eq!(
+            parse_chord("f5"),
+            Some(Chord::new(KeyCode::F(5), KeyModifiers::NONE))
+        );
+        assert_eq!(
+            parse_chord("+"),
+            Some(Chord::new(KeyCode::Char('+'), KeyModifiers::NONE))
+        );
+        assert_eq!(parse_chord("nonsense"), None);
     }
 
     #[test]
-    fn rejects_invalid_keys() {
-        assert_eq!(parse_key(""), None);
-        assert_eq!(parse_key("ab"), None);
-        assert_eq!(parse_key("f13"), None);
-        assert_eq!(parse_key("f0"), None);
+    fn parses_modifiers() {
+        assert_eq!(
+            parse_chord("ctrl+f"),
+            Some(Chord::new(KeyCode::Char('f'), KeyModifiers::CONTROL))
+        );
+        assert_eq!(
+            parse_chord("shift+right"),
+            Some(Chord::new(KeyCode::Right, KeyModifiers::SHIFT))
+        );
+        assert_eq!(
+            parse_chord("alt+ctrl+j"),
+            Some(Chord::new(
+                KeyCode::Char('j'),
+                KeyModifiers::ALT | KeyModifiers::CONTROL
+            ))
+        );
     }
 
     #[test]
-    fn override_replaces_default_keys_of_action() {
-        let mut config = Config::default();
-        config
-            .keybindings
-            .insert("quit".to_string(), "z".to_string());
+    fn shift_is_folded_into_the_character() {
+        // A terminal reports shift+g as an uppercase G, so both spellings and
+        // the key press itself have to land on the same chord.
+        let from_config = parse_chord("shift+g").unwrap();
+        let written_upper = parse_chord("G").unwrap();
+        let pressed = Chord::from_event(&press(KeyCode::Char('G'), KeyModifiers::SHIFT));
 
-        let map = build_keymap(&config);
-
-        let quit_keys: Vec<KeyCode> = map
-            .iter()
-            .filter(|(_, a)| *a == Action::Quit)
-            .map(|(c, _)| *c)
-            .collect();
-        assert_eq!(quit_keys, vec![KeyCode::Char('z')]);
-        // Other actions keep their defaults.
-        assert!(map.contains(&(KeyCode::Char('y'), Action::Yank)));
+        assert_eq!(from_config, written_upper);
+        assert_eq!(from_config, pressed);
     }
 
     #[test]
-    fn invalid_overrides_are_ignored() {
-        let mut config = Config::default();
-        config
-            .keybindings
-            .insert("bogus".to_string(), "z".to_string());
-        config
-            .keybindings
-            .insert("quit".to_string(), "notakey".to_string());
+    fn shift_is_kept_for_keys_without_a_character() {
+        let chord = parse_chord("shift+left").unwrap();
+        assert_eq!(chord.modifiers, KeyModifiers::SHIFT);
+        assert_ne!(chord, parse_chord("left").unwrap());
+    }
 
-        let map = build_keymap(&config);
+    #[test]
+    fn describe_round_trips() {
+        for text in ["ctrl+f", "shift+right", "space", "f5", "G", "?"] {
+            let chord = parse_chord(text).unwrap();
+            assert_eq!(
+                parse_chord(&chord.describe()),
+                Some(chord),
+                "{text} described as {}",
+                chord.describe()
+            );
+        }
+    }
 
-        // Defaults fully intact.
-        assert_eq!(map.len(), default_keymap().len());
+    #[test]
+    fn defaults_resolve_key_presses() {
+        let map = default_keymap();
+
+        assert_eq!(
+            map.binding_for(&press(KeyCode::Char('q'), KeyModifiers::NONE)),
+            Some(&Binding::Action(Action::Quit))
+        );
+        assert_eq!(
+            map.binding_for(&press(KeyCode::Char('f'), KeyModifiers::CONTROL)),
+            Some(&Binding::Action(Action::FilterRegex))
+        );
+        assert_eq!(
+            map.binding_for(&press(KeyCode::Right, KeyModifiers::SHIFT)),
+            Some(&Binding::Action(Action::SortNext))
+        );
+    }
+
+    #[test]
+    fn a_key_can_run_a_command() {
+        let map = build_keymap(&config_with(&[("z", ":term lazygit")]));
+
+        assert_eq!(
+            map.binding_for(&press(KeyCode::Char('z'), KeyModifiers::NONE)),
+            Some(&Binding::Command("term lazygit".to_string()))
+        );
+        assert!(map.warnings.is_empty(), "{:?}", map.warnings);
+    }
+
+    #[test]
+    fn overriding_a_used_key_is_reported() {
+        let map = build_keymap(&config_with(&[("x", ":term lazygit")]));
+
+        assert_eq!(map.warnings.len(), 2, "{:?}", map.warnings);
+        assert!(
+            map.warnings[0].contains("'x' was select"),
+            "{:?}",
+            map.warnings
+        );
+        // And the action it displaced is now unreachable, which matters more.
+        assert!(
+            map.warnings
+                .iter()
+                .any(|w| w.contains("'select' has no key")),
+            "{:?}",
+            map.warnings
+        );
+    }
+
+    #[test]
+    fn rebinding_an_action_to_a_spare_key_keeps_it_reachable() {
+        let map = build_keymap(&config_with(&[("z", "select")]));
+
+        assert!(map.warnings.is_empty(), "{:?}", map.warnings);
+        // Both the default and the new key work.
+        assert_eq!(map.keys_for(Action::ToggleSelect).len(), 2);
+    }
+
+    #[test]
+    fn a_key_can_be_freed() {
+        let map = build_keymap(&config_with(&[("q", "none")]));
+
+        assert!(
+            map.binding_for(&press(KeyCode::Char('q'), KeyModifiers::NONE))
+                .is_none()
+        );
+        // Quit is still on F10, so nothing is lost.
+        assert!(map.warnings.is_empty(), "{:?}", map.warnings);
+    }
+
+    #[test]
+    fn freeing_the_last_key_of_an_action_is_reported() {
+        let map = build_keymap(&config_with(&[("q", "none"), ("f10", "none")]));
+
+        assert!(
+            map.warnings.iter().any(|w| w.contains("'quit' has no key")),
+            "{:?}",
+            map.warnings
+        );
+    }
+
+    #[test]
+    fn typos_are_reported_rather_than_ignored() {
+        let map = build_keymap(&config_with(&[("ctrl+nonsense", "quit"), ("z", "qiut")]));
+
+        assert!(map.warnings.iter().any(|w| w.contains("unknown key")));
+        assert!(
+            map.warnings
+                .iter()
+                .any(|w| w.contains("unknown action 'qiut'"))
+        );
+    }
+
+    #[test]
+    fn every_action_has_a_unique_name() {
+        let mut names: Vec<&str> = Action::ALL.iter().map(|a| a.name()).collect();
+        names.sort_unstable();
+        let count = names.len();
+        names.dedup();
+        assert_eq!(names.len(), count, "duplicate action name");
+    }
+
+    #[test]
+    fn every_action_can_be_looked_up_by_name() {
+        for action in Action::ALL {
+            assert_eq!(Action::from_name(action.name()), Some(*action));
+        }
+    }
+
+    #[test]
+    fn every_action_has_a_default_key() {
+        let map = default_keymap();
+        for action in Action::ALL {
+            assert!(
+                !map.keys_for(*action).is_empty(),
+                "{} is not bound to anything",
+                action.name()
+            );
+        }
     }
 }

@@ -12,7 +12,7 @@ use super::{
     App,
     completion::Completion,
     dialog::{Dialog, DialogAction, DialogResult},
-    keymap::Action,
+    keymap::{Action, Binding},
     panes::{EntryKind, MoveDirection, OpenAction, SortOrder, SortType},
     popup_bulkrename::BulkRename,
     popup_findinfiles::FindInFiles,
@@ -95,13 +95,6 @@ impl App {
         }
 
         if self.is_popup_active() && self.handle_popup_key(key_event) {
-            return;
-        }
-
-        if self.handle_ctrl_key(key_event) {
-            return;
-        }
-        if self.handle_shift_key(key_event) {
             return;
         }
 
@@ -1017,8 +1010,12 @@ impl App {
                         }
                     }
                 }
+                // Keybindings are rebuilt too, so `:so` is the way to iterate
+                // on them without restarting.
+                self.keymap = crate::ui::keymap::build_keymap(&self.config);
                 self.panes.reload(&self.config, false);
                 self.ok_status("Config reloaded".to_string());
+                self.report_keymap_warnings();
             }
             Err(e) => self.err_status(format!("Cannot reload config: {e}")),
         }
@@ -1245,98 +1242,6 @@ impl App {
         false
     }
 
-    fn handle_ctrl_key(&mut self, key: &KeyEvent) -> bool {
-        if key.modifiers.contains(KeyModifiers::CONTROL) {
-            match key.code {
-                KeyCode::Char('h') => {
-                    self.config.show_hidden = !self.config.show_hidden;
-                    self.panes.reload(&self.config, false);
-                    return true;
-                }
-                KeyCode::Char('l') => {
-                    self.panes.reload(&self.config, false);
-                    return true;
-                }
-                KeyCode::Char('a') => {
-                    let count = self.panes.get_active_pane_mut().select_all();
-                    self.ok_status(format!("{count} selected"));
-                    return true;
-                }
-                KeyCode::Char('t') => {
-                    let parent = PathBuf::from(&self.panes.get_active_pane().path);
-                    self.dialog = Some(Dialog::input(
-                        "touch",
-                        "File name:",
-                        "",
-                        DialogAction::Touch { parent },
-                    ));
-                    return true;
-                }
-                KeyCode::Char('f') => {
-                    let initial = match self.panes.get_active_pane().filter() {
-                        Some(FilterSpec::Regex(pattern)) => pattern.clone(),
-                        _ => String::new(),
-                    };
-                    self.search = Some(Search::regex(initial));
-                    return true;
-                }
-                KeyCode::Char('g') => {
-                    self.find_in_files = Some(FindInFiles::new());
-                    return true;
-                }
-                _ => {
-                    log::debug!("unhandled Ctrl+{:?}", key.code);
-                    return false;
-                }
-            }
-        }
-        false
-    }
-
-    fn handle_shift_key(&mut self, key: &KeyEvent) -> bool {
-        if key.modifiers.contains(KeyModifiers::SHIFT) {
-            match key.code {
-                KeyCode::Right => {
-                    self.config.sort_type = match self.config.sort_type {
-                        SortType::Flagged => SortType::Name,
-                        SortType::Name => SortType::Size,
-                        SortType::Size => SortType::Time,
-                        SortType::Time => SortType::Flagged,
-                    };
-                    self.panes.reload(&self.config, false);
-                    return true;
-                }
-                KeyCode::Left => {
-                    self.config.sort_type = match self.config.sort_type {
-                        SortType::Flagged => SortType::Time,
-                        SortType::Time => SortType::Size,
-                        SortType::Size => SortType::Name,
-                        SortType::Name => SortType::Flagged,
-                    };
-                    self.panes.reload(&self.config, false);
-                    return true;
-                }
-                KeyCode::Char('O') => {
-                    self.config.sort_order = match self.config.sort_order {
-                        SortOrder::Ascending => SortOrder::Descending,
-                        SortOrder::Descending => SortOrder::Ascending,
-                    };
-                    self.panes.reload(&self.config, false);
-                    return true;
-                }
-                KeyCode::Char('G') => {
-                    self.panes.goto_last();
-                    return true;
-                }
-                _ => {
-                    log::debug!("unhandled Shift+{:?}", key.code);
-                    return false;
-                }
-            }
-        }
-        false
-    }
-
     fn handle_main_key(&mut self, key: &KeyEvent) {
         // Esc is hardcoded: it drives the universal dismiss chain.
         if key.code == KeyCode::Esc {
@@ -1344,21 +1249,19 @@ impl App {
             return;
         }
 
-        // Keymap entries are single-key bindings: a modified key that no
-        // Ctrl/Shift handler claimed is dropped rather than firing the
-        // unmodified action (Ctrl+d must not start the `dd` chord).
-        if !Self::is_plain_key(key) {
-            log::debug!("unhandled {:?}+{:?}", key.modifiers, key.code);
+        let Some(binding) = self.keymap.binding_for(key).cloned() else {
+            log::debug!("unbound key {:?}+{:?}", key.modifiers, key.code);
             return;
-        }
+        };
 
-        let Some(action) = self
-            .keymap
-            .iter()
-            .find(|(code, _)| *code == key.code)
-            .map(|(_, action)| *action)
-        else {
-            return;
+        let action = match binding {
+            Binding::Action(action) => action,
+            // A key bound to a command runs exactly what typing it after `:`
+            // would have done, so `%f` and completion-era commands all work.
+            Binding::Command(command) => {
+                self.run_command(&command);
+                return;
+            }
         };
 
         match action {
@@ -1498,6 +1401,59 @@ impl App {
             Action::Copy => self.start_copy(),
             Action::Move => self.start_move(),
             Action::Delete => self.start_delete(),
+            Action::Touch => {
+                let parent = PathBuf::from(&self.panes.get_active_pane().path);
+                self.dialog = Some(Dialog::input(
+                    "touch",
+                    "File name:",
+                    "",
+                    DialogAction::Touch { parent },
+                ));
+            }
+            Action::SelectAll => {
+                let count = self.panes.get_active_pane_mut().select_all();
+                self.ok_status(format!("{count} selected"));
+            }
+            Action::FilterRegex => {
+                let initial = match self.panes.get_active_pane().filter() {
+                    Some(FilterSpec::Regex(pattern)) => pattern.clone(),
+                    _ => String::new(),
+                };
+                self.search = Some(Search::regex(initial));
+            }
+            Action::FindInFiles => {
+                self.find_in_files = Some(FindInFiles::new());
+            }
+            Action::ToggleHidden => {
+                self.config.show_hidden = !self.config.show_hidden;
+                self.panes.reload(&self.config, false);
+            }
+            Action::Refresh => self.panes.reload(&self.config, false),
+            Action::SortNext => {
+                self.config.sort_type = match self.config.sort_type {
+                    SortType::Flagged => SortType::Name,
+                    SortType::Name => SortType::Size,
+                    SortType::Size => SortType::Time,
+                    SortType::Time => SortType::Flagged,
+                };
+                self.panes.reload(&self.config, false);
+            }
+            Action::SortPrev => {
+                self.config.sort_type = match self.config.sort_type {
+                    SortType::Flagged => SortType::Time,
+                    SortType::Time => SortType::Size,
+                    SortType::Size => SortType::Name,
+                    SortType::Name => SortType::Flagged,
+                };
+                self.panes.reload(&self.config, false);
+            }
+            Action::SortReverse => {
+                self.config.sort_order = match self.config.sort_order {
+                    SortOrder::Ascending => SortOrder::Descending,
+                    SortOrder::Descending => SortOrder::Ascending,
+                };
+                self.panes.reload(&self.config, false);
+            }
         }
     }
 
@@ -1693,6 +1649,70 @@ mod tests {
         let queued = app.pending_terminal_command.as_deref().unwrap();
         assert!(queued.starts_with("nvim '"), "{queued}");
         assert!(queued.contains("a.txt"), "{queued}");
+    }
+
+    fn app_with_bindings(dir: &Path, bindings: &[(&str, &str)]) -> App {
+        let config = Config {
+            initial_directory_left: dir.to_string_lossy().to_string(),
+            initial_directory_right: dir.to_string_lossy().to_string(),
+            keybindings: bindings
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+            ..Default::default()
+        };
+        App::new(Theme::builtin().expect("built-in theme"), config)
+    }
+
+    #[test]
+    fn a_key_can_be_bound_to_a_command() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_with_bindings(dir.path(), &[("z", ":!echo hi")]);
+
+        app.dispatch_key(&key(KeyCode::Char('z'), KeyModifiers::NONE));
+
+        assert!(
+            app.ui_config.active_preview_popup,
+            "the command should have run"
+        );
+    }
+
+    #[test]
+    fn modified_keys_are_bindable_too() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_with_bindings(dir.path(), &[("ctrl+r", ":!echo hi")]);
+
+        app.dispatch_key(&key(KeyCode::Char('r'), KeyModifiers::CONTROL));
+
+        assert!(app.ui_config.active_preview_popup);
+    }
+
+    #[test]
+    fn built_in_modified_keys_still_work() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = test_app(dir.path());
+
+        // Ctrl+g used to be hardcoded; it now comes from the same table.
+        app.dispatch_key(&key(KeyCode::Char('g'), KeyModifiers::CONTROL));
+        assert!(app.find_in_files.is_some());
+    }
+
+    #[test]
+    fn conflicting_bindings_raise_an_alert() {
+        let dir = tempfile::tempdir().unwrap();
+        // `x` is the default for select, so taking it must not pass silently.
+        let app = app_with_bindings(dir.path(), &[("x", ":term lazygit")]);
+
+        let dialog = app.dialog.expect("a warning dialog");
+        assert_eq!(dialog.title, "Keybindings");
+    }
+
+    #[test]
+    fn a_clean_keymap_raises_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = app_with_bindings(dir.path(), &[("z", ":term lazygit")]);
+
+        assert!(app.dialog.is_none());
     }
 
     #[test]

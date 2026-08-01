@@ -42,10 +42,8 @@ pub mod theme;
 pub mod uiconfig;
 
 use component::Component;
-use crossterm::event::KeyCode;
 use dialog::Dialog;
 use header::Header;
-use keymap::Action;
 use panes::Panes;
 use popup_about::PopupAbout;
 use popup_bulkrename::BulkRename;
@@ -99,7 +97,7 @@ pub struct App {
     /// is no longer what the terminal shows.
     pending_redraw: bool,
     progress: Option<Progress>,
-    keymap: Vec<(KeyCode, Action)>,
+    keymap: keymap::Keymap,
     /// Filesystem event receiver — events trigger a debounced pane reload.
     fs_notify_rx: mpsc::Receiver<notify::Result<notify::Event>>,
     /// The watcher must stay alive for the duration of the app. `None` when it
@@ -139,7 +137,7 @@ impl App {
             }
         }
 
-        Self {
+        let mut app = Self {
             exit: false,
             theme,
             ui_config: UiConfig::new(),
@@ -168,7 +166,36 @@ impl App {
             watched_dirs,
             fs_debounce: None,
             syn_theme,
+        };
+
+        app.report_keymap_warnings();
+        app
+    }
+
+    /// Puts keybinding problems in front of the user instead of only in the
+    /// log: a typo that silently drops a feature is otherwise found weeks
+    /// later, by pressing a key that does nothing.
+    pub(crate) fn report_keymap_warnings(&mut self) {
+        if self.keymap.warnings.is_empty() {
+            return;
         }
+
+        for warning in &self.keymap.warnings {
+            log::warn!("keybindings: {warning}");
+        }
+
+        let detail = self
+            .keymap
+            .warnings
+            .iter()
+            .map(|w| format!("• {w}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        self.dialog = Some(Dialog::message(
+            "Keybindings",
+            format!("{detail}\n\nEdit [keybindings] in config.toml, then :so to reload."),
+        ));
     }
 
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> std::io::Result<()> {

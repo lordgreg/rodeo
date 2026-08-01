@@ -557,6 +557,12 @@ These are small, self-contained fixes with high impact-to-effort ratio. Do them 
   - The middle third of the header currently renders an empty string.
   - **P2** | **Files:** `src/ui/header.rs` | **Hints:** Left: pane stats (as now). Middle: breadcrumb of the active path with the last segment emphasised. Right: git (as now) plus free space on the device and chips for the active sort and filter. | **Effort:** M
 
+### 6.6 Keybindings
+
+- [x] **6.6.1 One configurable keymap, commands on keys, conflict warnings**
+  - Requested 2026-08-01. Three problems: `[keybindings]` only reached plain-key actions, so `Ctrl+f`/`Ctrl+g`/`Shift+arrows` — the ones most likely to clash with a terminal or tmux — were hardcoded and unchangeable; a key could not run a command, so `:term lazygit` cost five keystrokes every time; and nothing warned when an override took a key rodeo already used.
+  - Resolved: a `Chord` (key + modifiers, with Shift folded into the character the way terminals report it) replaces the bare `KeyCode`, and the hardcoded Ctrl/Shift handlers are gone — every binding lives in one table. The config format flips to key-on-the-left, `"ctrl+f" = "filter"`, where the value is an action name, a `:command`, or `none` to unbind; TOML then rejects duplicate keys for free. Overrides that displace a default are reported, and an action left with no key at all is reported louder, both in a dialog on startup and on `:so`.
+
 ### 6.5 Shell Integration
 
 - [x] **6.5.1 Separate capturing and interactive shell commands**
@@ -670,8 +676,8 @@ Phase 0 (Bug Fixes) ────────────────────
 | Phase 3: Preview | 12 | 0 | — |
 | Phase 4: Power User | 8 | 0 | — |
 | Phase 5: Infrastructure | 22 | 0 | complete |
-| Phase 6: Pre-release UI Polish | 13 | 0 | complete |
-| **Total** | **115** | **0** | |
+| Phase 6: Pre-release UI Polish | 14 | 0 | complete |
+| **Total** | **116** | **0** | |
 
 ---
 
