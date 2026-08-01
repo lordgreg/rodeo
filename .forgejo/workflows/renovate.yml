@@ -36,7 +36,7 @@ on:
 
 jobs:
   renovate:
-    runs-on: docker
+    runs-on: codeberg-tiny
     container:
       image: docker.io/renovate/renovate:latest
 
