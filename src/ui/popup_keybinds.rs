@@ -38,6 +38,7 @@ const KEYBINDS: &[(&str, &str)] = &[
     ("y / p / P", "Yank / paste copy / paste move"),
     ("dd", "Move to trash"),
     (":", "Command palette (Tab completes)"),
+    (":!cmd / :term cmd", "Run: capture output / attach terminal"),
     ("Space", "Preview"),
     ("Ctrl+h", "Toggle hidden files"),
     ("Ctrl+l", "Refresh panes / redraw"),

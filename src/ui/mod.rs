@@ -92,6 +92,9 @@ pub struct App {
     pending_d: bool,
     pending_editor_file: Option<PathBuf>,
     pending_shell: bool,
+    /// Command to run attached to the terminal (`:term`), handled by the run
+    /// loop where the terminal can be suspended.
+    pending_terminal_command: Option<String>,
     progress: Option<Progress>,
     keymap: Vec<(KeyCode, Action)>,
     /// Filesystem event receiver — events trigger a debounced pane reload.
@@ -155,6 +158,7 @@ impl App {
             pending_d: false,
             pending_editor_file: None,
             pending_shell: false,
+            pending_terminal_command: None,
             progress: None,
             fs_notify_rx,
             _fs_watcher,
@@ -215,12 +219,11 @@ impl App {
             if let Some(path) = self.pending_editor_file.take() {
                 let mtime_before = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
 
-                terminal.clear()?;
-                Command::new(&self.config.editor).arg(&path).status()?;
-                terminal.clear()?;
-                self.panes.reload(&self.config, true);
-                self.header
-                    .update(self.panes.get_active_pane().path.to_string());
+                let editor = self.config.editor.clone();
+                suspended(terminal, || {
+                    let _ = Command::new(&editor).arg(&path).status();
+                })?;
+                self.after_external_program();
 
                 let mtime_after = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
                 if mtime_after != mtime_before {
@@ -230,13 +233,42 @@ impl App {
 
             if self.pending_shell {
                 self.pending_shell = false;
-                terminal.clear()?;
                 let shell = std::env::var("SHELL").unwrap_or_else(|_| "sh".to_string());
-                let _ = Command::new(&shell).status();
-                terminal.clear()?;
-                self.panes.reload(&self.config, true);
-                self.header
-                    .update(self.panes.get_active_pane().path.to_string());
+                suspended(terminal, || {
+                    let _ = Command::new(&shell).status();
+                })?;
+                self.after_external_program();
+            }
+
+            if let Some(command) = self.pending_terminal_command.take() {
+                let status = suspended(terminal, || {
+                    let status = Command::new("sh").args(["-c", &command]).status();
+
+                    // The child owned the screen; pause so its output can be
+                    // read before rodeo paints over it again.
+                    match &status {
+                        Ok(status) if status.success() => print!("\n[:term finished] "),
+                        Ok(status) => print!("\n[:term exited {}] ", exit_label(status)),
+                        Err(e) => print!("\n[:term failed: {e}] "),
+                    }
+                    print!("press Enter to return to rodeo");
+                    let _ = std::io::Write::flush(&mut std::io::stdout());
+                    let _ = std::io::BufRead::read_line(
+                        &mut std::io::stdin().lock(),
+                        &mut String::new(),
+                    );
+
+                    status
+                })?;
+                self.after_external_program();
+
+                match status {
+                    Ok(status) if !status.success() => {
+                        self.err_status(format!(":term — exit {}", exit_label(&status)));
+                    }
+                    Err(e) => self.err_status(format!("Cannot run: {e}")),
+                    _ => {}
+                }
             }
         }
         Ok(())
@@ -302,6 +334,14 @@ impl App {
         } else {
             self.ok_status("Transfer complete".to_string());
         }
+    }
+
+    /// Reloads the panes after an external program had the terminal: it may
+    /// have changed anything on disk.
+    fn after_external_program(&mut self) {
+        self.panes.reload(&self.config, false);
+        self.header
+            .update(self.panes.get_active_pane().path.to_string());
     }
 
     /// `true` while something modal covers the panes.
@@ -611,6 +651,45 @@ impl App {
         if let Some(offset) = cursor_offset {
             frame.set_cursor_position((area.x + offset, area.y));
         }
+    }
+}
+
+/// Runs `f` with the terminal handed back to the shell: raw mode off and the
+/// alternate screen left, so the child gets a clean, normal screen and its
+/// scrollback survives. rodeo's own screen is restored afterwards.
+fn suspended<T>(terminal: &mut DefaultTerminal, f: impl FnOnce() -> T) -> std::io::Result<T> {
+    use crossterm::{
+        execute,
+        terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
+    };
+
+    disable_raw_mode()?;
+    execute!(std::io::stdout(), LeaveAlternateScreen)?;
+
+    let result = f();
+
+    execute!(std::io::stdout(), EnterAlternateScreen)?;
+    enable_raw_mode()?;
+    terminal.hide_cursor()?;
+    terminal.clear()?;
+
+    Ok(result)
+}
+
+/// Exit status as a short label: a code, or the signal that killed it.
+fn exit_label(status: &std::process::ExitStatus) -> String {
+    match status.code() {
+        Some(code) => code.to_string(),
+        #[cfg(unix)]
+        None => {
+            use std::os::unix::process::ExitStatusExt;
+            match status.signal() {
+                Some(signal) => format!("signal {signal}"),
+                None => "unknown".to_string(),
+            }
+        }
+        #[cfg(not(unix))]
+        None => "unknown".to_string(),
     }
 }
 

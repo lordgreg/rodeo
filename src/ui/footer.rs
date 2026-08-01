@@ -82,6 +82,14 @@ impl Footer {
         });
     }
 
+    /// The status message currently on show, if it has not expired.
+    pub fn status_text(&self) -> Option<&str> {
+        self.status
+            .as_ref()
+            .filter(|s| s.at.elapsed() <= STATUS_TTL)
+            .map(|s| s.text.as_str())
+    }
+
     /// Clipboard state: (entry count, cut?) — shown until the clipboard is empty.
     pub fn set_clipboard(&mut self, clipboard: Option<(usize, bool)>) {
         self.clipboard = clipboard;

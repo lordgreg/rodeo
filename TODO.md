@@ -557,6 +557,12 @@ These are small, self-contained fixes with high impact-to-effort ratio. Do them 
   - The middle third of the header currently renders an empty string.
   - **P2** | **Files:** `src/ui/header.rs` | **Hints:** Left: pane stats (as now). Middle: breadcrumb of the active path with the last segment emphasised. Right: git (as now) plus free space on the device and chips for the active sort and filter. | **Effort:** M
 
+### 6.5 Shell Integration
+
+- [x] **6.5.1 Separate capturing and interactive shell commands**
+  - Reported 2026-08-01: `:!lazygit` came back to a preview popup reading "(no output)". Confirmed by experiment: `:!` runs the child through `Command::output()`, so it gets pipes and a closed stdin (`tty` reports "not a tty"), while interactive programs open `/dev/tty` themselves — they draw on the real screen and write nothing to the captured pipes.
+  - Resolved: `:term <cmd>` runs a command attached to the terminal, and a shared `suspended()` helper leaves the alternate screen and raw mode around it — also used by `:shell` and the editor, which previously ran the child inside rodeo's own screen and lost its scrollback. `:!` keeps capturing, but an empty capture now reports in the footer (with the exit code, which was previously thrown away) and points at `:term` instead of opening an empty popup.
+
 ---
 
 ## Dependency Graph
@@ -663,8 +669,8 @@ Phase 0 (Bug Fixes) ────────────────────
 | Phase 3: Preview | 12 | 0 | — |
 | Phase 4: Power User | 8 | 0 | — |
 | Phase 5: Infrastructure | 22 | 0 | complete |
-| Phase 6: Pre-release UI Polish | 12 | 0 | complete |
-| **Total** | **114** | **0** | |
+| Phase 6: Pre-release UI Polish | 13 | 0 | complete |
+| **Total** | **115** | **0** | |
 
 ---
 

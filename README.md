@@ -150,12 +150,25 @@ theme names for `:theme`.
 | `:delete` | Trash the selected or current entries |
 | `:theme [name]` | Switch theme, or list the available ones |
 | `:trash` | Browse the trash |
+| `:term <cmd>` | Run a command attached to the terminal (lazygit, htop…) |
 | `:shell` | Open an interactive subshell |
-| `:!<cmd>` | Run a shell command |
+| `:!<cmd>` | Run a shell command and show its output |
 | `:help` | Show the help popup |
 
-`:!` output opens in the preview popup, and `%f` expands to the selected (or
-highlighted) paths — `:!wc -l %f`.
+`%f` expands to the selected (or highlighted) paths in both `:!` and `:term` —
+`:!wc -l %f`, `:term nvim %f`.
+
+The two differ in who owns the terminal:
+
+- **`:!<cmd>`** captures stdout and stderr and shows them in the scrollable
+  preview popup. Use it for output you want to read: `:!git log --oneline`.
+- **`:term <cmd>`** hands the terminal to the program — rodeo leaves the
+  alternate screen, runs it attached, and comes back when it exits. Use it for
+  anything interactive: `:term lazygit`, `:term htop`.
+
+Interactive programs open `/dev/tty` directly rather than writing to stdout, so
+running one under `:!` produces no capturable output; rodeo says so in the
+footer and points at `:term`.
 
 ## Development
 

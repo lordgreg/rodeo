@@ -26,6 +26,19 @@ use crate::config::Config;
 use crate::fs::ops;
 use crate::ui::theme::Theme;
 
+/// Longest command echoed back in a footer message, so a long one-liner does
+/// not push the key hints off the bar.
+const SHELL_LABEL_WIDTH: usize = 24;
+
+/// Shortens `text` to `width` characters, marking the cut with an ellipsis.
+fn elide(text: &str, width: usize) -> String {
+    if text.chars().count() <= width {
+        return text.to_string();
+    }
+    let kept: String = text.chars().take(width.saturating_sub(1)).collect();
+    format!("{kept}…")
+}
+
 impl App {
     pub(crate) fn handle_input(&mut self) -> std::io::Result<()> {
         if let Event::Key(key_event) = event::read()?
@@ -972,6 +985,14 @@ impl App {
             "theme" => self.switch_theme(arg),
             "help" => self.ui_config.active_keybind_popup = true,
             "shell" => self.pending_shell = true,
+            "term" => {
+                if arg.is_empty() {
+                    self.err_status("Usage: :term <command>".to_string());
+                } else {
+                    // Handled by the run loop, which can suspend the terminal.
+                    self.pending_terminal_command = Some(self.expand_targets(arg));
+                }
+            }
             "trash" => {
                 self.trash_view = Some(TrashView::load());
             }
@@ -1060,27 +1081,32 @@ impl App {
         }
     }
 
+    /// Expands `%f` to the shell-quoted paths of the selected (or highlighted)
+    /// entries, so `:!wc -l %f` and `:term nvim %f` both work.
+    pub(crate) fn expand_targets(&mut self, cmd: &str) -> String {
+        if !cmd.contains("%f") {
+            return cmd.to_string();
+        }
+
+        let quoted = self
+            .op_targets()
+            .iter()
+            .map(|path| {
+                let path = path.to_string_lossy();
+                format!("'{}'", path.replace('\'', "'\\''"))
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        cmd.replace("%f", &quoted)
+    }
+
     fn run_shell_capture(&mut self, cmd: &str) {
         if cmd.is_empty() {
             return;
         }
 
-        // Expand %f → space-separated shell-quoted paths of selected (or
-        // highlighted) entries so `:!wc -l %f` works naturally.
-        let cmd = if cmd.contains("%f") {
-            let targets = self.op_targets();
-            let quoted = targets
-                .iter()
-                .map(|p| {
-                    let s = p.to_string_lossy();
-                    format!("'{}'", s.replace('\'', "'\\''"))
-                })
-                .collect::<Vec<_>>()
-                .join(" ");
-            cmd.replace("%f", &quoted)
-        } else {
-            cmd.to_string()
-        };
+        let cmd = self.expand_targets(cmd);
         let cmd = cmd.as_str();
 
         match std::process::Command::new("sh").args(["-c", cmd]).output() {
@@ -1095,8 +1121,20 @@ impl App {
                         String::from_utf8_lossy(&out.stderr)
                     ));
                 }
+
+                // Nothing to preview. Report it in the footer instead of
+                // opening an empty popup: rodeo cannot tell "produced nothing"
+                // from "wrote straight to the terminal", which is what every
+                // interactive program does — it opens /dev/tty rather than
+                // using the pipes captured here.
                 if text.trim().is_empty() {
-                    text = "(no output)".to_string();
+                    let label = elide(cmd, SHELL_LABEL_WIDTH);
+                    match out.status.code() {
+                        Some(0) | None => self
+                            .ok_status(format!(":!{label} — no output (interactive? use :term)")),
+                        Some(code) => self.err_status(format!(":!{label} — exit {code}")),
+                    }
+                    return;
                 }
 
                 let lines: Vec<ratatui::text::Line> = text
@@ -1110,12 +1148,19 @@ impl App {
                     ratatui::text::Text::from(lines),
                 ));
                 self.ui_config.active_preview_popup = true;
+
+                // A failing command still gets its output shown, but the
+                // footer says it failed.
+                if let Some(code) = out.status.code().filter(|c| *c != 0) {
+                    self.err_status(format!(":!{} — exit {code}", elide(cmd, SHELL_LABEL_WIDTH)));
+                }
             }
             Err(e) => {
                 self.err_status(format!("Cannot run shell: {e}"));
             }
         }
     }
+
     // Keys checked in order: popup-specific → Ctrl-modified → Shift-modified → unmodified.
     // Popup handler takes priority when any popup is active.
     fn handle_popup_key(&mut self, key: &KeyEvent) -> bool {
@@ -1525,6 +1570,97 @@ mod tests {
 
         app.dispatch_key(&key(KeyCode::Char(' '), KeyModifiers::NONE));
         assert!(!app.ui_config.active_keybind_popup);
+    }
+
+    #[test]
+    fn silent_command_reports_in_the_footer_instead_of_an_empty_preview() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = test_app(dir.path());
+
+        // `true` succeeds and prints nothing — exactly the lazygit case, where
+        // the program wrote to /dev/tty and the capture saw nothing.
+        app.run_command("!true");
+
+        assert!(app.preview.is_none(), "no popup for an empty capture");
+        assert!(!app.ui_config.active_preview_popup);
+        let status = app.footer.status_text().expect("a footer message");
+        assert!(status.contains("no output"), "{status}");
+        assert!(
+            status.contains(":term"),
+            "should point at the fix: {status}"
+        );
+    }
+
+    #[test]
+    fn failing_silent_command_reports_its_exit_code() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = test_app(dir.path());
+
+        app.run_command("!exit 3");
+
+        assert!(app.preview.is_none());
+        let status = app.footer.status_text().expect("a footer message");
+        assert!(status.contains("exit 3"), "{status}");
+    }
+
+    #[test]
+    fn command_with_output_still_opens_the_preview() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = test_app(dir.path());
+
+        app.run_command("!echo hello");
+
+        assert!(app.ui_config.active_preview_popup);
+        assert!(app.preview.is_some());
+    }
+
+    #[test]
+    fn long_commands_are_elided_in_the_footer() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = test_app(dir.path());
+
+        app.run_command("!true # aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+
+        let status = app.footer.status_text().unwrap();
+        assert!(status.contains('…'), "{status}");
+        assert!(status.len() < 70, "footer message too long: {status}");
+    }
+
+    #[test]
+    fn term_defers_to_the_run_loop() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = test_app(dir.path());
+
+        app.run_command("term lazygit");
+
+        // The run loop owns the terminal, so the command is only queued here.
+        assert_eq!(app.pending_terminal_command.as_deref(), Some("lazygit"));
+        assert!(app.preview.is_none());
+    }
+
+    #[test]
+    fn term_without_a_command_explains_itself() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = test_app(dir.path());
+
+        app.run_command("term");
+
+        assert!(app.pending_terminal_command.is_none());
+        assert!(app.footer.status_text().unwrap().contains("Usage"));
+    }
+
+    #[test]
+    fn term_expands_the_selection() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "x").unwrap();
+        let mut app = test_app(dir.path());
+        app.panes.goto_next(MoveDirection::Down);
+
+        app.run_command("term nvim %f");
+
+        let queued = app.pending_terminal_command.as_deref().unwrap();
+        assert!(queued.starts_with("nvim '"), "{queued}");
+        assert!(queued.contains("a.txt"), "{queued}");
     }
 
     #[test]
