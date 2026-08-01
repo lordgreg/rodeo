@@ -984,7 +984,6 @@ impl App {
             }
             "theme" => self.switch_theme(arg),
             "help" => self.ui_config.active_keybind_popup = true,
-            "shell" => self.pending_shell = true,
             "term" => {
                 if arg.is_empty() {
                     self.err_status("Usage: :term <command>".to_string());
@@ -1108,6 +1107,11 @@ impl App {
 
         let cmd = self.expand_targets(cmd);
         let cmd = cmd.as_str();
+
+        // Whatever it does, assume it touched the screen: a program that wants
+        // a terminal opens /dev/tty and draws there even though its stdout is
+        // a pipe, which is why `:!lazygit` used to come back to a broken UI.
+        self.pending_redraw = true;
 
         match std::process::Command::new("sh").args(["-c", cmd]).output() {
             Ok(out) => {
@@ -1624,6 +1628,34 @@ mod tests {
         let status = app.footer.status_text().unwrap();
         assert!(status.contains('…'), "{status}");
         assert!(status.len() < 70, "footer message too long: {status}");
+    }
+
+    #[test]
+    fn captured_command_forces_a_repaint() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = test_app(dir.path());
+
+        app.run_command("!true");
+
+        // rodeo cannot tell whether the child drew on the terminal through
+        // /dev/tty, so it must assume it did.
+        assert!(app.pending_redraw);
+    }
+
+    #[test]
+    fn shell_command_is_gone() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = test_app(dir.path());
+
+        app.run_command("shell");
+
+        assert!(
+            app.footer
+                .status_text()
+                .unwrap()
+                .contains("Unknown command"),
+            "`:shell` was removed in favour of `:term $SHELL`"
+        );
     }
 
     #[test]

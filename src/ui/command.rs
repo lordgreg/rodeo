@@ -110,12 +110,6 @@ pub const COMMANDS: &[CommandSpec] = &[
         arg_kind: ArgKind::Text,
     },
     CommandSpec {
-        names: &["shell"],
-        args: "",
-        description: "Open an interactive subshell",
-        arg_kind: ArgKind::None,
-    },
-    CommandSpec {
         names: &["!"],
         args: "<cmd>",
         description: "Run a shell command (%f = selected paths)",

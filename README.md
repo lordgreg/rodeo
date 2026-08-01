@@ -28,7 +28,8 @@ terminal.
   porcelain code (so staged and unstaged changes are distinguishable).
 - **Power tools** — bulk rename with regex or numbering (`B`), a trash browser
   (`:trash`), on-demand directory sizes (`S`), wildcard selection (`*`), and a
-  command palette (`:`) including shell commands.
+  command palette (`:`) that can capture command output or hand over the
+  terminal.
 - **Live refresh** — both panes follow filesystem changes automatically.
 - **Themes** — ten bundled palettes; syntax colours are derived from the
   active theme.
@@ -151,7 +152,6 @@ theme names for `:theme`.
 | `:theme [name]` | Switch theme, or list the available ones |
 | `:trash` | Browse the trash |
 | `:term <cmd>` | Run a command attached to the terminal (lazygit, htop…) |
-| `:shell` | Open an interactive subshell |
 | `:!<cmd>` | Run a shell command and show its output |
 | `:help` | Show the help popup |
 
@@ -164,11 +164,12 @@ The two differ in who owns the terminal:
   preview popup. Use it for output you want to read: `:!git log --oneline`.
 - **`:term <cmd>`** hands the terminal to the program — rodeo leaves the
   alternate screen, runs it attached, and comes back when it exits. Use it for
-  anything interactive: `:term lazygit`, `:term htop`.
+  anything interactive: `:term lazygit`, `:term htop`, `:term $SHELL`.
 
 Interactive programs open `/dev/tty` directly rather than writing to stdout, so
-running one under `:!` produces no capturable output; rodeo says so in the
-footer and points at `:term`.
+running one under `:!` produces no capturable output: it will work, but rodeo
+cannot show you anything afterwards and says so in the footer. `:term` is the
+one to reach for.
 
 ## Development
 

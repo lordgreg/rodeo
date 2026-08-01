@@ -91,10 +91,13 @@ pub struct App {
     clipboard_cut: bool,
     pending_d: bool,
     pending_editor_file: Option<PathBuf>,
-    pending_shell: bool,
     /// Command to run attached to the terminal (`:term`), handled by the run
     /// loop where the terminal can be suspended.
     pending_terminal_command: Option<String>,
+    /// Set when something outside rodeo may have written to the screen, so the
+    /// run loop repaints from scratch instead of diffing against a frame that
+    /// is no longer what the terminal shows.
+    pending_redraw: bool,
     progress: Option<Progress>,
     keymap: Vec<(KeyCode, Action)>,
     /// Filesystem event receiver — events trigger a debounced pane reload.
@@ -157,8 +160,8 @@ impl App {
             clipboard_cut: false,
             pending_d: false,
             pending_editor_file: None,
-            pending_shell: false,
             pending_terminal_command: None,
+            pending_redraw: false,
             progress: None,
             fs_notify_rx,
             _fs_watcher,
@@ -231,13 +234,12 @@ impl App {
                 }
             }
 
-            if self.pending_shell {
-                self.pending_shell = false;
-                let shell = std::env::var("SHELL").unwrap_or_else(|_| "sh".to_string());
-                suspended(terminal, || {
-                    let _ = Command::new(&shell).status();
-                })?;
-                self.after_external_program();
+            // A captured command cannot be trusted to have left the screen
+            // alone: programs that want a terminal open /dev/tty and draw on it
+            // regardless of the pipes they were given, and rodeo's diffing
+            // renderer would leave whatever they drew on screen.
+            if std::mem::take(&mut self.pending_redraw) {
+                restore_terminal_state(terminal);
             }
 
             if let Some(command) = self.pending_terminal_command.take() {
@@ -654,13 +656,30 @@ impl App {
     }
 }
 
+/// Re-asserts the modes rodeo needs and forces a full repaint.
+///
+/// Failures are logged rather than propagated: this is cosmetic recovery, and
+/// terminals that do not answer the cursor-position query
+/// ([`ratatui::Terminal::clear`] asks) must not take the file manager down.
+fn restore_terminal_state(terminal: &mut DefaultTerminal) {
+    use crossterm::terminal::enable_raw_mode;
+
+    if let Err(e) = enable_raw_mode() {
+        log::warn!("cannot re-enable raw mode: {e}");
+    }
+    let _ = terminal.hide_cursor();
+    if let Err(e) = terminal.clear() {
+        log::warn!("cannot repaint the screen: {e}");
+    }
+}
+
 /// Runs `f` with the terminal handed back to the shell: raw mode off and the
 /// alternate screen left, so the child gets a clean, normal screen and its
 /// scrollback survives. rodeo's own screen is restored afterwards.
 fn suspended<T>(terminal: &mut DefaultTerminal, f: impl FnOnce() -> T) -> std::io::Result<T> {
     use crossterm::{
         execute,
-        terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
+        terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode},
     };
 
     disable_raw_mode()?;
@@ -669,16 +688,7 @@ fn suspended<T>(terminal: &mut DefaultTerminal, f: impl FnOnce() -> T) -> std::i
     let result = f();
 
     execute!(std::io::stdout(), EnterAlternateScreen)?;
-    enable_raw_mode()?;
-    let _ = terminal.hide_cursor();
-
-    // Repainting is cosmetic, but Terminal::clear() asks the terminal where
-    // the cursor is (ESC[6n) and waits for the reply. Terminals that do not
-    // answer would otherwise take the whole file manager down with them, so a
-    // failure here is logged and the next frame is drawn regardless.
-    if let Err(e) = terminal.clear() {
-        log::warn!("cannot repaint after resuming: {e}");
-    }
+    restore_terminal_state(terminal);
 
     Ok(result)
 }
