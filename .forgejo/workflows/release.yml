@@ -1,0 +1,95 @@
+# Tagged release builds for Codeberg (Forgejo Actions).
+#
+# Triggered by pushing a version tag:
+#     git tag -a v0.1.0 -m "rodeo 0.1.0" && git push origin v0.1.0
+#
+# Requires Actions to be enabled for the repository:
+#     Settings → Units → Actions
+# Codeberg's shared runners advertise the `docker` label used below.
+#
+# Deliberately avoids third-party actions: everything except the checkout is
+# plain shell, so there is nothing to break when an action is unavailable on
+# this forge. Only x86_64 Linux is built — the shared runners are amd64, and
+# cross-compiling to macOS is not possible there.
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  release:
+    runs-on: docker
+    container:
+      image: docker.io/rust:1-bookworm
+
+    steps:
+      - name: Check out the tag
+        uses: https://code.forgejo.org/actions/checkout@v4
+
+      - name: Show the toolchain
+        run: |
+          rustc --version
+          cargo --version
+
+      - name: Test
+        run: cargo test --locked --all
+
+      - name: Build
+        run: cargo build --release --locked
+
+      # The binary alone is not enough: themes are looked up in a data
+      # directory, so they have to travel with it.
+      - name: Package
+        run: |
+          set -eu
+          version="${GITHUB_REF_NAME#v}"
+          staging="rodeo-${version}-x86_64-linux"
+
+          mkdir -p "$staging/themes"
+          cp target/release/rodeo "$staging/"
+          cp themes/*.toml "$staging/themes/"
+          cp README.md LICENSE "$staging/"
+          cp docs/rodeo.1 "$staging/"
+          strip "$staging/rodeo" || true
+
+          tar czf "${staging}.tar.gz" "$staging"
+          sha256sum "${staging}.tar.gz" > "${staging}.tar.gz.sha256"
+          echo "ASSET=${staging}.tar.gz" >> "$GITHUB_ENV"
+
+      - name: Publish to the Forgejo release
+        env:
+          # Provided automatically by the runner; no secret to configure.
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          API: ${{ github.server_url }}/api/v1/repos/${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -eu
+          apt-get update -qq && apt-get install -y -qq jq curl
+
+          # Reuse the release if the tag already has one, otherwise create it.
+          id=$(curl -sS -H "Authorization: token $TOKEN" "$API/releases/tags/$TAG" \
+               | jq -r '.id // empty')
+
+          if [ -z "$id" ]; then
+            id=$(curl -sS -X POST \
+                  -H "Authorization: token $TOKEN" \
+                  -H "Content-Type: application/json" \
+                  -d "$(jq -n --arg tag "$TAG" \
+                        '{tag_name: $tag, name: $tag, draft: false, prerelease: false}')" \
+                  "$API/releases" | jq -r '.id')
+          fi
+
+          if [ -z "$id" ] || [ "$id" = "null" ]; then
+            echo "could not find or create a release for $TAG" >&2
+            exit 1
+          fi
+
+          for file in "$ASSET" "$ASSET.sha256"; do
+            echo "uploading $file"
+            curl -sS --fail -X POST \
+              -H "Authorization: token $TOKEN" \
+              -F "attachment=@$file" \
+              "$API/releases/$id/assets?name=$(basename "$file")" > /dev/null
+          done

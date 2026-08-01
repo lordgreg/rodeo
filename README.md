@@ -185,6 +185,20 @@ running one under `:!` produces no capturable output: it will work, but rodeo
 cannot show you anything afterwards and says so in the footer. `:term` is the
 one to reach for.
 
+## Releases
+
+Pushing a `v*` tag builds and publishes a Linux x86_64 archive:
+
+```sh
+git tag -a v0.1.0 -m "rodeo 0.1.0"
+git push origin v0.1.0
+```
+
+`.forgejo/workflows/release.yml` runs on Codeberg (needs *Settings → Units →
+Actions* enabled); `.github/workflows/release.yml` does the same on a GitHub
+mirror. The archive carries the binary, the themes, the man page, the README
+and the licence, plus a `.sha256`.
+
 ## Development
 
 ```sh
