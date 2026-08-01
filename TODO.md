@@ -557,6 +557,12 @@ These are small, self-contained fixes with high impact-to-effort ratio. Do them 
   - The middle third of the header currently renders an empty string.
   - **P2** | **Files:** `src/ui/header.rs` | **Hints:** Left: pane stats (as now). Middle: breadcrumb of the active path with the last segment emphasised. Right: git (as now) plus free space on the device and chips for the active sort and filter. | **Effort:** M
 
+### 5.5 Dependency Maintenance
+
+- [x] **5.5.1 Self-hosted Renovate on Codeberg**
+  - Requested 2026-08-02: scan the crates daily, or on demand. Codeberg has no hosted Renovate app, so it runs as a Forgejo workflow (`.forgejo/workflows/renovate.yml`) on a 04:00 UTC cron plus `workflow_dispatch` with dry-run and log-level inputs, against `renovate.json`.
+  - Notes: patch/minor crates are grouped into one PR and majors kept separate; ratatui/ratatui-image/crossterm move as a group since they do not compile apart; `.forgejo/workflows` is added to the github-actions manager, which does not look there by default; `lockFileMaintenance` refreshes `Cargo.lock` weekly, which is how the crossbeam-epoch advisory would have surfaced on its own. Config verified with the official `renovate-config-validator`.
+
 ### 6.6 Keybindings
 
 - [x] **6.6.1 One configurable keymap, commands on keys, conflict warnings**

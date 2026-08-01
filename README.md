@@ -199,6 +199,18 @@ Actions* enabled); `.github/workflows/release.yml` does the same on a GitHub
 mirror. The archive carries the binary, the themes, the man page, the README
 and the licence, plus a `.sha256`.
 
+## Dependency updates
+
+`renovate.json` drives a self-hosted [Renovate](https://docs.renovatebot.com/)
+that runs daily from `.forgejo/workflows/renovate.yml`, or on demand from the
+Actions tab (with optional dry-run and debug logging). It needs a
+`RENOVATE_TOKEN` secret — see the header of that workflow.
+
+Patch and minor crate updates are grouped into one pull request, major ones
+arrive separately, and ratatui and its ecosystem move together because they do
+not compile apart. `cargo deny check` in CI is the other half of this: Renovate
+proposes newer versions, cargo-deny fails the build on advisories.
+
 ## Development
 
 ```sh

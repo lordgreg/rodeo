@@ -1,0 +1,73 @@
+# Dependency updates, self-hosted.
+#
+# Renovate has no hosted app on Codeberg, so it runs here: once a day, or on
+# demand from the Actions tab. It reads renovate.json and opens pull requests
+# against this repository.
+#
+# One-time setup:
+#   1. Settings → Units → Actions must be enabled.
+#   2. Create a token at Settings → Applications with the scopes
+#      `read:user`, `write:issue` and `write:repository`.
+#   3. Store it as the `RENOVATE_TOKEN` secret (Settings → Actions → Secrets).
+#
+# Without that token the run stops immediately with a message saying so,
+# rather than failing somewhere in the middle with a confusing API error.
+name: Renovate
+
+on:
+  schedule:
+    # 04:00 UTC daily — outside the hours anyone is looking at the repository.
+    - cron: "0 4 * * *"
+  workflow_dispatch:
+    inputs:
+      log_level:
+        description: "Renovate log level"
+        required: false
+        default: "info"
+        type: choice
+        options:
+          - info
+          - debug
+      dry_run:
+        description: "Report what would happen without opening pull requests"
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  renovate:
+    runs-on: docker
+    container:
+      image: docker.io/renovate/renovate:latest
+
+    steps:
+      - name: Check out the repository
+        uses: https://code.forgejo.org/actions/checkout@v4
+
+      - name: Check the token is present
+        env:
+          RENOVATE_TOKEN: ${{ secrets.RENOVATE_TOKEN }}
+        run: |
+          if [ -z "${RENOVATE_TOKEN:-}" ]; then
+            echo "RENOVATE_TOKEN is not set — see the header of this workflow." >&2
+            exit 1
+          fi
+
+      - name: Run Renovate
+        env:
+          # Forgejo speaks the Gitea API, which is what Renovate targets.
+          RENOVATE_PLATFORM: gitea
+          RENOVATE_ENDPOINT: ${{ github.server_url }}/api/v1
+          RENOVATE_TOKEN: ${{ secrets.RENOVATE_TOKEN }}
+          RENOVATE_REPOSITORIES: ${{ github.repository }}
+          # This repository only: never go looking for others the token can see.
+          RENOVATE_AUTODISCOVER: "false"
+          RENOVATE_GIT_AUTHOR: "Renovate Bot <renovate@localhost>"
+          RENOVATE_ONBOARDING: "false"
+          RENOVATE_REQUIRE_CONFIG: "required"
+          # Crate versions come from the index; a token lifts the anonymous
+          # rate limit when Renovate looks up changelogs on GitHub.
+          GITHUB_COM_TOKEN: ${{ secrets.GITHUB_COM_TOKEN }}
+          LOG_LEVEL: ${{ inputs.log_level || 'info' }}
+          RENOVATE_DRY_RUN: ${{ inputs.dry_run == true && 'full' || '' }}
+        run: renovate

@@ -1,0 +1,92 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    ":dependencyDashboard"
+  ],
+  "timezone": "Europe/Ljubljana",
+  "labels": [
+    "dependencies"
+  ],
+  "commitMessagePrefix": "chore(deps):",
+  "prConcurrentLimit": 5,
+  "prHourlyLimit": 0,
+  "cargo": {
+    "rangeStrategy": "bump"
+  },
+  "packageRules": [
+    {
+      "description": "Patch and minor crate updates arrive as one PR; they are routine and reviewing thirty of them separately is how a solo project stops reviewing them at all.",
+      "matchManagers": [
+        "cargo"
+      ],
+      "matchUpdateTypes": [
+        "minor",
+        "patch"
+      ],
+      "groupName": "rust dependencies (non-major)"
+    },
+    {
+      "description": "Major crate updates stay separate: they are the ones that actually break something.",
+      "matchManagers": [
+        "cargo"
+      ],
+      "matchUpdateTypes": [
+        "major"
+      ],
+      "groupName": null
+    },
+    {
+      "description": "ratatui and its ecosystem move together; splitting them produces PRs that cannot compile on their own.",
+      "matchManagers": [
+        "cargo"
+      ],
+      "matchPackageNames": [
+        "ratatui",
+        "ratatui-image",
+        "crossterm"
+      ],
+      "groupName": "ratatui"
+    },
+    {
+      "description": "Workflow actions, including the Forgejo ones Renovate does not look for by default.",
+      "matchManagers": [
+        "github-actions"
+      ],
+      "groupName": "workflow actions"
+    }
+  ],
+  "github-actions": {
+    "managerFilePatterns": [
+      "/^\\.github/workflows/[^/]+\\.ya?ml$/",
+      "/^\\.forgejo/workflows/[^/]+\\.ya?ml$/"
+    ]
+  },
+  "customManagers": [
+    {
+      "description": "The container image the release workflow builds in. Scoped to that file so Renovate does not try to update its own image in the workflow that runs it.",
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^\\.forgejo/workflows/release\\.ya?ml$/"
+      ],
+      "matchStrings": [
+        "image:\\s*(?<depName>[^\\s:]+):(?<currentValue>[^\\s]+)"
+      ],
+      "datasourceTemplate": "docker"
+    }
+  ],
+  "lockFileMaintenance": {
+    "enabled": true,
+    "schedule": [
+      "before 5am on monday"
+    ],
+    "commitMessageAction": "refresh"
+  },
+  "vulnerabilityAlerts": {
+    "labels": [
+      "security"
+    ],
+    "commitMessagePrefix": "fix(deps):"
+  },
+  "osvVulnerabilityAlerts": true
+}
