@@ -670,8 +670,15 @@ fn suspended<T>(terminal: &mut DefaultTerminal, f: impl FnOnce() -> T) -> std::i
 
     execute!(std::io::stdout(), EnterAlternateScreen)?;
     enable_raw_mode()?;
-    terminal.hide_cursor()?;
-    terminal.clear()?;
+    let _ = terminal.hide_cursor();
+
+    // Repainting is cosmetic, but Terminal::clear() asks the terminal where
+    // the cursor is (ESC[6n) and waits for the reply. Terminals that do not
+    // answer would otherwise take the whole file manager down with them, so a
+    // failure here is logged and the next frame is drawn regardless.
+    if let Err(e) = terminal.clear() {
+        log::warn!("cannot repaint after resuming: {e}");
+    }
 
     Ok(result)
 }
