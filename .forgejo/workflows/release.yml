@@ -20,7 +20,7 @@ on:
 
 jobs:
   release:
-    runs-on: docker
+    runs-on: codeberg-medium
     container:
       image: docker.io/rust:1-bookworm
 
