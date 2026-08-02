@@ -5,8 +5,7 @@ written in Rust. It pairs the classic dual-pane layout with Vim-style
 keybindings, a rich preview, and themes — with no runtime dependencies beyond a
 terminal.
 
-> **Status:** pre-release (0.1.0). Everything below works today; see
-> [TODO.md](TODO.md) for what is left before a tagged release.
+> **Status:** 0.1.0 — everything below works today.
 
 ## Features
 
