@@ -34,6 +34,9 @@ on:
         default: false
         type: boolean
 
+env:
+  GITHUB_COM_TOKEN: ${{ secrets.RENOVATE_GITHUB_TOKEN }}
+
 jobs:
   renovate:
     runs-on: codeberg-tiny
