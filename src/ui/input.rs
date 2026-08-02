@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use super::{
-    App,
+    App, EditorTarget,
     completion::Completion,
     dialog::{Dialog, DialogAction, DialogResult},
     keymap::{Action, Binding},
@@ -224,17 +224,20 @@ impl App {
 
         match key.code {
             KeyCode::Enter => {
-                if find.results.is_empty() {
-                    // Start a new search
+                // Enter searches whatever the box holds; it only opens a result
+                // once the list on screen belongs to that exact pattern.
+                // Otherwise editing a query and pressing Enter would launch the
+                // editor on the previous search's selection.
+                if find.results_are_current() {
+                    if let Some(m) = find.selected_match() {
+                        self.pending_editor_file =
+                            Some(EditorTarget::at_line(m.path.clone(), m.line_num));
+                        self.find_in_files = None;
+                    }
+                } else {
                     let pattern = find.input.value.clone();
                     if !pattern.is_empty() {
                         self.start_find_in_files(pattern);
-                    }
-                } else {
-                    // Open the selected file
-                    if let Some(m) = find.selected_match() {
-                        self.pending_editor_file = Some(m.path.clone());
-                        self.find_in_files = None;
                     }
                 }
             }
@@ -374,24 +377,28 @@ impl App {
     }
 
     fn start_find_in_files(&mut self, pattern: String) {
-        let Some(find) = self.find_in_files.as_mut() else {
+        if self.find_in_files.is_none() {
             return;
-        };
+        }
 
-        find.start_search();
-
-        // Get the current directory
-        let search_dir = PathBuf::from(&self.panes.get_active_pane().path);
-
-        // Compile the regex pattern
+        // Compiled before the search is marked as started, so a bad pattern
+        // leaves the popup exactly as it was rather than recording a query that
+        // was never run.
         let re = match regex::Regex::new(&pattern) {
             Ok(re) => re,
             Err(_) => {
-                find.finish_search();
                 self.err_status("Invalid regex pattern".to_string());
                 return;
             }
         };
+
+        let Some(find) = self.find_in_files.as_mut() else {
+            return;
+        };
+        find.start_search(pattern);
+
+        // Get the current directory
+        let search_dir = PathBuf::from(&self.panes.get_active_pane().path);
 
         // Walk the directory tree and search file contents
         let walker = ignore::WalkBuilder::new(&search_dir)
@@ -1272,7 +1279,7 @@ impl App {
                         .update(self.panes.get_active_pane().path.to_string());
                 }
                 OpenAction::FileOpened(path) => {
-                    self.pending_editor_file = Some(path);
+                    self.pending_editor_file = Some(EditorTarget::new(path));
                 }
                 OpenAction::Nothing => {}
             },
@@ -1695,6 +1702,126 @@ mod tests {
         // Ctrl+g used to be hardcoded; it now comes from the same table.
         app.dispatch_key(&key(KeyCode::Char('g'), KeyModifiers::CONTROL));
         assert!(app.find_in_files.is_some());
+    }
+
+    /// A directory tree with matches in a subdirectory, for find-in-files.
+    fn dir_with_contents() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("top.txt"), "alpha\nbeta\n").unwrap();
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        std::fs::write(dir.path().join("sub").join("deep.txt"), "one\nalpha\n").unwrap();
+        dir
+    }
+
+    fn type_pattern(app: &mut App, pattern: &str) {
+        for c in pattern.chars() {
+            app.dispatch_key(&key(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+    }
+
+    #[test]
+    fn typing_a_pattern_is_not_yet_a_verdict() {
+        let dir = dir_with_contents();
+        let mut app = test_app(dir.path());
+
+        app.dispatch_key(&key(KeyCode::Char('g'), KeyModifiers::CONTROL));
+        type_pattern(&mut app, "alpha");
+
+        // Nothing has been searched yet, so the popup must not report on it —
+        // this is what made Ctrl+G look broken.
+        let find = app.find_in_files.as_ref().unwrap();
+        assert!(!find.results_are_current());
+        assert!(find.results.is_empty());
+    }
+
+    #[test]
+    fn enter_searches_the_tree_below_the_active_pane() {
+        let dir = dir_with_contents();
+        let mut app = test_app(dir.path());
+
+        app.dispatch_key(&key(KeyCode::Char('g'), KeyModifiers::CONTROL));
+        type_pattern(&mut app, "alpha");
+        app.dispatch_key(&key(KeyCode::Enter, KeyModifiers::NONE));
+
+        let find = app.find_in_files.as_ref().unwrap();
+        assert!(find.results_are_current());
+        assert_eq!(find.results.len(), 2, "the subdirectory must be searched");
+        assert!(find.results.iter().any(|m| m.path.ends_with("deep.txt")));
+    }
+
+    #[test]
+    fn editing_the_pattern_searches_again_instead_of_opening_a_file() {
+        let dir = dir_with_contents();
+        let mut app = test_app(dir.path());
+
+        app.dispatch_key(&key(KeyCode::Char('g'), KeyModifiers::CONTROL));
+        type_pattern(&mut app, "alpha");
+        app.dispatch_key(&key(KeyCode::Enter, KeyModifiers::NONE));
+
+        // Second query, typed over the first.
+        for _ in 0..5 {
+            app.dispatch_key(&key(KeyCode::Backspace, KeyModifiers::NONE));
+        }
+        type_pattern(&mut app, "beta");
+        app.dispatch_key(&key(KeyCode::Enter, KeyModifiers::NONE));
+
+        assert!(
+            app.pending_editor_file.is_none(),
+            "Enter on an edited query must not launch the editor"
+        );
+        let find = app.find_in_files.as_ref().expect("popup stays open");
+        assert_eq!(find.results.len(), 1);
+        assert!(find.results[0].path.ends_with("top.txt"));
+    }
+
+    #[test]
+    fn opening_a_result_carries_its_line_number() {
+        let dir = dir_with_contents();
+        let mut app = test_app(dir.path());
+
+        app.dispatch_key(&key(KeyCode::Char('g'), KeyModifiers::CONTROL));
+        type_pattern(&mut app, "beta");
+        app.dispatch_key(&key(KeyCode::Enter, KeyModifiers::NONE));
+        // The list is current now, so Enter opens the selection.
+        app.dispatch_key(&key(KeyCode::Enter, KeyModifiers::NONE));
+
+        let target = app.pending_editor_file.expect("editor queued");
+        assert!(target.path.ends_with("top.txt"));
+        assert_eq!(target.line, Some(2));
+        assert!(app.find_in_files.is_none());
+    }
+
+    #[test]
+    fn an_invalid_pattern_is_reported_without_recording_a_search() {
+        let dir = dir_with_contents();
+        let mut app = test_app(dir.path());
+
+        app.dispatch_key(&key(KeyCode::Char('g'), KeyModifiers::CONTROL));
+        type_pattern(&mut app, "alpha[");
+        app.dispatch_key(&key(KeyCode::Enter, KeyModifiers::NONE));
+
+        assert!(
+            app.footer
+                .status_text()
+                .unwrap()
+                .contains("Invalid regex pattern")
+        );
+        let find = app.find_in_files.as_ref().unwrap();
+        assert!(!find.searching, "a rejected pattern must not hang the popup");
+        assert!(!find.results_are_current());
+    }
+
+    #[test]
+    fn opening_a_file_from_a_pane_has_no_line() {
+        let dir = dir_with_contents();
+        let mut app = test_app(dir.path());
+        app.panes.goto_next(MoveDirection::Down);
+
+        app.dispatch_key(&key(KeyCode::Enter, KeyModifiers::NONE));
+
+        if let Some(target) = app.pending_editor_file {
+            assert_eq!(target.line, None);
+        }
     }
 
     #[test]

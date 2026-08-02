@@ -38,6 +38,10 @@ pub struct FindInFiles {
     pub searching: bool,
     pub results: Vec<FindMatch>,
     pub list_state: ListState,
+    /// The pattern the current `results` came from, so an empty list can be
+    /// told apart from a search that has not been run yet — the popup must not
+    /// claim "no matches" for a query nobody searched for.
+    last_query: Option<String>,
 }
 
 impl FindInFiles {
@@ -45,8 +49,14 @@ impl FindInFiles {
         Self::default()
     }
 
-    pub fn start_search(&mut self) {
+    /// `true` when `results` reflect exactly what is in the input box.
+    pub fn results_are_current(&self) -> bool {
+        self.last_query.as_deref() == Some(self.input.value.as_str())
+    }
+
+    pub fn start_search(&mut self, pattern: String) {
         self.searching = true;
+        self.last_query = Some(pattern);
         self.results.clear();
         self.list_state.select(None);
     }
@@ -91,6 +101,7 @@ impl FindInFiles {
         self.results.clear();
         self.list_state.select(None);
         self.searching = false;
+        self.last_query = None;
     }
 }
 
@@ -138,11 +149,21 @@ impl Component for FindInFiles {
         if self.searching {
             let msg = Paragraph::new("Searching...").style(Style::new().fg(theme.colors.info()));
             frame.render_widget(msg, chunks[1]);
-        } else if self.results.is_empty() && !self.input.value.is_empty() {
+        } else if !self.results_are_current() {
+            // Nothing has been searched for what is in the box yet. Say so
+            // rather than showing a verdict on a search that never ran.
+            let hint = if self.input.value.is_empty() {
+                "Type a regular expression, then Enter to search this directory and below"
+            } else {
+                "Press Enter to search"
+            };
+            let msg = Paragraph::new(hint).style(Style::new().fg(theme.colors.muted()));
+            frame.render_widget(msg, chunks[1]);
+        } else if self.results.is_empty() {
             let msg =
                 Paragraph::new("No matches found").style(Style::new().fg(theme.colors.muted()));
             frame.render_widget(msg, chunks[1]);
-        } else if !self.results.is_empty() {
+        } else {
             let items: Vec<ListItem> = self
                 .results
                 .iter()

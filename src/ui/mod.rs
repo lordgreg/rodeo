@@ -55,6 +55,74 @@ use search::{FilterSpec, Search, SearchKind};
 use textinput::TextInput;
 use uiconfig::UiConfig;
 
+/// A file waiting to be opened in `$EDITOR`, optionally at a line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EditorTarget {
+    pub path: PathBuf,
+    /// 1-based line, when the file was reached through something that knows one
+    /// (a find-in-files hit). Only passed on to editors known to accept `+N`.
+    pub line: Option<usize>,
+}
+
+impl EditorTarget {
+    pub fn new(path: PathBuf) -> Self {
+        Self { path, line: None }
+    }
+
+    pub fn at_line(path: PathBuf, line: usize) -> Self {
+        Self {
+            path,
+            line: Some(line),
+        }
+    }
+
+    /// Arguments for `editor`, jumping to the line where that is known to work.
+    ///
+    /// `+N` is a long-standing convention but not a universal one: helix and
+    /// VS Code take a `file:line` argument instead and would treat `+N` as a
+    /// file name to create. Only editors known to understand it get it; every
+    /// other editor opens the file at the top, which is what happened before.
+    fn args(&self, editor: &str) -> Vec<std::ffi::OsString> {
+        let mut args = Vec::new();
+        if let Some(line) = self.line.filter(|_| editor_takes_plus_line(editor)) {
+            args.push(std::ffi::OsString::from(format!("+{line}")));
+        }
+        args.push(self.path.clone().into_os_string());
+        args
+    }
+}
+
+/// Whether `editor` opens `+N file` at line N.
+///
+/// Matched on the program name so a path or a wrapper (`/usr/bin/vim`) still
+/// resolves; anything unknown is left alone.
+fn editor_takes_plus_line(editor: &str) -> bool {
+    let name = std::path::Path::new(editor.split_whitespace().next().unwrap_or(editor))
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or_default();
+
+    matches!(
+        name,
+        "vi" | "vim"
+            | "nvim"
+            | "view"
+            | "gvim"
+            | "nano"
+            | "pico"
+            | "micro"
+            | "emacs"
+            | "emacsclient"
+            | "kak"
+            | "joe"
+            | "jed"
+            | "ne"
+            | "mcedit"
+            | "gedit"
+            | "kate"
+    )
+}
+
 /// State of a running background file transfer (copy or move).
 #[derive(Debug)]
 pub struct Progress {
@@ -88,7 +156,7 @@ pub struct App {
     clipboard: Vec<PathBuf>,
     clipboard_cut: bool,
     pending_d: bool,
-    pending_editor_file: Option<PathBuf>,
+    pending_editor_file: Option<EditorTarget>,
     /// Command to run attached to the terminal (`:term`), handled by the run
     /// loop where the terminal can be suspended.
     pending_terminal_command: Option<String>,
@@ -246,12 +314,14 @@ impl App {
             // After each input event, sync watched directories to current panes.
             self.refresh_fs_watches();
 
-            if let Some(path) = self.pending_editor_file.take() {
+            if let Some(target) = self.pending_editor_file.take() {
+                let path = target.path.clone();
                 let mtime_before = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
 
                 let editor = self.config.editor.clone();
+                let args = target.args(&editor);
                 suspended(terminal, || {
-                    let _ = Command::new(&editor).arg(&path).status();
+                    let _ = Command::new(&editor).args(&args).status();
                 })?;
                 self.after_external_program();
 
@@ -753,5 +823,42 @@ fn dim_area(frame: &mut Frame<'_>, area: Rect) {
                 cell.modifier.insert(Modifier::DIM);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args_for(editor: &str, line: Option<usize>) -> Vec<String> {
+        let target = EditorTarget {
+            path: PathBuf::from("/tmp/a.rs"),
+            line,
+        };
+        target
+            .args(editor)
+            .into_iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn a_known_editor_is_told_the_line() {
+        assert_eq!(args_for("vim", Some(12)), vec!["+12", "/tmp/a.rs"]);
+        assert_eq!(args_for("/usr/bin/nvim", Some(3)), vec!["+3", "/tmp/a.rs"]);
+        assert_eq!(args_for("micro", Some(1)), vec!["+1", "/tmp/a.rs"]);
+    }
+
+    #[test]
+    fn an_unknown_editor_only_gets_the_path() {
+        // `+12` would be taken for a file name by these, creating one.
+        assert_eq!(args_for("hx", Some(12)), vec!["/tmp/a.rs"]);
+        assert_eq!(args_for("code", Some(12)), vec!["/tmp/a.rs"]);
+        assert_eq!(args_for("subl", Some(12)), vec!["/tmp/a.rs"]);
+    }
+
+    #[test]
+    fn without_a_line_nothing_changes() {
+        assert_eq!(args_for("vim", None), vec!["/tmp/a.rs"]);
     }
 }

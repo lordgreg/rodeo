@@ -21,7 +21,9 @@ terminal.
   spinner; long lines wrap (`w` toggles).
 - **Search** — fuzzy find (`/`), regex filter (`Ctrl+f`) and recursive
   find-in-files (`Ctrl+g`, honours `.gitignore`), with matches highlighted in
-  the listing.
+  the listing. Find-in-files greps file contents below the active pane: type a
+  regex, `Enter` runs it, `Enter` on a hit opens that file in `editor` at the
+  matching line.
 - **Git aware** — entry names are coloured by status, the header shows the
   branch and counts, and wide terminals get a status column showing the raw
   porcelain code (so staged and unstaged changes are distinguishable).
