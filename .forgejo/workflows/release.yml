@@ -1,9 +1,36 @@
+# Tagged release builds for Codeberg (Forgejo Actions).
+#
+# Runs on a pushed version tag, or on demand from the Actions tab
+# ("Run workflow") — useful to retry a failed publish, or to re-cut assets for
+# an existing tag without moving it.
+#
+#     git tag -a v0.1.0 -m "rodeo 0.1.0" && git push origin v0.1.0
+#
+# A manual run always builds a tag that already exists on the forge: the tag
+# is what the release is attached to, so there is nothing sensible to build
+# from a bare branch.
 name: Release
 
 on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build and release (e.g. v0.1.0)"
+        required: true
+        type: string
+      draft:
+        description: "Create the release as a draft"
+        required: false
+        default: false
+        type: boolean
+      dry_run:
+        description: "Build and package only — do not create or upload anything"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -16,13 +43,45 @@ jobs:
       image: docker.io/rust:1-bookworm
 
     steps:
+      # A tag push carries the tag in github.ref_name; a manual run carries the
+      # branch there instead, so the input wins when it is set. Everything
+      # downstream reads $TAG and never the ref, so both paths are identical
+      # from here on.
+      - name: Resolve tag
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          REF_NAME: ${{ github.ref_name }}
+          DRAFT: ${{ inputs.draft }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -eu
+
+          TAG="${INPUT_TAG:-$REF_NAME}"
+
+          case "$TAG" in
+            v*) ;;
+            *)
+              echo "'$TAG' is not a version tag — pass one as the 'tag' input." >&2
+              exit 1
+              ;;
+          esac
+
+          {
+            echo "TAG=$TAG"
+            echo "DRAFT=${DRAFT:-false}"
+            echo "DRY_RUN=${DRY_RUN:-false}"
+          } >> "$GITHUB_ENV"
+
+          echo "Releasing $TAG (draft=${DRAFT:-false}, dry-run=${DRY_RUN:-false})"
+
       - name: Check out tagged release
         env:
           TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.server_url }}/${{ github.repository }}.git
-          TAG: ${{ github.ref_name }}
         run: |
-          set -eux
+          # No -x here: tracing would print the Authorization header below,
+          # and the runner only masks the raw token, not its base64 form.
+          set -eu
 
           git config --global --add safe.directory "$PWD"
 
@@ -57,7 +116,7 @@ jobs:
         run: |
           set -eux
 
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${TAG#v}"
           PACKAGE="rodeo-${VERSION}-x86_64-linux"
 
           mkdir -p "$PACKAGE/themes"
@@ -83,6 +142,11 @@ jobs:
 
       - name: Install release tools
         run: |
+          if [ "$DRY_RUN" = "true" ]; then
+            echo "Dry run: nothing to publish, skipping."
+            exit 0
+          fi
+
           apt-get update -qq
           apt-get install -y -qq curl jq
 
@@ -90,9 +154,13 @@ jobs:
         env:
           TOKEN: ${{ secrets.GITHUB_TOKEN }}
           API: ${{ github.server_url }}/api/v1/repos/${{ github.repository }}
-          TAG: ${{ github.ref_name }}
         run: |
           set -eux
+
+          if [ "$DRY_RUN" = "true" ]; then
+            echo "Dry run: not creating a release for $TAG."
+            exit 0
+          fi
 
           RELEASE_ID=$(
             curl -fsS \
@@ -109,10 +177,11 @@ jobs:
                 -H "Content-Type: application/json" \
                 -d "$(jq -n \
                       --arg tag "$TAG" \
+                      --argjson draft "$DRAFT" \
                       '{
                         tag_name: $tag,
                         name: $tag,
-                        draft: false,
+                        draft: $draft,
                         prerelease: false
                       }')" \
                 "$API/releases" \
@@ -128,6 +197,11 @@ jobs:
           API: ${{ github.server_url }}/api/v1/repos/${{ github.repository }}
         run: |
           set -eux
+
+          if [ "$DRY_RUN" = "true" ]; then
+            echo "Dry run: built $ASSET, not uploading it."
+            exit 0
+          fi
 
           for file in "$ASSET" "$ASSET.sha256"; do
             echo "Uploading $file"
