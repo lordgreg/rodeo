@@ -104,7 +104,7 @@ fn renders_every_overlay() {
 
     // Each overlay dims the frame beneath it and draws its own geometry;
     // rendering them one after another covers those paths.
-    for key in ['?', ' ', 'j', ' '] {
+    for key in [' ', 'j', ' ', '?', '?', 'a'] {
         app.dispatch_key(&crossterm::event::KeyEvent::new(
             crossterm::event::KeyCode::Char(key),
             crossterm::event::KeyModifiers::NONE,
@@ -112,15 +112,29 @@ fn renders_every_overlay() {
         draw(&mut app, 120, 30);
     }
 
-    for code in [
-        crossterm::event::KeyCode::F(1),
-        crossterm::event::KeyCode::F(7),
+    app.dispatch_key(&crossterm::event::KeyEvent::new(
         crossterm::event::KeyCode::Esc,
-    ] {
-        app.dispatch_key(&crossterm::event::KeyEvent::new(
-            code,
-            crossterm::event::KeyModifiers::NONE,
-        ));
-        draw(&mut app, 120, 30);
-    }
+        crossterm::event::KeyModifiers::NONE,
+    ));
+    draw(&mut app, 120, 30);
+}
+
+/// The About popup was folded into the help popup, so the version has to be
+/// visible there — it is now the only place that shows it in the app.
+#[test]
+fn the_help_popup_shows_the_version() {
+    let dir = populated_dir();
+    let mut app = app_in(dir.path());
+
+    app.dispatch_key(&crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Char('?'),
+        crossterm::event::KeyModifiers::NONE,
+    ));
+
+    let buffer = draw(&mut app, 140, 40);
+    let text: String = buffer.content().iter().map(|c| c.symbol()).collect();
+    assert!(
+        text.contains(&format!("rodeo v{}", env!("CARGO_PKG_VERSION"))),
+        "{text}"
+    );
 }

@@ -24,8 +24,6 @@ use crate::config::Config;
 pub enum Action {
     OpenEntry,
     ParentDir,
-    Mkdir,
-    Touch,
     GotoFirst,
     GotoLast,
     ToggleSelect,
@@ -36,7 +34,6 @@ pub enum Action {
     PaneLeft,
     PaneRight,
     PaneToggle,
-    About,
     Help,
     Preview,
     Search,
@@ -69,8 +66,6 @@ impl Action {
             Self::BulkRename => "bulk_rename",
             Self::OpenEntry => "open",
             Self::ParentDir => "parent",
-            Self::Mkdir => "mkdir",
-            Self::Touch => "touch",
             Self::GotoFirst => "first",
             Self::GotoLast => "last",
             Self::ToggleSelect => "select",
@@ -81,7 +76,6 @@ impl Action {
             Self::PaneLeft => "left",
             Self::PaneRight => "right",
             Self::PaneToggle => "switch",
-            Self::About => "about",
             Self::Help => "help",
             Self::Preview => "preview",
             Self::Search => "search",
@@ -111,8 +105,6 @@ impl Action {
     pub const ALL: &'static [Self] = &[
         Self::OpenEntry,
         Self::ParentDir,
-        Self::Mkdir,
-        Self::Touch,
         Self::GotoFirst,
         Self::GotoLast,
         Self::ToggleSelect,
@@ -123,7 +115,6 @@ impl Action {
         Self::PaneLeft,
         Self::PaneRight,
         Self::PaneToggle,
-        Self::About,
         Self::Help,
         Self::Preview,
         Self::Search,
@@ -311,6 +302,17 @@ impl Keymap {
             .map(|(_, binding)| binding)
     }
 
+    /// The key to advertise for an action in the footer hint bar: the most
+    /// recently bound one, so a key added in the config wins over the default
+    /// it sits beside. `None` when the action is unbound.
+    pub fn display_key(&self, action: Action) -> Option<String> {
+        self.bindings
+            .iter()
+            .rev()
+            .find(|(_, binding)| *binding == Binding::Action(action))
+            .map(|(chord, _)| chord.describe())
+    }
+
     /// Keys bound to an action, for the help popup.
     pub fn keys_for(&self, action: Action) -> Vec<String> {
         self.bindings
@@ -348,10 +350,7 @@ pub fn default_keymap() -> Keymap {
 
     let defaults: Vec<(Chord, Action)> = vec![
         (plain(Enter), OpenEntry),
-        (plain(F(4)), OpenEntry),
         (plain(Backspace), ParentDir),
-        (plain(F(7)), Mkdir),
-        (ctrl(Char('t')), Touch),
         (plain(Char('g')), GotoFirst),
         (plain(Char('G')), GotoLast),
         (plain(Char('x')), ToggleSelect),
@@ -360,29 +359,26 @@ pub fn default_keymap() -> Keymap {
         (plain(Char('*')), SelectGlob),
         (plain(Char('S')), DirSizes),
         (plain(Char('q')), Quit),
-        (plain(F(10)), Quit),
         (plain(Char('h')), PaneLeft),
         (plain(Char('l')), PaneRight),
         (plain(Tab), PaneToggle),
-        (plain(Char('?')), About),
-        (plain(F(1)), Help),
+        (plain(Char('?')), Help),
         (plain(Char(' ')), Preview),
         (plain(Char('/')), Search),
-        (plain(F(3)), Search),
         (ctrl(Char('f')), FilterRegex),
         (ctrl(Char('g')), FindInFiles),
         (plain(Char(':')), CommandPalette),
         (plain(Char('r')), Rename),
-        (plain(F(2)), Rename),
         (plain(Char('a')), Create),
         (plain(Char('y')), Yank),
         (plain(Char('p')), Paste),
         (plain(Char('P')), PasteMove),
         (plain(Char('d')), DeleteChord),
-        (plain(F(5)), Copy),
-        (plain(F(6)), Move),
+        // The one-key form of yank-switch-paste, and the only operation that
+        // names the other pane, so it gets the shifted "do it over there" key.
+        (plain(Char('Y')), Copy),
+        (plain(Char('M')), Move),
         (plain(KeyCode::Delete), Action::Delete),
-        (plain(F(8)), Action::Delete),
         (plain(Char('j')), MoveDown),
         (plain(Down), MoveDown),
         (plain(Char('k')), MoveUp),
@@ -620,19 +616,23 @@ mod tests {
 
     #[test]
     fn a_key_can_be_freed() {
-        let map = build_keymap(&config_with(&[("q", "none")]));
+        // `Q` keeps quit reachable, so freeing `q` costs nothing.
+        let map = build_keymap(&config_with(&[("Q", "quit"), ("q", "none")]));
 
         assert!(
             map.binding_for(&press(KeyCode::Char('q'), KeyModifiers::NONE))
                 .is_none()
         );
-        // Quit is still on F10, so nothing is lost.
+        assert_eq!(
+            map.binding_for(&press(KeyCode::Char('Q'), KeyModifiers::NONE)),
+            Some(&Binding::Action(Action::Quit))
+        );
         assert!(map.warnings.is_empty(), "{:?}", map.warnings);
     }
 
     #[test]
     fn freeing_the_last_key_of_an_action_is_reported() {
-        let map = build_keymap(&config_with(&[("q", "none"), ("f10", "none")]));
+        let map = build_keymap(&config_with(&[("q", "none")]));
 
         assert!(
             map.warnings.iter().any(|w| w.contains("'quit' has no key")),

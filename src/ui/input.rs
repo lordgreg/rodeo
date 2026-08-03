@@ -110,9 +110,7 @@ impl App {
     }
 
     fn is_popup_active(&self) -> bool {
-        self.ui_config.active_keybind_popup
-            || self.ui_config.active_about_popup
-            || self.ui_config.active_preview_popup
+        self.ui_config.active_keybind_popup || self.ui_config.active_preview_popup
     }
 
     fn handle_dialog_key(&mut self, key: &KeyEvent) {
@@ -489,9 +487,6 @@ impl App {
         match (dialog.action, result) {
             (DialogAction::Mkdir { parent }, DialogResult::Submitted(name)) => {
                 self.mkdir(parent, name);
-            }
-            (DialogAction::Touch { parent }, DialogResult::Submitted(name)) => {
-                self.touch(parent, name);
             }
             (DialogAction::Create { parent }, DialogResult::Submitted(name)) => {
                 let name = name.trim();
@@ -1020,6 +1015,7 @@ impl App {
                 // Keybindings are rebuilt too, so `:so` is the way to iterate
                 // on them without restarting.
                 self.keymap = crate::ui::keymap::build_keymap(&self.config);
+                self.footer.update_hints(&self.keymap);
                 self.panes.reload(&self.config, false);
                 self.ok_status("Config reloaded".to_string());
                 self.report_keymap_warnings();
@@ -1181,7 +1177,6 @@ impl App {
             )
         {
             self.ui_config.active_keybind_popup = false;
-            self.ui_config.active_about_popup = false;
             self.ui_config.active_preview_popup = false;
             return true;
         }
@@ -1293,15 +1288,6 @@ impl App {
                         .update(self.panes.get_active_pane().path.to_string());
                 }
             }
-            Action::Mkdir => {
-                let parent = PathBuf::from(&self.panes.get_active_pane().path);
-                self.dialog = Some(Dialog::input(
-                    "mkdir",
-                    "Directory name:",
-                    "",
-                    DialogAction::Mkdir { parent },
-                ));
-            }
             Action::GotoFirst => self.panes.goto_first(),
             Action::GotoLast => self.panes.goto_last(),
             Action::ToggleSelect => self.panes.get_active_pane_mut().toggle_select(),
@@ -1345,12 +1331,7 @@ impl App {
                 self.header
                     .update(self.panes.get_active_pane().path.to_string());
             }
-            Action::About => {
-                self.ui_config.active_keybind_popup = false;
-                self.ui_config.active_about_popup = !self.ui_config.active_about_popup;
-            }
             Action::Help => {
-                self.ui_config.active_about_popup = false;
                 self.ui_config.active_keybind_popup = !self.ui_config.active_keybind_popup;
             }
             Action::Preview => {
@@ -1358,7 +1339,6 @@ impl App {
                     match e.kind {
                         EntryKind::File | EntryKind::Directory | EntryKind::Symlink => {
                             self.ui_config.active_keybind_popup = false;
-                            self.ui_config.active_about_popup = false;
                             self.ui_config.active_preview_popup =
                                 !self.ui_config.active_preview_popup;
                             self.preview = Some(PopupPreview::new(Some(e), self.syn_theme.clone()));
@@ -1408,15 +1388,6 @@ impl App {
             Action::Copy => self.start_copy(),
             Action::Move => self.start_move(),
             Action::Delete => self.start_delete(),
-            Action::Touch => {
-                let parent = PathBuf::from(&self.panes.get_active_pane().path);
-                self.dialog = Some(Dialog::input(
-                    "touch",
-                    "File name:",
-                    "",
-                    DialogAction::Touch { parent },
-                ));
-            }
             Action::SelectAll => {
                 let count = self.panes.get_active_pane_mut().select_all();
                 self.ok_status(format!("{count} selected"));
@@ -1469,8 +1440,6 @@ impl App {
             p.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
         } else if self.ui_config.active_keybind_popup {
             self.ui_config.active_keybind_popup = false;
-        } else if self.ui_config.active_about_popup {
-            self.ui_config.active_about_popup = false;
         } else if self.panes.get_active_pane().filter().is_some() {
             self.panes.get_active_pane_mut().clear_filter();
         } else if self.panes.get_active_pane().has_selections() {
@@ -1807,7 +1776,10 @@ mod tests {
                 .contains("Invalid regex pattern")
         );
         let find = app.find_in_files.as_ref().unwrap();
-        assert!(!find.searching, "a rejected pattern must not hang the popup");
+        assert!(
+            !find.searching,
+            "a rejected pattern must not hang the popup"
+        );
         assert!(!find.results_are_current());
     }
 
@@ -1905,8 +1877,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut app = test_app(dir.path());
 
-        // '?' arrives with SHIFT on most layouts — it must still toggle About.
+        // '?' arrives with SHIFT on most layouts — it must still reach the
+        // keymap and open the help popup.
         app.dispatch_key(&key(KeyCode::Char('?'), KeyModifiers::SHIFT));
-        assert!(app.ui_config.active_about_popup);
+        assert!(app.ui_config.active_keybind_popup);
+
+        // …and toggle it shut again, rather than being swallowed by the popup.
+        app.dispatch_key(&key(KeyCode::Char('?'), KeyModifiers::SHIFT));
+        assert!(!app.ui_config.active_keybind_popup);
     }
 }

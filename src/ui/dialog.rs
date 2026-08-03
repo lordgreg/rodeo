@@ -34,9 +34,6 @@ pub enum DialogAction {
     Mkdir {
         parent: PathBuf,
     },
-    Touch {
-        parent: PathBuf,
-    },
     Create {
         parent: PathBuf,
     },

@@ -30,7 +30,6 @@ pub mod header;
 pub mod input;
 pub mod keymap;
 pub mod panes;
-pub mod popup_about;
 pub mod popup_bulkrename;
 pub mod popup_findinfiles;
 pub mod popup_keybinds;
@@ -45,7 +44,6 @@ use component::Component;
 use dialog::Dialog;
 use header::Header;
 use panes::Panes;
-use popup_about::PopupAbout;
 use popup_bulkrename::BulkRename;
 use popup_findinfiles::FindInFiles;
 use popup_keybinds::PopupKeybinds;
@@ -236,6 +234,7 @@ impl App {
             syn_theme,
         };
 
+        app.footer.update_hints(&app.keymap);
         app.report_keymap_warnings();
         app
     }
@@ -446,7 +445,6 @@ impl App {
     /// `true` while something modal covers the panes.
     fn has_overlay(&self) -> bool {
         self.ui_config.active_keybind_popup
-            || self.ui_config.active_about_popup
             || self.ui_config.active_preview_popup
             || self.bulk_rename.is_some()
             || self.trash_view.is_some()
@@ -522,10 +520,6 @@ impl App {
 
         if self.ui_config.active_keybind_popup {
             PopupKeybinds::new().render(frame, &self.theme, &self.ui_config, frame.area());
-        }
-
-        if self.ui_config.active_about_popup {
-            PopupAbout::new().render(frame, &self.theme, &self.ui_config, frame.area());
         }
 
         if self.ui_config.active_preview_popup {

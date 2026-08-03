@@ -15,7 +15,7 @@ terminal.
   (with a permanent-delete fallback), on the selection or the highlighted
   entry. Large transfers run in the background with a progress gauge and can
   be cancelled.
-- **Preview** (`Space`) — syntax highlighting via syntect, images, archive
+- **Preview** (`Space` or `F3`) — syntax highlighting via syntect, images, archive
   listings (zip/tar/tar.gz), PDF text, directory sizes, and hex dumps with
   metadata for binaries. Slow content loads on a worker thread behind a
   spinner; long lines wrap (`w` toggles).
@@ -106,8 +106,8 @@ Overriding a key rodeo already uses is allowed, but it says so on startup —
 and warns loudly if an action is left with no key at all. `:so` reloads the
 bindings without restarting.
 
-Action names: `open` `parent` `mkdir` `touch` `first` `last` `select`
-`select_all` `glob` `sizes` `quit` `left` `right` `switch` `about` `help`
+Action names: `open` `parent` `first` `last` `select`
+`select_all` `glob` `sizes` `quit` `left` `right` `switch` `help`
 `preview` `search` `filter` `find` `palette` `rename` `create` `yank` `paste`
 `paste_move` `delete_chord` `copy` `move` `delete` `down` `up` `hidden`
 `refresh` `sort_next` `sort_prev` `sort_reverse` `bulk_rename`
@@ -120,7 +120,9 @@ Bundled themes: `default`, `catppuccin-frappe`, `catppuccin-latte`,
 
 ## Keybindings
 
-`F1` shows this list in the app.
+The defaults are vim-first: no function keys, one key per job. `?` shows this
+list in the app, and the bar along the bottom always shows the keys that are
+actually bound — rebind something and the bar says so.
 
 | Key | Action |
 |-----|--------|
@@ -132,20 +134,41 @@ Bundled themes: `default`, `catppuccin-frappe`, `catppuccin-latte`,
 | `Space` | Preview (`w` wraps, `Ctrl+f/b` page, `Ctrl+d/u` half-page, `Ctrl+j/k` scroll) |
 | `x` / `*` / `Ctrl+a` | Toggle selection / select by wildcard / select all |
 | `y` / `p` / `P` | Yank / paste copy / paste move |
-| `r`, `F2` | Rename |
+| `Y` / `M` | Copy / move to the other pane (one-key `y`+`Tab`+`p`) |
+| `r` | Rename |
 | `B` | Bulk rename (2+ selected) |
-| `F5` / `F6` | Copy / move to the other pane |
-| `F7` / `Ctrl+t` / `a` | Create directory / empty file / file-or-dir |
-| `dd`, `Del`, `F8` | Move to trash |
-| `/`, `F3` | Fuzzy search |
+| `a` | Create file, or directory with a `/` suffix |
+| `dd`, `Del` | Move to trash |
+| `/` | Fuzzy search |
 | `Ctrl+f` / `Ctrl+g` | Regex filter / find in files |
 | `S` | Compute directory sizes |
 | `Shift+←/→` / `Shift+O` | Change sort column / reverse order |
 | `Ctrl+h` / `Ctrl+l` | Toggle hidden files / refresh |
 | `:` | Command palette |
-| `?` / `F1` | About / help |
+| `?` | Help (and the version, on the bottom border) |
 | `Esc` | Close, clear filter, clear selection, then quit |
-| `q`, `F10` | Quit |
+| `q` | Quit |
+
+### Midnight Commander keys
+
+Function keys are not bound by default: they duplicate keys that already
+exist, and terminals steal several of them (`F10` opens the menu in GNOME
+Terminal, `F1` opens help in others). If you want them anyway, paste this into
+`config.toml` — `:so` applies it without a restart, and the footer relabels
+itself to match:
+
+```toml
+[keybindings]
+f1 = "help"
+f2 = "rename"
+f3 = "preview"
+f4 = "open"
+f5 = "copy"
+f6 = "move"
+f7 = "create"   # a directory needs the `/` suffix; `:mkdir <name>` is the direct route
+f8 = "delete"
+f10 = "quit"
+```
 
 ### Commands
 

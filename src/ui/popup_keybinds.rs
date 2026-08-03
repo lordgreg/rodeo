@@ -12,46 +12,129 @@ use ratatui::{
 use crate::ui::{
     command,
     component::{Component, centered_popup},
+    keymap::Action,
     theme::Theme,
     uiconfig::UiConfig,
 };
 
-const KEYBINDS: &[(&str, &str)] = &[
-    ("F1", "This help"),
-    ("F2 / r", "Rename"),
-    ("/ or F3", "Fuzzy search"),
-    ("Ctrl+f", "Regex filter"),
-    ("F4", "Edit file in $EDITOR"),
-    ("F5", "Copy to other pane"),
-    ("F6", "Move to other pane"),
-    ("F7", "Create directory"),
-    ("F8 / Del", "Move to trash"),
-    ("Ctrl+t", "Create empty file"),
-    ("a", "Create file/dir (/ = dir)"),
-    ("F10", "Quit"),
-    ("Enter", "Open directory / edit file"),
-    ("Backspace", "Parent directory"),
-    ("Tab, h, l", "Switch panes"),
-    ("j, k, Up, Down", "Move cursor"),
-    ("g / G", "First / last entry"),
-    ("x", "Toggle select file"),
-    ("y / p / P", "Yank / paste copy / paste move"),
-    ("dd", "Move to trash"),
-    (":", "Command palette (Tab completes)"),
-    (":!cmd / :term cmd", "Run: capture output / attach terminal"),
-    ("Space", "Preview"),
-    ("Ctrl+h", "Toggle hidden files"),
-    ("Ctrl+l", "Refresh panes / redraw"),
-    ("Shift+Left/Right", "Change sort column"),
-    ("Shift+O", "Reverse sort order"),
-    ("Ctrl+j/k or Ctrl+arrows", "Scroll preview"),
-    ("Ctrl+f/b", "Preview: page down/up"),
-    ("Ctrl+d/u", "Preview: half page down/up"),
-    ("w", "Preview: toggle line wrap"),
-    ("?", "About"),
-    ("Esc", "Close / clear / quit"),
-    ("q", "Quit"),
+/// One row of the keybinding table.
+///
+/// `actions` names the actions the row documents, so
+/// `every_action_is_documented` fails when a new binding is added to the
+/// keymap but not here. Rows for keys handled outside the keymap (preview
+/// scrolling, `Esc`, …) list no action.
+struct Keybind {
+    keys: &'static str,
+    description: &'static str,
+    /// Only read by the coverage test below.
+    #[cfg_attr(not(test), allow(dead_code))]
+    actions: &'static [Action],
+}
+
+/// Shorthand for a table row.
+const fn bind(
+    keys: &'static str,
+    description: &'static str,
+    actions: &'static [Action],
+) -> Keybind {
+    Keybind {
+        keys,
+        description,
+        actions,
+    }
+}
+
+const KEYBINDS: &[Keybind] = &[
+    bind("?", "This help", &[Action::Help]),
+    bind("r", "Rename", &[Action::Rename]),
+    bind("B", "Bulk rename (2+ selected)", &[Action::BulkRename]),
+    bind("/", "Fuzzy search", &[Action::Search]),
+    bind("Ctrl+f", "Regex filter", &[Action::FilterRegex]),
+    bind(
+        "Ctrl+g",
+        "Find in files (recursive grep)",
+        &[Action::FindInFiles],
+    ),
+    bind("Y", "Copy to other pane", &[Action::Copy]),
+    bind("M", "Move to other pane", &[Action::Move]),
+    bind(
+        "dd / Del",
+        "Move to trash",
+        &[Action::Delete, Action::DeleteChord],
+    ),
+    bind("a", "Create file/dir (/ = dir)", &[Action::Create]),
+    bind(
+        "Enter",
+        "Open directory / edit file in $EDITOR",
+        &[Action::OpenEntry],
+    ),
+    bind("Backspace", "Parent directory", &[Action::ParentDir]),
+    bind(
+        "Tab, h, l",
+        "Switch panes",
+        &[Action::PaneToggle, Action::PaneLeft, Action::PaneRight],
+    ),
+    bind(
+        "j, k, Up, Down",
+        "Move cursor",
+        &[Action::MoveDown, Action::MoveUp],
+    ),
+    bind(
+        "g / G",
+        "First / last entry",
+        &[Action::GotoFirst, Action::GotoLast],
+    ),
+    bind("x", "Toggle select file", &[Action::ToggleSelect]),
+    bind("Ctrl+a", "Select all entries", &[Action::SelectAll]),
+    bind("*", "Select by wildcard", &[Action::SelectGlob]),
+    bind(
+        "y / p / P",
+        "Yank / paste copy / paste move",
+        &[Action::Yank, Action::Paste, Action::PasteMove],
+    ),
+    bind("S", "Compute directory sizes", &[Action::DirSizes]),
+    bind(
+        ":",
+        "Command palette (Tab completes)",
+        &[Action::CommandPalette],
+    ),
+    bind(
+        ":!cmd / :term cmd",
+        "Run: capture output / attach terminal",
+        &[],
+    ),
+    bind("Space", "Preview (view file)", &[Action::Preview]),
+    bind("Ctrl+h", "Toggle hidden files", &[Action::ToggleHidden]),
+    bind("Ctrl+l", "Refresh panes / redraw", &[Action::Refresh]),
+    bind(
+        "Shift+Left/Right",
+        "Change sort column",
+        &[Action::SortPrev, Action::SortNext],
+    ),
+    bind("Shift+O", "Reverse sort order", &[Action::SortReverse]),
+    bind("Ctrl+j/k or Ctrl+arrows", "Scroll preview", &[]),
+    bind("Ctrl+f/b", "Preview: page down/up", &[]),
+    bind("Ctrl+d/u", "Preview: half page down/up", &[]),
+    bind("w", "Preview: toggle line wrap", &[]),
+    bind(
+        "r / D / x (trash)",
+        "Restore / delete permanently / select",
+        &[],
+    ),
+    bind("Esc", "Close / clear / quit", &[]),
+    bind("q", "Quit", &[Action::Quit]),
 ];
+
+/// The former About popup, now a line on the bottom border of this popup:
+/// one key fewer to remember, and the version is where people already look.
+fn about_line() -> String {
+    format!(
+        " {} v{}  ·  {} ",
+        env!("CARGO_PKG_NAME"),
+        env!("CARGO_PKG_VERSION"),
+        env!("CARGO_PKG_REPOSITORY"),
+    )
+}
 
 /// Gap between two rendered columns.
 const COLUMN_GAP: u16 = 2;
@@ -87,7 +170,7 @@ fn command_entries() -> Vec<(String, &'static str)> {
 fn key_column(commands: &[(String, &'static str)]) -> usize {
     KEYBINDS
         .iter()
-        .map(|(key, _)| key.len())
+        .map(|bind| bind.keys.len())
         .chain(commands.iter().map(|(names, _)| names.len()))
         .max()
         .unwrap_or_default()
@@ -115,7 +198,7 @@ fn all_lines(theme: &Theme) -> Vec<Line<'static>> {
     lines.extend(
         KEYBINDS
             .iter()
-            .map(|(key, description)| entry(key, description)),
+            .map(|bind| entry(bind.keys, bind.description)),
     );
     lines.push(Line::from(""));
     lines.push(heading("Commands  (Tab completes, Shift+Tab goes back)"));
@@ -138,7 +221,11 @@ impl Component for PopupKeybinds {
         let columns = lines.len().div_ceil(usable_rows as usize).max(1) as u16;
         let rows = (lines.len() as u16).div_ceil(columns);
 
-        let want_width = columns * line_width + (columns - 1) * COLUMN_GAP + 4;
+        // The about line lives on the bottom border, so it costs no rows —
+        // but the popup still has to be wide enough to show it.
+        let about = Line::from(about_line()).centered();
+        let want_width =
+            (columns * line_width + (columns - 1) * COLUMN_GAP + 4).max(about.width() as u16 + 2);
         let popup_area = centered_popup(
             area,
             (want_width, rows + 2),
@@ -149,7 +236,8 @@ impl Component for PopupKeybinds {
         frame.render_widget(Clear, popup_area);
 
         let block = Block::default()
-            .title("Help  (F1 / :help)")
+            .title("Help  (? / :help)")
+            .title_bottom(about.style(Style::default().fg(theme.colors.muted())))
             .borders(Borders::ALL)
             .padding(Padding::horizontal(1))
             .style(
@@ -182,7 +270,7 @@ mod tests {
         let commands = command_entries();
         let longest = KEYBINDS
             .iter()
-            .map(|(key, _)| key.len())
+            .map(|bind| bind.keys.len())
             .chain(commands.iter().map(|(names, _)| names.len()))
             .max()
             .unwrap();
@@ -194,8 +282,21 @@ mod tests {
         assert!(
             KEYBINDS
                 .iter()
-                .all(|(key, description)| !key.is_empty() && !description.is_empty())
+                .all(|bind| !bind.keys.is_empty() && !bind.description.is_empty())
         );
+    }
+
+    /// A feature nobody can find is as good as missing, so every action in the
+    /// keymap has to show up in this popup.
+    #[test]
+    fn every_action_is_documented() {
+        let missing: Vec<&str> = Action::ALL
+            .iter()
+            .filter(|action| !KEYBINDS.iter().any(|bind| bind.actions.contains(action)))
+            .map(|action| action.name())
+            .collect();
+
+        assert!(missing.is_empty(), "undocumented actions: {missing:?}");
     }
 
     #[test]

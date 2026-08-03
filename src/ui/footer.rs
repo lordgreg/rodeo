@@ -11,7 +11,13 @@ use ratatui::{
     widgets::{Block, Padding, Paragraph},
 };
 
-use crate::ui::{component::Component, panes::PaneStats, theme::Theme, uiconfig::UiConfig};
+use crate::ui::{
+    component::Component,
+    keymap::{Action, Keymap},
+    panes::PaneStats,
+    theme::Theme,
+    uiconfig::UiConfig,
+};
 
 /// How long a status message stays visible.
 const STATUS_TTL: Duration = Duration::from_secs(3);
@@ -25,7 +31,53 @@ struct StatusMsg {
     at: Instant,
 }
 
-#[derive(Debug)]
+/// What the hint bar advertises, in order. The keys come from the keymap, so
+/// the bar tells the truth after a rebind instead of repeating the defaults.
+const HINTS: &[(Action, &str)] = &[
+    (Action::Help, "Help"),
+    (Action::Rename, "Rename"),
+    (Action::Preview, "View"),
+    (Action::OpenEntry, "Edit"),
+    (Action::Copy, "Copy"),
+    (Action::Move, "Move"),
+    (Action::Create, "Create"),
+    (Action::Delete, "Delete"),
+    (Action::PaneToggle, "Panes"),
+    (Action::ToggleSelect, "Select"),
+    (Action::ToggleHidden, "Hidden"),
+    (Action::Search, "Search"),
+    (Action::Quit, "Quit"),
+];
+
+/// Turns a config-style chord (`ctrl+h`, `space`, `f5`) into something worth
+/// putting on a status bar.
+fn pretty_key(chord: &str) -> String {
+    let (prefix, key) = match chord.strip_prefix("ctrl+") {
+        Some(rest) => ("^", rest),
+        None => ("", chord),
+    };
+
+    let key = match key {
+        "space" => "Space".to_string(),
+        "tab" => "Tab".to_string(),
+        "enter" => "Enter".to_string(),
+        "backspace" => "Bksp".to_string(),
+        "delete" => "Del".to_string(),
+        // Function keys are written `f5` in a config but `F5` on a keyboard.
+        other
+            if other.starts_with('f')
+                && other.len() > 1
+                && other[1..].bytes().all(|b| b.is_ascii_digit()) =>
+        {
+            other.to_uppercase()
+        }
+        other => other.to_string(),
+    };
+
+    format!("{prefix}{key}")
+}
+
+#[derive(Debug, Default)]
 pub struct Footer {
     pub keymaps: Vec<String>,
     stats: Option<PaneStats>,
@@ -33,40 +85,17 @@ pub struct Footer {
     status: Option<StatusMsg>,
 }
 
-impl Default for Footer {
-    fn default() -> Self {
-        Self {
-            keymaps: vec![
-                "F1 Keys".to_string(),
-                "F2 Rename".to_string(),
-                "F3 Search".to_string(),
-                "F4 Edit".to_string(),
-                "F5 Copy".to_string(),
-                "F6 Move".to_string(),
-                "F7 Mkdir".to_string(),
-                "F8 Delete".to_string(),
-                "Space Preview".to_string(),
-                "Tab Panes".to_string(),
-                "x Select".to_string(),
-                "^h Hidden".to_string(),
-                "? About".to_string(),
-                "F10 Quit".to_string(),
-            ],
-            stats: None,
-            clipboard: None,
-            status: None,
-        }
-    }
-}
-
 impl Footer {
-    pub fn _new(keymaps: Vec<String>) -> Self {
-        Self {
-            keymaps,
-            stats: None,
-            clipboard: None,
-            status: None,
-        }
+    /// Rebuilds the hint bar from the active bindings. Called at startup and
+    /// again after `:so`, so the bar follows the config.
+    pub fn update_hints(&mut self, keymap: &Keymap) {
+        self.keymaps = HINTS
+            .iter()
+            .filter_map(|(action, label)| {
+                let key = keymap.display_key(*action)?;
+                Some(format!("{} {label}", pretty_key(&key)))
+            })
+            .collect();
     }
 
     pub fn set_stats(&mut self, stats: PaneStats) {
@@ -201,5 +230,54 @@ impl Component for Footer {
                 inner_area,
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+    use crate::ui::keymap::build_keymap;
+
+    fn hints_with(bindings: &[(&str, &str)]) -> Vec<String> {
+        let config = Config {
+            keybindings: bindings
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+            ..Default::default()
+        };
+        let mut footer = Footer::default();
+        footer.update_hints(&build_keymap(&config));
+        footer.keymaps
+    }
+
+    #[test]
+    fn hints_are_built_from_the_defaults() {
+        let hints = hints_with(&[]);
+
+        assert!(hints.contains(&"Y Copy".to_string()), "{hints:?}");
+        assert!(hints.contains(&"^h Hidden".to_string()), "{hints:?}");
+        assert!(hints.contains(&"Space View".to_string()), "{hints:?}");
+    }
+
+    /// The bar used to be a hardcoded list, so it lied to anyone who rebound a
+    /// key. It has to follow the keymap instead.
+    #[test]
+    fn hints_follow_a_rebound_key() {
+        // The config key wins over the default it sits beside, so pasting the
+        // Midnight Commander block relabels the bar.
+        let hints = hints_with(&[("f5", "copy")]);
+
+        assert!(hints.contains(&"F5 Copy".to_string()), "{hints:?}");
+        assert!(!hints.iter().any(|h| h.starts_with("Y ")), "{hints:?}");
+    }
+
+    /// An action the user unbound has nothing to advertise.
+    #[test]
+    fn an_unbound_action_is_dropped_from_the_bar() {
+        let hints = hints_with(&[("q", "none")]);
+
+        assert!(!hints.iter().any(|h| h.ends_with(" Quit")), "{hints:?}");
     }
 }
