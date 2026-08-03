@@ -23,7 +23,10 @@ terminal.
   find-in-files (`Ctrl+g`, honours `.gitignore`), with matches highlighted in
   the listing. Find-in-files greps file contents below the active pane: type a
   regex, `Enter` runs it, `Enter` on a hit opens that file in `editor` at the
-  matching line.
+  matching line. The popup is split Telescope-style — hits on the left, a
+  syntax highlighted preview centred on the matching line on the right
+  (`Ctrl+n`/`Ctrl+p` move the selection, `Ctrl+d`/`Ctrl+u` scroll the
+  preview).
 - **Git aware** — entry names are coloured by status, the header shows the
   branch and counts, and wide terminals get a status column showing the raw
   porcelain code (so staged and unstaged changes are distinguishable).

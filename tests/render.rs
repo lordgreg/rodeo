@@ -119,6 +119,45 @@ fn renders_every_overlay() {
     draw(&mut app, 120, 30);
 }
 
+/// Find-in-files shows the hit list and, next to it, the file around the
+/// matching line — the whole point of the split, so it is asserted on.
+#[test]
+fn find_in_files_previews_the_selected_hit() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("a.rs"),
+        "fn one() {}\nfn needle() {}\nfn three() {}\n",
+    )
+    .unwrap();
+    let mut app = app_in(dir.path());
+
+    app.dispatch_key(&crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Char('g'),
+        crossterm::event::KeyModifiers::CONTROL,
+    ));
+    for c in "needle".chars() {
+        app.dispatch_key(&crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char(c),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+    }
+    app.dispatch_key(&crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Enter,
+        crossterm::event::KeyModifiers::NONE,
+    ));
+
+    let buffer = draw(&mut app, 140, 40);
+    let text: String = buffer.content().iter().map(|c| c.symbol()).collect();
+    // The hit, listed relative to the search root...
+    assert!(text.contains("a.rs:2"), "{text}");
+    // ...and its neighbouring lines, which only the preview pane can show.
+    assert!(text.contains("fn three() {}"), "{text}");
+
+    // Too narrow for two columns: the list keeps the full width and nothing
+    // panics.
+    draw(&mut app, 60, 20);
+}
+
 /// The About popup was folded into the help popup, so the version has to be
 /// visible there — it is now the only place that shows it in the app.
 #[test]

@@ -85,7 +85,13 @@ pub enum FileType {
 
 static SYNTAX_SET: OnceLock<SyntaxSet> = OnceLock::new();
 
-fn syntect_style_to_ratatui(style: SynStyle) -> Style {
+/// The shared syntax definitions, loaded once. Other components (find-in-files
+/// preview) highlight with the same set so colours match everywhere.
+pub(crate) fn syntax_set() -> &'static SyntaxSet {
+    SYNTAX_SET.get_or_init(SyntaxSet::load_defaults_newlines)
+}
+
+pub(crate) fn syntect_style_to_ratatui(style: SynStyle) -> Style {
     let mut s = Style::default().fg(Color::Rgb(
         style.foreground.r,
         style.foreground.g,
@@ -267,7 +273,7 @@ impl PopupPreview {
     }
 
     fn text_preview(path: &str, syn_theme: &highlighting::Theme) -> PreviewContent {
-        let ss = SYNTAX_SET.get_or_init(SyntaxSet::load_defaults_newlines);
+        let ss = syntax_set();
         let syntax = ss
             .find_syntax_for_file(path)
             .ok()

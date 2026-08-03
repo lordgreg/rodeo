@@ -30,6 +30,9 @@ use crate::ui::theme::Theme;
 /// not push the key hints off the bar.
 const SHELL_LABEL_WIDTH: usize = 24;
 
+/// Lines the find-in-files preview moves per scroll key.
+const PREVIEW_SCROLL_LINES: i32 = 10;
+
 /// Shortens `text` to `width` characters, marking the cut with an ellipsis.
 fn elide(text: &str, width: usize) -> String {
     if text.chars().count() <= width {
@@ -251,6 +254,26 @@ impl App {
             KeyCode::Up => {
                 find.move_up();
             }
+            // Telescope-style aliases: the hands never leave the query box.
+            KeyCode::Char('n') if key.modifiers == KeyModifiers::CONTROL => {
+                find.move_down();
+            }
+            KeyCode::Char('p') if key.modifiers == KeyModifiers::CONTROL => {
+                find.move_up();
+            }
+            // Scroll the preview without moving the selection.
+            KeyCode::Char('d') if key.modifiers == KeyModifiers::CONTROL => {
+                find.scroll_preview(PREVIEW_SCROLL_LINES);
+            }
+            KeyCode::Char('u') if key.modifiers == KeyModifiers::CONTROL => {
+                find.scroll_preview(-PREVIEW_SCROLL_LINES);
+            }
+            KeyCode::PageDown => {
+                find.scroll_preview(PREVIEW_SCROLL_LINES);
+            }
+            KeyCode::PageUp => {
+                find.scroll_preview(-PREVIEW_SCROLL_LINES);
+            }
             KeyCode::Left => {
                 find.input.left();
             }
@@ -390,13 +413,14 @@ impl App {
             }
         };
 
+        // Get the current directory
+        let search_dir = PathBuf::from(&self.panes.get_active_pane().path);
+
         let Some(find) = self.find_in_files.as_mut() else {
             return;
         };
         find.start_search(pattern);
-
-        // Get the current directory
-        let search_dir = PathBuf::from(&self.panes.get_active_pane().path);
+        find.set_root(search_dir.clone());
 
         // Walk the directory tree and search file contents
         let walker = ignore::WalkBuilder::new(&search_dir)
@@ -1400,7 +1424,7 @@ impl App {
                 self.search = Some(Search::regex(initial));
             }
             Action::FindInFiles => {
-                self.find_in_files = Some(FindInFiles::new());
+                self.find_in_files = Some(FindInFiles::new(self.syn_theme.clone()));
             }
             Action::ToggleHidden => {
                 self.config.show_hidden = !self.config.show_hidden;
