@@ -45,7 +45,7 @@ const HINTS: &[(Action, &str)] = &[
     (Action::PaneToggle, "Panes"),
     (Action::ToggleSelect, "Select"),
     (Action::ToggleHidden, "Hidden"),
-    (Action::Search, "Search"),
+    (Action::Search, "Find"),
     (Action::Quit, "Quit"),
 ];
 

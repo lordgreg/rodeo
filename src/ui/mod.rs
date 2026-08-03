@@ -24,6 +24,7 @@ pub mod command;
 pub mod completion;
 pub mod component;
 pub mod dialog;
+pub mod filepreview;
 pub mod footer;
 pub mod git;
 pub mod header;
@@ -31,6 +32,7 @@ pub mod input;
 pub mod keymap;
 pub mod panes;
 pub mod popup_bulkrename;
+pub mod popup_findfiles;
 pub mod popup_findinfiles;
 pub mod popup_keybinds;
 pub mod popup_preview;
@@ -45,11 +47,12 @@ use dialog::Dialog;
 use header::Header;
 use panes::Panes;
 use popup_bulkrename::BulkRename;
+use popup_findfiles::FileFinder;
 use popup_findinfiles::FindInFiles;
 use popup_keybinds::PopupKeybinds;
 use popup_preview::PopupPreview;
 use popup_trash::TrashView;
-use search::{FilterSpec, Search, SearchKind};
+use search::Search;
 use textinput::TextInput;
 use uiconfig::UiConfig;
 
@@ -149,6 +152,8 @@ pub struct App {
     /// Live completion for the command line, recomputed as it is edited.
     completion: completion::Completion,
     find_in_files: Option<FindInFiles>,
+    /// The file finder (`/`), open over the panes while it searches by name.
+    find_files: Option<FileFinder>,
     bulk_rename: Option<BulkRename>,
     trash_view: Option<TrashView>,
     clipboard: Vec<PathBuf>,
@@ -218,6 +223,7 @@ impl App {
             command: None,
             completion: completion::Completion::default(),
             find_in_files: None,
+            find_files: None,
             bulk_rename: None,
             trash_view: None,
             clipboard: Vec::new(),
@@ -449,6 +455,7 @@ impl App {
             || self.bulk_rename.is_some()
             || self.trash_view.is_some()
             || self.find_in_files.is_some()
+            || self.find_files.is_some()
             || self.dialog.is_some()
             || self.progress.is_some()
     }
@@ -460,13 +467,10 @@ impl App {
 
         frame.render_widget(background, frame.area());
 
-        // The input bar is visible while editing a search/command or while a
-        // regex filter is active on the active pane.
-        let regex_filter_active = matches!(
-            self.panes.get_active_pane().filter(),
-            Some(FilterSpec::Regex(_))
-        );
-        let show_input_bar = self.search.is_some() || self.command.is_some() || regex_filter_active;
+        // The input bar is visible while editing a filter/command or while a
+        // filter is active on the active pane.
+        let filter_active = self.panes.get_active_pane().filter().is_some();
+        let show_input_bar = self.search.is_some() || self.command.is_some() || filter_active;
 
         let outer_layout = if show_input_bar {
             Layout::default()
@@ -551,17 +555,21 @@ impl App {
             tv.render(frame, &self.theme, &self.ui_config, frame.area());
         }
 
-        // Find-in-files popup renders on top of preview.
+        // The two search popups render on top of the preview, centred at 80%
+        // of the screen. Only one of them can be open at a time.
+        let search_popup_area = ratatui::layout::Rect {
+            x: frame.area().width / 10,
+            y: frame.area().height / 10,
+            width: frame.area().width * 4 / 5,
+            height: frame.area().height * 4 / 5,
+        };
         if let Some(find) = self.find_in_files.as_mut() {
-            // Centered popup, 80% width and height
-            let area = ratatui::layout::Rect {
-                x: frame.area().width / 10,
-                y: frame.area().height / 10,
-                width: frame.area().width * 4 / 5,
-                height: frame.area().height * 4 / 5,
-            };
-            frame.render_widget(Clear, area);
-            find.render(frame, &self.theme, &self.ui_config, area);
+            frame.render_widget(Clear, search_popup_area);
+            find.render(frame, &self.theme, &self.ui_config, search_popup_area);
+        }
+        if let Some(finder) = self.find_files.as_mut() {
+            frame.render_widget(Clear, search_popup_area);
+            finder.render(frame, &self.theme, &self.ui_config, search_popup_area);
         }
 
         // Dialogs render on top of everything.
@@ -706,32 +714,32 @@ impl App {
                 )
             } else {
                 match &self.search {
-                    Some(s) => match s.kind {
-                        SearchKind::Fuzzy => (
-                            format!("/{}", s.input.value),
-                            Style::new().fg(self.theme.colors.foreground()),
-                            Some(1 + s.input.cursor as u16),
-                        ),
-                        SearchKind::Regex => {
-                            let style = if s.regex_invalid {
-                                Style::new().fg(self.theme.colors.error())
-                            } else {
-                                Style::new().fg(self.theme.colors.foreground())
-                            };
-                            (
-                                format!("regex: {}", s.input.value),
-                                style,
-                                Some(7 + s.input.cursor as u16),
-                            )
-                        }
-                    },
+                    // One filter bar for both kinds of query: the prefix says
+                    // how what has been typed is being read.
+                    Some(s) => {
+                        let style = if s.regex_invalid {
+                            Style::new().fg(self.theme.colors.error())
+                        } else {
+                            Style::new().fg(self.theme.colors.foreground())
+                        };
+                        const PREFIX: &str = "filter: ";
+                        (
+                            format!("{PREFIX}{}", s.input.value),
+                            style,
+                            Some(PREFIX.len() as u16 + s.input.cursor as u16),
+                        )
+                    }
                     None => match self.panes.get_active_pane().filter() {
-                        Some(FilterSpec::Regex(pattern)) => (
-                            format!("regex filter: {pattern}  (Ctrl+f to edit, Esc to clear)"),
+                        Some(filter) => (
+                            format!(
+                                "{} filter: {}  (Ctrl+f to edit, Esc to clear)",
+                                filter.kind_label(),
+                                filter.pattern()
+                            ),
                             Style::new().fg(self.theme.colors.muted()),
                             None,
                         ),
-                        _ => (String::new(), Style::new(), None),
+                        None => (String::new(), Style::new(), None),
                     },
                 }
             };

@@ -48,8 +48,16 @@ const KEYBINDS: &[Keybind] = &[
     bind("?", "This help", &[Action::Help]),
     bind("r", "Rename", &[Action::Rename]),
     bind("B", "Bulk rename (2+ selected)", &[Action::BulkRename]),
-    bind("/", "Fuzzy search", &[Action::Search]),
-    bind("Ctrl+f", "Regex filter", &[Action::FilterRegex]),
+    bind(
+        "/",
+        "Find files by name (fuzzy or regex)",
+        &[Action::Search],
+    ),
+    bind(
+        "Ctrl+f",
+        "Filter this pane (fuzzy or regex)",
+        &[Action::FilterRegex],
+    ),
     bind(
         "Ctrl+g",
         "Find in files (recursive grep)",

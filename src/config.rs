@@ -41,6 +41,12 @@ fn default_show_hidden() -> bool {
 fn default_directories_on_top() -> bool {
     true
 }
+fn default_filter_gitignore() -> bool {
+    true
+}
+fn default_filter_hidden() -> bool {
+    true
+}
 fn default_active_pane() -> ActivePane {
     ActivePane::Left
 }
@@ -80,6 +86,17 @@ pub struct Config {
     /// come from a Nerd Font, and without one they render as tofu.
     #[serde(default)]
     pub icons: bool,
+    /// Skip everything `.gitignore` (and `.ignore`) excludes when searching
+    /// for files or in file contents.
+    #[serde(default = "default_filter_gitignore")]
+    pub filter_gitignore: bool,
+    /// Skip dot-files and dot-directories in those same searches.
+    #[serde(default = "default_filter_hidden")]
+    pub filter_hidden: bool,
+    /// Extra names to skip: a plain name (`target`), an extension pattern
+    /// (`*.lock`), or a sub-path (`src/generated`).
+    #[serde(default)]
+    pub filter_entries: Vec<String>,
     /// Optional keybinding overrides: action name → key name (single,
     /// unmodified keys only). See `ui::keymap` for valid names.
     ///
@@ -102,6 +119,9 @@ impl Default for Config {
             active_pane: default_active_pane(),
             editor: default_editor(),
             icons: false,
+            filter_gitignore: default_filter_gitignore(),
+            filter_hidden: default_filter_hidden(),
+            filter_entries: Vec::new(),
             keybindings: HashMap::new(),
         }
     }
@@ -223,6 +243,9 @@ mod tests {
         assert!(config.directories_on_top);
         assert!(matches!(config.active_pane, ActivePane::Left));
         assert!(!config.icons);
+        assert!(config.filter_gitignore);
+        assert!(config.filter_hidden);
+        assert!(config.filter_entries.is_empty());
         assert!(config.keybindings.is_empty());
     }
 
@@ -256,6 +279,9 @@ show_hidden = true
 directories_on_top = false
 active_pane = "Right"
 editor = "emacs"
+filter_gitignore = false
+filter_hidden = false
+filter_entries = ["target", "*.lock"]
 
 [keybindings]
 quit = "Q"
@@ -271,6 +297,9 @@ help = "H"
         assert!(!config.directories_on_top);
         assert!(matches!(config.active_pane, ActivePane::Right));
         assert_eq!(config.editor, "emacs");
+        assert!(!config.filter_gitignore);
+        assert!(!config.filter_hidden);
+        assert_eq!(config.filter_entries, vec!["target", "*.lock"]);
         assert_eq!(config.keybindings.get("quit"), Some(&"Q".to_string()));
     }
 

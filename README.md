@@ -19,14 +19,22 @@ terminal.
   listings (zip/tar/tar.gz), PDF text, directory sizes, and hex dumps with
   metadata for binaries. Slow content loads on a worker thread behind a
   spinner; long lines wrap (`w` toggles).
-- **Search** — fuzzy find (`/`), regex filter (`Ctrl+f`) and recursive
-  find-in-files (`Ctrl+g`, honours `.gitignore`), with matches highlighted in
-  the listing. Find-in-files greps file contents below the active pane: type a
-  regex, `Enter` runs it, `Enter` on a hit opens that file in `editor` at the
-  matching line. The popup is split Telescope-style — hits on the left, a
-  syntax highlighted preview centred on the matching line on the right
-  (`Ctrl+n`/`Ctrl+p` move the selection, `Ctrl+d`/`Ctrl+u` scroll the
-  preview).
+- **Search** — one query language everywhere: type a plain word and it is
+  matched fuzzily, type a regular expression and it is matched as one. No mode
+  to pick first.
+  - `/` opens the **file finder**: every file and directory below the active
+    pane, searched by name as you type. `Enter` takes the pane to the match
+    (into a directory, or onto the file with its parent listed), `Ctrl+e`
+    opens it in `editor`.
+  - `Ctrl+f` **filters the pane** listing in place, with matches highlighted.
+  - `Ctrl+g` is **find-in-files**: greps file contents below the active pane —
+    type a regex, `Enter` runs it, `Enter` on a hit opens that file in `editor`
+    at the matching line.
+
+  Both popups are split Telescope-style — results on the left, a syntax
+  highlighted preview on the right (`Ctrl+n`/`Ctrl+p` move the selection,
+  `Ctrl+d`/`Ctrl+u` scroll the preview) — and both obey the search filter
+  below, which they name along their bottom border.
 - **Git aware** — entry names are coloured by status, the header shows the
   branch and counts, and wide terminals get a status column showing the raw
   porcelain code (so staged and unstaged changes are distinguishable).
@@ -95,6 +103,12 @@ active_pane = "Left"                # Left | Right
 editor = "nvim"                     # defaults to $VISUAL, then $EDITOR, then vi
 icons = false                       # file-type glyphs; needs a Nerd Font
 
+# What `/` (find files) and `Ctrl+g` (find in files) are allowed to look at.
+filter_gitignore = true             # skip whatever .gitignore/.ignore exclude
+filter_hidden = true                # skip dot-files and dot-directories
+filter_entries = ["target", "node_modules", "*.lock", "src/generated"]
+                                    # extra names: a name, *.ext, or a sub-path
+
 # Optional. The key is on the left, what it does on the right: either an
 # action name, a `:command`, or "none" to free the key.
 [keybindings]
@@ -142,8 +156,8 @@ actually bound — rebind something and the bar says so.
 | `B` | Bulk rename (2+ selected) |
 | `a` | Create file, or directory with a `/` suffix |
 | `dd`, `Del` | Move to trash |
-| `/` | Fuzzy search |
-| `Ctrl+f` / `Ctrl+g` | Regex filter / find in files |
+| `/` | Find files by name (fuzzy or regex) |
+| `Ctrl+f` / `Ctrl+g` | Filter the pane / find in files |
 | `S` | Compute directory sizes |
 | `Shift+←/→` / `Shift+O` | Change sort column / reverse order |
 | `Ctrl+h` / `Ctrl+l` | Toggle hidden files / refresh |

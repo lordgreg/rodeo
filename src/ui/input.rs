@@ -15,15 +15,16 @@ use super::{
     keymap::{Action, Binding},
     panes::{EntryKind, MoveDirection, OpenAction, SortOrder, SortType},
     popup_bulkrename::BulkRename,
+    popup_findfiles::FileFinder,
     popup_findinfiles::FindInFiles,
     popup_preview::PopupPreview,
     popup_trash::TrashView,
-    search::{FilterSpec, Search, SearchKind},
+    search::{FilterSpec, Search},
     textinput::TextInput,
     uiconfig::ActivePane,
 };
 use crate::config::Config;
-use crate::fs::ops;
+use crate::fs::{filter::SearchFilter, ops};
 use crate::ui::theme::Theme;
 
 /// Longest command echoed back in a footer message, so a long one-liner does
@@ -82,6 +83,12 @@ impl App {
         // The find-in-files popup consumes keys while it is open.
         if self.find_in_files.is_some() {
             self.handle_find_in_files_key(key_event);
+            return;
+        }
+
+        // So does the file finder.
+        if self.find_files.is_some() {
+            self.handle_find_files_key(key_event);
             return;
         }
 
@@ -162,47 +169,38 @@ impl App {
         }
     }
 
+    /// Applies what is in the filter bar to the active pane.
+    ///
+    /// There is only one kind of query: [`FilterSpec::detect`] decides whether
+    /// it reads as a regular expression or as a fuzzy pattern, so the user
+    /// never has to pick a mode before typing.
     fn apply_search(&mut self) {
         let Some(s) = self.search.as_ref() else {
             return;
         };
-        let (kind, input) = (s.kind, s.input.value.clone());
+        let input = s.input.value.clone();
         let pane = self.panes.get_active_pane_mut();
 
-        match kind {
-            SearchKind::Fuzzy => {
-                let _ = pane.set_filter(FilterSpec::Fuzzy(input));
-            }
-            SearchKind::Regex => {
-                let result = if input.is_empty() {
-                    pane.clear_filter();
-                    Ok(())
-                } else {
-                    pane.set_filter(FilterSpec::Regex(input))
-                };
-                if let Some(s) = self.search.as_mut() {
-                    s.regex_invalid = result.is_err();
-                }
-            }
+        if input.is_empty() {
+            pane.clear_filter();
+        } else {
+            // detect() only hands back a regex it has already compiled, so the
+            // only errors left are impossible — but a failure must still not
+            // leave the pane showing a filter it is not applying.
+            let _ = pane.set_filter(FilterSpec::detect(&input));
+        }
+
+        // An unfinished regex is matched fuzzily; colouring the bar is how the
+        // user learns the pattern is not doing what it looks like yet.
+        if let Some(s) = self.search.as_mut() {
+            s.regex_invalid = FilterSpec::is_broken_regex(&input);
         }
     }
 
+    /// Closes the filter bar, leaving the filter itself in place (Esc clears
+    /// it, and the footer bar says so).
     fn confirm_search(&mut self) {
-        let Some(s) = self.search.take() else {
-            return;
-        };
-
-        if s.kind == SearchKind::Fuzzy {
-            // Jump to the top match: the cursor already sits on the best match
-            // in the filtered list — keep it there after dropping the filter.
-            let pane = self.panes.get_active_pane_mut();
-            let selected = pane.get_selected_entry().map(|e| e.path);
-            pane.clear_filter();
-            if let Some(path) = selected {
-                pane.select_by_path(&path);
-            }
-        }
-        // Regex: the filter stays active after the bar closes (see Esc to clear).
+        self.search = None;
     }
 
     fn cancel_search(&mut self) {
@@ -287,6 +285,83 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    fn handle_find_files_key(&mut self, key: &KeyEvent) {
+        let Some(finder) = self.find_files.as_mut() else {
+            return;
+        };
+
+        match key.code {
+            KeyCode::Esc => {
+                self.find_files = None;
+            }
+            KeyCode::Enter => {
+                let Some(entry) = finder.selected().cloned() else {
+                    return;
+                };
+                self.find_files = None;
+                self.reveal(&entry.path, entry.is_dir);
+            }
+            // Straight into the editor, for when the file was the destination
+            // rather than the pane it lives in.
+            KeyCode::Char('e') if key.modifiers == KeyModifiers::CONTROL => {
+                let Some(entry) = finder.selected().cloned() else {
+                    return;
+                };
+                if entry.is_dir {
+                    return;
+                }
+                self.find_files = None;
+                self.pending_editor_file = Some(EditorTarget::new(entry.path));
+            }
+            KeyCode::Backspace => {
+                finder.input.backspace();
+                finder.refilter();
+            }
+            KeyCode::Down => finder.move_down(),
+            KeyCode::Up => finder.move_up(),
+            KeyCode::Char('n') if key.modifiers == KeyModifiers::CONTROL => finder.move_down(),
+            KeyCode::Char('p') if key.modifiers == KeyModifiers::CONTROL => finder.move_up(),
+            KeyCode::Char('d') if key.modifiers == KeyModifiers::CONTROL => {
+                finder.scroll_preview(PREVIEW_SCROLL_LINES);
+            }
+            KeyCode::Char('u') if key.modifiers == KeyModifiers::CONTROL => {
+                finder.scroll_preview(-PREVIEW_SCROLL_LINES);
+            }
+            KeyCode::PageDown => finder.scroll_preview(PREVIEW_SCROLL_LINES),
+            KeyCode::PageUp => finder.scroll_preview(-PREVIEW_SCROLL_LINES),
+            KeyCode::Left => finder.input.left(),
+            KeyCode::Right => finder.input.right(),
+            KeyCode::Char(c)
+                if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT =>
+            {
+                finder.input.insert(c);
+                finder.refilter();
+            }
+            _ => {}
+        }
+    }
+
+    /// Points the active pane at `path`: into it when it is a directory,
+    /// otherwise at its parent with the file under the cursor.
+    pub(crate) fn reveal(&mut self, path: &Path, is_dir: bool) {
+        let (dir, select) = if is_dir {
+            (path.to_path_buf(), None)
+        } else {
+            match path.parent() {
+                Some(parent) => (parent.to_path_buf(), Some(path.to_path_buf())),
+                None => return,
+            }
+        };
+
+        self.panes.get_active_pane_mut().path = dir.to_string_lossy().to_string();
+        self.panes.reload(&self.config, false);
+        if let Some(path) = select {
+            self.panes.get_active_pane_mut().select_by_path(&path);
+        }
+        self.header
+            .update(self.panes.get_active_pane().path.to_string());
     }
 
     fn handle_trash_key(&mut self, key: &KeyEvent) {
@@ -415,18 +490,19 @@ impl App {
 
         // Get the current directory
         let search_dir = PathBuf::from(&self.panes.get_active_pane().path);
+        // The same rules the file finder uses, so the two searches agree about
+        // which files exist.
+        let search_filter = SearchFilter::from_config(&self.config);
 
         let Some(find) = self.find_in_files.as_mut() else {
             return;
         };
         find.start_search(pattern);
         find.set_root(search_dir.clone());
+        find.set_filter_label(search_filter.describe());
 
         // Walk the directory tree and search file contents
-        let walker = ignore::WalkBuilder::new(&search_dir)
-            .hidden(false)
-            .git_ignore(true)
-            .build();
+        let walker = search_filter.walk(&search_dir);
 
         let mut match_count = 0;
         let mut matches = Vec::new();
@@ -1380,8 +1456,9 @@ impl App {
             }
             Action::Rename => self.start_rename(),
             Action::Search => {
-                self.panes.get_active_pane_mut().clear_filter();
-                self.search = Some(Search::fuzzy());
+                let root = PathBuf::from(&self.panes.get_active_pane().path);
+                let filter = SearchFilter::from_config(&self.config);
+                self.find_files = Some(FileFinder::new(root, &filter, self.syn_theme.clone()));
             }
             Action::CommandPalette => {
                 self.command = Some(TextInput::default());
@@ -1417,11 +1494,15 @@ impl App {
                 self.ok_status(format!("{count} selected"));
             }
             Action::FilterRegex => {
-                let initial = match self.panes.get_active_pane().filter() {
-                    Some(FilterSpec::Regex(pattern)) => pattern.clone(),
-                    _ => String::new(),
-                };
-                self.search = Some(Search::regex(initial));
+                // Re-opening the bar keeps the pattern that is in force, so a
+                // filter can be corrected instead of retyped.
+                let initial = self
+                    .panes
+                    .get_active_pane()
+                    .filter()
+                    .map(|f| f.pattern().to_string())
+                    .unwrap_or_default();
+                self.search = Some(Search::new(initial));
             }
             Action::FindInFiles => {
                 self.find_in_files = Some(FindInFiles::new(self.syn_theme.clone()));
@@ -1909,5 +1990,146 @@ mod tests {
         // …and toggle it shut again, rather than being swallowed by the popup.
         app.dispatch_key(&key(KeyCode::Char('?'), KeyModifiers::SHIFT));
         assert!(!app.ui_config.active_keybind_popup);
+    }
+
+    #[test]
+    fn slash_opens_the_file_finder_and_typing_narrows_it() {
+        let dir = dir_with_contents();
+        let mut app = test_app(dir.path());
+
+        app.dispatch_key(&key(KeyCode::Char('/'), KeyModifiers::NONE));
+        let finder = app.find_files.as_ref().expect("the finder opens");
+        // The whole tree below the pane is a candidate, subdirectories included.
+        assert!(finder.scanned() >= 3, "{}", finder.scanned());
+
+        type_pattern(&mut app, "deep");
+        let finder = app.find_files.as_ref().unwrap();
+        let hit = finder.selected().expect("a match");
+        assert!(hit.path.ends_with("sub/deep.txt"), "{hit:?}");
+        // The pane is untouched while the popup is up: this is a search, not
+        // a filter.
+        assert!(app.panes.get_active_pane().filter().is_none());
+    }
+
+    #[test]
+    fn the_finder_takes_a_regex_in_the_same_box() {
+        let dir = dir_with_contents();
+        let mut app = test_app(dir.path());
+
+        app.dispatch_key(&key(KeyCode::Char('/'), KeyModifiers::NONE));
+        type_pattern(&mut app, r"^top\.");
+
+        let finder = app.find_files.as_ref().unwrap();
+        let hits: Vec<_> = finder.results().map(|e| e.rel.clone()).collect();
+        assert_eq!(hits, vec!["top.txt".to_string()]);
+    }
+
+    #[test]
+    fn enter_in_the_finder_moves_the_pane_onto_the_file() {
+        let dir = dir_with_contents();
+        let mut app = test_app(dir.path());
+
+        app.dispatch_key(&key(KeyCode::Char('/'), KeyModifiers::NONE));
+        type_pattern(&mut app, "deep");
+        app.dispatch_key(&key(KeyCode::Enter, KeyModifiers::NONE));
+
+        assert!(app.find_files.is_none(), "the popup closes");
+        // The pane lists the containing directory, with the file selected.
+        assert!(app.panes.get_active_pane().path.ends_with("sub"));
+        let selected = app.panes.get_active_pane().get_selected_entry().unwrap();
+        assert_eq!(selected.name, "deep.txt");
+        // Enter navigates; it does not fire up an editor behind the user's back.
+        assert!(app.pending_editor_file.is_none());
+    }
+
+    #[test]
+    fn ctrl_e_in_the_finder_opens_the_file_in_the_editor() {
+        let dir = dir_with_contents();
+        let mut app = test_app(dir.path());
+
+        app.dispatch_key(&key(KeyCode::Char('/'), KeyModifiers::NONE));
+        type_pattern(&mut app, "deep");
+        app.dispatch_key(&key(KeyCode::Char('e'), KeyModifiers::CONTROL));
+
+        let target = app.pending_editor_file.as_ref().expect("editor target");
+        assert!(target.path.ends_with("deep.txt"));
+        assert!(app.find_files.is_none());
+    }
+
+    #[test]
+    fn the_finder_obeys_the_configured_filter() {
+        let dir = dir_with_contents();
+        std::fs::write(dir.path().join(".secret"), "x").unwrap();
+        let mut app = test_app(dir.path());
+        app.config.filter_entries = vec!["sub".to_string()];
+
+        app.dispatch_key(&key(KeyCode::Char('/'), KeyModifiers::NONE));
+        let finder = app.find_files.as_ref().unwrap();
+        let names: Vec<_> = finder.results().map(|e| e.rel.clone()).collect();
+
+        assert!(names.contains(&"top.txt".to_string()), "{names:?}");
+        assert!(!names.iter().any(|n| n.starts_with("sub")), "{names:?}");
+        assert!(!names.contains(&".secret".to_string()), "{names:?}");
+    }
+
+    #[test]
+    fn escape_closes_the_finder_without_touching_the_pane() {
+        let dir = dir_with_contents();
+        let mut app = test_app(dir.path());
+        let before = app.panes.get_active_pane().path.clone();
+
+        app.dispatch_key(&key(KeyCode::Char('/'), KeyModifiers::NONE));
+        type_pattern(&mut app, "deep");
+        app.dispatch_key(&key(KeyCode::Esc, KeyModifiers::NONE));
+
+        assert!(app.find_files.is_none());
+        assert_eq!(app.panes.get_active_pane().path, before);
+    }
+
+    #[test]
+    fn the_pane_filter_reads_a_word_fuzzily_and_a_pattern_as_a_regex() {
+        let dir = dir_with_contents();
+        let mut app = test_app(dir.path());
+
+        // One bar, no mode to choose: a plain word is fuzzy...
+        app.dispatch_key(&key(KeyCode::Char('f'), KeyModifiers::CONTROL));
+        type_pattern(&mut app, "top");
+        assert!(matches!(
+            app.panes.get_active_pane().filter(),
+            Some(FilterSpec::Fuzzy(_))
+        ));
+
+        app.dispatch_key(&key(KeyCode::Esc, KeyModifiers::NONE));
+
+        // ...and a pattern is a regex.
+        app.dispatch_key(&key(KeyCode::Char('f'), KeyModifiers::CONTROL));
+        type_pattern(&mut app, "^top");
+        assert!(matches!(
+            app.panes.get_active_pane().filter(),
+            Some(FilterSpec::Regex(_))
+        ));
+
+        // Enter keeps the filter in place; Esc is what clears it.
+        app.dispatch_key(&key(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(app.search.is_none());
+        assert!(app.panes.get_active_pane().filter().is_some());
+        app.dispatch_key(&key(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(app.panes.get_active_pane().filter().is_none());
+    }
+
+    #[test]
+    fn a_half_typed_regex_filter_is_flagged_but_keeps_filtering() {
+        let dir = dir_with_contents();
+        let mut app = test_app(dir.path());
+
+        app.dispatch_key(&key(KeyCode::Char('f'), KeyModifiers::CONTROL));
+        type_pattern(&mut app, "(top");
+
+        assert!(app.search.as_ref().unwrap().regex_invalid);
+        // Fuzzy fallback, so the listing keeps responding instead of freezing.
+        assert!(matches!(
+            app.panes.get_active_pane().filter(),
+            Some(FilterSpec::Fuzzy(_))
+        ));
     }
 }

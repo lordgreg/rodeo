@@ -177,3 +177,90 @@ fn the_help_popup_shows_the_version() {
         "{text}"
     );
 }
+
+/// `/` opens the file finder: names from subdirectories are found by typing,
+/// the preview shows the selected file, and the border says what the walk is
+/// not looking at.
+#[test]
+fn the_file_finder_searches_subdirectories_and_names_its_filter() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("src/deep")).unwrap();
+    std::fs::write(dir.path().join("src/deep/needle.rs"), "fn found_me() {}\n").unwrap();
+    std::fs::write(dir.path().join("other.txt"), "unrelated\n").unwrap();
+    let mut app = app_in(dir.path());
+
+    press(&mut app, '/', crossterm::event::KeyModifiers::NONE);
+    for c in "needle".chars() {
+        press(&mut app, c, crossterm::event::KeyModifiers::NONE);
+    }
+
+    let buffer = draw(&mut app, 140, 40);
+    let text: String = buffer.content().iter().map(|c| c.symbol()).collect();
+    // The match, with the path it was found under...
+    assert!(text.contains("src/deep/needle.rs"), "{text}");
+    // ...its contents in the preview pane...
+    assert!(text.contains("fn found_me() {}"), "{text}");
+    // ...and the filter in force, so a short list is never a mystery.
+    assert!(text.contains("filter: gitignore"), "{text}");
+    // Only the match is listed (the pane behind still shows the rest, so the
+    // count in the title is what says the query narrowed things down).
+    assert!(text.contains("Find Files — 1 of"), "{text}");
+
+    // Narrow terminal: one column, no panic.
+    draw(&mut app, 50, 20);
+}
+
+/// The one query box takes a regex just as happily as a word, and says which
+/// of the two it is doing.
+#[test]
+fn the_file_finder_takes_a_regex_in_the_same_box() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("keep.rs"), "fn a() {}\n").unwrap();
+    std::fs::write(dir.path().join("drop.txt"), "b\n").unwrap();
+    let mut app = app_in(dir.path());
+
+    press(&mut app, '/', crossterm::event::KeyModifiers::NONE);
+    for c in r"\.rs$".chars() {
+        press(&mut app, c, crossterm::event::KeyModifiers::NONE);
+    }
+
+    let buffer = draw(&mut app, 140, 40);
+    let text: String = buffer.content().iter().map(|c| c.symbol()).collect();
+    assert!(text.contains("keep.rs"), "{text}");
+    // One of two candidates matched, and the box reports how it read the query.
+    assert!(text.contains("Find Files — 1 of 2"), "{text}");
+    assert!(text.contains("regex"), "{text}");
+}
+
+/// Enter on a hit puts the pane where the file lives, which is what a file
+/// manager's finder is for.
+#[test]
+fn enter_in_the_file_finder_takes_the_pane_to_the_match() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("sub")).unwrap();
+    std::fs::write(dir.path().join("sub/target.txt"), "x\n").unwrap();
+    let mut app = app_in(dir.path());
+
+    press(&mut app, '/', crossterm::event::KeyModifiers::NONE);
+    for c in "target".chars() {
+        press(&mut app, c, crossterm::event::KeyModifiers::NONE);
+    }
+    app.dispatch_key(&crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Enter,
+        crossterm::event::KeyModifiers::NONE,
+    ));
+
+    let buffer = draw(&mut app, 140, 40);
+    let text: String = buffer.content().iter().map(|c| c.symbol()).collect();
+    // The pane now lists the containing directory, popup closed.
+    assert!(text.contains("sub"), "{text}");
+    assert!(text.contains("target.txt"), "{text}");
+    assert!(!text.contains("Find Files"), "{text}");
+}
+
+fn press(app: &mut App, c: char, modifiers: crossterm::event::KeyModifiers) {
+    app.dispatch_key(&crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Char(c),
+        modifiers,
+    ));
+}
