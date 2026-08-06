@@ -16,7 +16,6 @@ use crate::ui::{
     keymap::{Action, Keymap},
     panes::PaneStats,
     theme::Theme,
-    uiconfig::UiConfig,
 };
 
 /// How long a status message stays visible.
@@ -132,7 +131,7 @@ impl Footer {
 }
 
 impl Component for Footer {
-    fn render(&mut self, frame: &mut Frame<'_>, theme: &Theme, _ui: &UiConfig, area: Rect) {
+    fn render(&mut self, frame: &mut Frame<'_>, theme: &Theme, area: Rect) {
         let bg_block = Block::default().style(Style::default().bg(theme.colors.surface()));
         let inner_area = bg_block.inner(area);
         frame.render_widget(bg_block, area);

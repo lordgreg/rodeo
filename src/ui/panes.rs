@@ -28,7 +28,7 @@ use crate::{
         git::{self, GitEntryStatus, GitStatus as GitEntryState},
         search::FilterSpec,
         theme::Theme,
-        uiconfig::{ActivePane, UiConfig},
+        uiconfig::ActivePane,
     },
 };
 
@@ -913,14 +913,10 @@ impl Pane {
         cell
     }
 
-    pub fn render(
-        &mut self,
-        frame: &mut Frame,
-        area: Rect,
-        active: bool,
-        theme: &Theme,
-        _ui: &UiConfig,
-    ) {
+    /// Argument order matches [`Component::render`], with the extra `active`
+    /// flag last: the two used to be transposed, so `theme` and `area` could
+    /// be swapped between them without the compiler noticing.
+    pub fn render(&mut self, frame: &mut Frame, theme: &Theme, area: Rect, active: bool) {
         // Borders eat two cells; decide what fits in what is left.
         let columns = ColumnSet::for_width(area.width.saturating_sub(2));
         let rows = self.entry_rows(theme, columns);
@@ -1226,26 +1222,17 @@ impl Panes {
 }
 
 impl Component for Panes {
-    fn render(&mut self, frame: &mut Frame<'_>, theme: &Theme, ui: &UiConfig, area: Rect) {
+    fn render(&mut self, frame: &mut Frame<'_>, theme: &Theme, area: Rect) {
         let layout = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
             .split(area);
 
-        self.pane_left.render(
-            frame,
-            layout[0],
-            self.active_pane == ActivePane::Left,
-            theme,
-            ui,
-        );
-        self.pane_right.render(
-            frame,
-            layout[1],
-            self.active_pane == ActivePane::Right,
-            theme,
-            ui,
-        );
+        let active = self.active_pane;
+        self.pane_left
+            .render(frame, theme, layout[0], active == ActivePane::Left);
+        self.pane_right
+            .render(frame, theme, layout[1], active == ActivePane::Right);
     }
 }
 

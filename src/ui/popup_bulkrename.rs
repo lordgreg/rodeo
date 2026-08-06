@@ -13,7 +13,7 @@ use ratatui::{
 use regex::Regex;
 use std::path::PathBuf;
 
-use crate::ui::{component::Component, textinput::TextInput, theme::Theme, uiconfig::UiConfig};
+use crate::ui::{component::Component, textinput::TextInput, theme::Theme};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum RenameError {
@@ -210,7 +210,7 @@ fn apply_number_format(pat: &str, n: usize, ext: &str) -> String {
 }
 
 impl Component for BulkRename {
-    fn render(&mut self, frame: &mut Frame<'_>, theme: &Theme, _ui: &UiConfig, area: Rect) {
+    fn render(&mut self, frame: &mut Frame<'_>, theme: &Theme, area: Rect) {
         // Centered popup: 80 % wide, 80 % tall.
         let popup = Rect {
             x: area.width / 10,

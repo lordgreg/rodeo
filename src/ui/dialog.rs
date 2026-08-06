@@ -19,7 +19,6 @@ use crate::ui::{
     component::{Component, centered_popup, content_size},
     textinput::TextInput,
     theme::Theme,
-    uiconfig::UiConfig,
 };
 
 /// Dialogs never get narrower than this, so a short question still reads as a
@@ -158,7 +157,7 @@ impl Dialog {
 }
 
 impl Component for Dialog {
-    fn render(&mut self, frame: &mut Frame<'_>, theme: &Theme, _ui: &UiConfig, area: Rect) {
+    fn render(&mut self, frame: &mut Frame<'_>, theme: &Theme, area: Rect) {
         let content_lines: Vec<Line> = match &self.kind {
             DialogKind::Confirm { message } => vec![
                 Line::from(message.as_str()),

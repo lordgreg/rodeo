@@ -31,7 +31,6 @@ use crate::ui::{
     component::{Component, centered_popup},
     panes::{Entry, EntryKind, format_date, format_size},
     theme::Theme,
-    uiconfig::UiConfig,
 };
 
 /// At most this many entries are listed in archive/directory previews.
@@ -533,7 +532,7 @@ fn hex_dump(bytes: &[u8]) -> Vec<Line<'static>> {
 }
 
 impl Component for PopupPreview {
-    fn render(&mut self, frame: &mut Frame<'_>, theme: &Theme, _ui: &UiConfig, area: Rect) {
+    fn render(&mut self, frame: &mut Frame<'_>, theme: &Theme, area: Rect) {
         // 60% of the screen, but never wider than a comfortable reading
         // measure — on an ultrawide that would otherwise be 120+ columns.
         let popup_area = centered_popup(

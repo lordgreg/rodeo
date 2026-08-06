@@ -215,13 +215,7 @@ impl FindInFiles {
 }
 
 impl Component for FindInFiles {
-    fn render(
-        &mut self,
-        frame: &mut Frame<'_>,
-        theme: &Theme,
-        _ui: &crate::ui::uiconfig::UiConfig,
-        area: Rect,
-    ) {
+    fn render(&mut self, frame: &mut Frame<'_>, theme: &Theme, area: Rect) {
         let title = if self.results_are_current() && !self.results.is_empty() {
             format!(" Find in Files — {} matches ", self.results.len())
         } else {

@@ -54,7 +54,6 @@ use popup_preview::PopupPreview;
 use popup_trash::TrashView;
 use search::Search;
 use textinput::TextInput;
-use uiconfig::UiConfig;
 
 /// A file waiting to be opened in `$EDITOR`, optionally at a line.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -198,7 +197,6 @@ pub enum InputMode {
 pub struct App {
     exit: bool,
     theme: Theme,
-    ui_config: UiConfig,
     header: Header,
     footer: Footer,
     panes: Panes,
@@ -264,7 +262,6 @@ impl App {
         let mut app = Self {
             exit: false,
             theme,
-            ui_config: UiConfig::new(),
             header,
             footer: Footer::default(),
             panes,
@@ -705,17 +702,11 @@ impl App {
         } else {
             Some((self.clipboard.len(), self.clipboard_cut))
         });
-        self.header
-            .render(frame, &self.theme, &self.ui_config, outer_layout[0]);
-        self.panes
-            .render(frame, &self.theme, &self.ui_config, outer_layout[1]);
+        self.header.render(frame, &self.theme, outer_layout[0]);
+        self.panes.render(frame, &self.theme, outer_layout[1]);
         let footer_idx = outer_layout.len() - 1;
-        self.footer.render(
-            frame,
-            &self.theme,
-            &self.ui_config,
-            outer_layout[footer_idx],
-        );
+        self.footer
+            .render(frame, &self.theme, outer_layout[footer_idx]);
 
         if show_input_bar {
             self.render_input_bar(frame, outer_layout[2]);
@@ -742,25 +733,19 @@ impl App {
         };
 
         match &mut self.overlay {
-            Some(Overlay::Keybinds) => {
-                PopupKeybinds::new().render(frame, &self.theme, &self.ui_config, area)
-            }
-            Some(Overlay::Preview(preview)) => {
-                preview.render(frame, &self.theme, &self.ui_config, area)
-            }
-            Some(Overlay::BulkRename(br)) => br.render(frame, &self.theme, &self.ui_config, area),
-            Some(Overlay::Trash(tv)) => tv.render(frame, &self.theme, &self.ui_config, area),
+            Some(Overlay::Keybinds) => PopupKeybinds::new().render(frame, &self.theme, area),
+            Some(Overlay::Preview(preview)) => preview.render(frame, &self.theme, area),
+            Some(Overlay::BulkRename(br)) => br.render(frame, &self.theme, area),
+            Some(Overlay::Trash(tv)) => tv.render(frame, &self.theme, area),
             Some(Overlay::FindInFiles(find)) => {
                 frame.render_widget(Clear, search_popup_area);
-                find.render(frame, &self.theme, &self.ui_config, search_popup_area);
+                find.render(frame, &self.theme, search_popup_area);
             }
             Some(Overlay::FindFiles(finder)) => {
                 frame.render_widget(Clear, search_popup_area);
-                finder.render(frame, &self.theme, &self.ui_config, search_popup_area);
+                finder.render(frame, &self.theme, search_popup_area);
             }
-            Some(Overlay::Dialog(dialog)) => {
-                dialog.render(frame, &self.theme, &self.ui_config, area)
-            }
+            Some(Overlay::Dialog(dialog)) => dialog.render(frame, &self.theme, area),
             None => {}
         }
 

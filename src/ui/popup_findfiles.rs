@@ -296,13 +296,7 @@ fn query_mode(query: &str) -> &'static str {
 }
 
 impl Component for FileFinder {
-    fn render(
-        &mut self,
-        frame: &mut Frame<'_>,
-        theme: &Theme,
-        _ui: &crate::ui::uiconfig::UiConfig,
-        area: Rect,
-    ) {
+    fn render(&mut self, frame: &mut Frame<'_>, theme: &Theme, area: Rect) {
         let title = format!(
             " Find Files — {} of {}{} ",
             self.results.len(),

@@ -8,7 +8,7 @@ use ratatui::{
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
 };
 
-use crate::ui::{component::Component, theme::Theme, uiconfig::UiConfig};
+use crate::ui::{component::Component, theme::Theme};
 
 #[derive(Debug, Clone)]
 pub struct TrashEntry {
@@ -159,7 +159,7 @@ impl TrashView {
 }
 
 impl Component for TrashView {
-    fn render(&mut self, frame: &mut Frame<'_>, theme: &Theme, _ui: &UiConfig, area: Rect) {
+    fn render(&mut self, frame: &mut Frame<'_>, theme: &Theme, area: Rect) {
         let popup = Rect {
             x: area.width / 10,
             y: area.height / 10,
