@@ -450,8 +450,12 @@ impl Highlighter {
 pub struct Pane {
     pub state: TableState,
     pub path: String,
-    paths: Vec<Entry>,
-    all_paths: Vec<Entry>,
+    /// Every entry in the directory. The single source of truth for what is
+    /// selected, how big a directory is, and so on.
+    entries: Vec<Entry>,
+    /// Indices into [`Self::entries`], in display order: the filter narrows
+    /// and reorders this rather than cloning the entries it keeps.
+    visible: Vec<usize>,
     filter: Option<FilterSpec>,
     hidden_count: usize,
     sort_type: SortType,
@@ -466,15 +470,15 @@ pub struct Pane {
 impl Pane {
     pub fn new(config: &Config, path: &str) -> Self {
         let path = path.to_string();
-        let (paths, hidden_count, git_summary) = read_entries(&path, config);
+        let (entries, hidden_count, git_summary) = read_entries(&path, config);
         let sort_order = config.sort_order;
         let sort_type = config.sort_type;
 
         let mut pane = Self {
             state: TableState::default(),
             path,
-            all_paths: paths.clone(),
-            paths,
+            visible: (0..entries.len()).collect(),
+            entries,
             filter: None,
             hidden_count,
             sort_order,
@@ -504,7 +508,7 @@ impl Pane {
         match &filter {
             FilterSpec::Fuzzy(pattern) => {
                 if pattern.is_empty() {
-                    self.paths = self.all_paths.clone();
+                    self.show_all();
                 } else {
                     let parsed = nucleo::pattern::Pattern::parse(
                         pattern,
@@ -528,49 +532,77 @@ impl Pane {
     }
 
     pub fn clear_filter(&mut self) {
-        self.paths = self.all_paths.clone();
+        self.show_all();
         self.filter = None;
         self.state.select(Some(0));
     }
 
-    /// Rebuilds the visible entry list from `all_paths`, keeping entries the
-    /// rank function scores `Some` and ordering them best-first (stable).
+    /// Rebuilds the visible list, keeping entries the rank function scores
+    /// `Some` and ordering them best-first (stable).
     fn apply_rank(&mut self, mut rank: impl FnMut(&str) -> Option<u32>) {
-        let (parents, rest): (Vec<&Entry>, Vec<&Entry>) = self
-            .all_paths
-            .iter()
-            .partition(|e| e.kind == EntryKind::Parent);
+        let mut parents: Vec<usize> = Vec::new();
+        let mut scored: Vec<(u32, usize)> = Vec::new();
 
-        let mut scored: Vec<(u32, &Entry)> = rest
-            .iter()
-            .filter_map(|e| rank(&e.name).map(|s| (s, *e)))
-            .collect();
+        for (i, entry) in self.entries.iter().enumerate() {
+            if entry.kind == EntryKind::Parent {
+                parents.push(i);
+            } else if let Some(score) = rank(&entry.name) {
+                scored.push((score, i));
+            }
+        }
+        // Stable, so equally-scored entries keep their listing order.
         scored.sort_by_key(|(score, _)| std::cmp::Reverse(*score));
 
-        self.paths = parents
-            .iter()
-            .map(|e| (*e).clone())
-            .chain(scored.into_iter().map(|(_, e)| e.clone()))
+        let parent_count = parents.len();
+        self.visible = parents
+            .into_iter()
+            .chain(scored.into_iter().map(|(_, i)| i))
             .collect();
 
         // Select the first real entry (after the pinned parent) if any.
-        self.state.select(Some(if self.paths.len() > parents.len() {
-            parents.len()
-        } else {
-            0
-        }));
+        self.state
+            .select(Some(if self.visible.len() > parent_count {
+                parent_count
+            } else {
+                0
+            }));
+    }
+
+    /// Shows every entry, in listing order.
+    fn show_all(&mut self) {
+        self.visible = (0..self.entries.len()).collect();
+    }
+
+    /// The entries on screen, in display order.
+    fn visible_entries(&self) -> impl Iterator<Item = &Entry> {
+        self.visible.iter().filter_map(|&i| self.entries.get(i))
+    }
+
+    /// The entry shown on `row`, if there is one.
+    fn visible_entry(&self, row: usize) -> Option<&Entry> {
+        self.entries.get(*self.visible.get(row)?)
+    }
+
+    fn visible_entry_mut(&mut self, row: usize) -> Option<&mut Entry> {
+        self.entries.get_mut(*self.visible.get(row)?)
+    }
+
+    /// How many entries are on screen.
+    pub fn visible_len(&self) -> usize {
+        self.visible.len()
     }
 
     pub fn select_by_path(&mut self, path: &Path) {
-        if let Some(i) = self.paths.iter().position(|e| e.path == path) {
-            self.state.select(Some(i));
+        let row = self.visible_entries().position(|e| e.path == path);
+        if let Some(row) = row {
+            self.state.select(Some(row));
         }
     }
 
     pub fn get_selected_entry(&self) -> Option<Entry> {
         let selected = self.state.selected()?;
 
-        self.paths.get(selected).cloned()
+        self.visible_entry(selected).cloned()
     }
 
     pub fn stats(&self) -> PaneStats {
@@ -579,7 +611,7 @@ impl Pane {
             ..Default::default()
         };
 
-        for entry in &self.paths {
+        for entry in self.visible_entries() {
             match entry.kind {
                 EntryKind::Parent => {}
                 EntryKind::Directory => stats.dirs += 1,
@@ -640,8 +672,7 @@ impl Pane {
     /// Message to show when the listing has nothing worth displaying.
     fn placeholder(&self) -> Option<&'static str> {
         let entries = self
-            .paths
-            .iter()
+            .visible_entries()
             .filter(|e| e.kind != EntryKind::Parent)
             .count();
         if entries > 0 {
@@ -657,8 +688,7 @@ impl Pane {
         // Compiled once for the whole listing, not once per row.
         let mut highlighter = Highlighter::new(self.filter.as_ref());
 
-        self.paths
-            .iter()
+        self.visible_entries()
             .map(|e| {
                 let marker = if e.selected { "●" } else { "" };
                 let size = match e.kind {
@@ -734,60 +764,49 @@ impl Pane {
         let Some(i) = self.state.selected() else {
             return;
         };
-        let Some(path) = self.paths.get_mut(i) else {
+        let Some(entry) = self.visible_entry_mut(i) else {
             return;
         };
 
         if !matches!(
-            path.kind,
+            entry.kind,
             EntryKind::File | EntryKind::Directory | EntryKind::Symlink
         ) {
             return;
         }
 
-        path.toggle_selected();
-
-        // Keep the full listing in sync — `paths` entries are clones.
-        let selected = path.selected;
-        let path_buf = path.path.clone();
-        if let Some(entry) = self.all_paths.iter_mut().find(|e| e.path == path_buf) {
-            entry.selected = selected;
-        }
+        entry.toggle_selected();
     }
 
-    /// All entries currently marked as selected (via `x`).
+    /// Entries marked as selected (via `x`) *and* currently on screen.
+    ///
+    /// Deliberately not every selected entry: an operation must not touch
+    /// something the active filter is hiding.
     pub fn selected_entries(&self) -> Vec<Entry> {
-        self.paths.iter().filter(|e| e.selected).cloned().collect()
+        self.visible_entries()
+            .filter(|e| e.selected)
+            .cloned()
+            .collect()
     }
 
+    /// Whether anything is selected, filtered out or not.
     pub fn has_selections(&self) -> bool {
-        self.all_paths.iter().any(|e| e.selected)
+        self.entries.iter().any(|e| e.selected)
     }
 
     /// Marks every selectable entry matching the wildcard pattern; returns
     /// how many entries were (newly) selected.
     pub fn select_matching(&mut self, pattern: &str) -> usize {
         let mut count = 0;
-        let paths: Vec<PathBuf> = self
-            .all_paths
-            .iter_mut()
-            .filter(|e| {
-                matches!(
-                    e.kind,
-                    EntryKind::File | EntryKind::Directory | EntryKind::Symlink
-                ) && wildcard_match(pattern, &e.name)
-            })
-            .map(|e| {
-                if !e.selected {
+        for entry in &mut self.entries {
+            let selectable = matches!(
+                entry.kind,
+                EntryKind::File | EntryKind::Directory | EntryKind::Symlink
+            );
+            if selectable && wildcard_match(pattern, &entry.name) {
+                if !entry.selected {
                     count += 1;
                 }
-                e.selected = true;
-                e.path.clone()
-            })
-            .collect();
-
-        for entry in &mut self.paths {
-            if paths.contains(&entry.path) {
                 entry.selected = true;
             }
         }
@@ -807,7 +826,7 @@ impl Pane {
         let mut budget = ENTRY_BUDGET;
 
         let dir_paths: Vec<PathBuf> = self
-            .all_paths
+            .entries
             .iter()
             .filter(|e| e.kind == EntryKind::Directory)
             .map(|e| e.path.clone())
@@ -826,10 +845,7 @@ impl Pane {
             } else {
                 format_size(est.bytes)
             };
-            if let Some(e) = self.all_paths.iter_mut().find(|e| e.path == path) {
-                e.dir_size = Some(text.clone());
-            }
-            if let Some(e) = self.paths.iter_mut().find(|e| e.path == path) {
+            if let Some(e) = self.entries.iter_mut().find(|e| e.path == path) {
                 e.dir_size = Some(text);
             }
             computed += 1;
@@ -838,10 +854,7 @@ impl Pane {
     }
 
     pub fn clear_selections(&mut self) {
-        for entry in &mut self.all_paths {
-            entry.selected = false;
-        }
-        for entry in &mut self.paths {
+        for entry in &mut self.entries {
             entry.selected = false;
         }
     }
@@ -853,16 +866,16 @@ impl Pane {
         let cursor_path = self.get_selected_entry().map(|e| e.path);
 
         let selected_paths: Vec<PathBuf> = self
-            .all_paths
+            .entries
             .iter()
             .filter(|p| p.selected)
             .map(|p| p.path.clone())
             .collect();
 
-        (self.all_paths, self.hidden_count, self.git_summary) = read_entries(&self.path, config);
+        (self.entries, self.hidden_count, self.git_summary) = read_entries(&self.path, config);
 
         if !clear_selection {
-            for entry in &mut self.all_paths {
+            for entry in &mut self.entries {
                 if selected_paths.contains(&entry.path) {
                     entry.selected = true
                 }
@@ -877,14 +890,14 @@ impl Pane {
         if let Some(filter) = self.filter.clone() {
             let _ = self.set_filter(filter);
         } else {
-            self.paths = self.all_paths.clone();
+            self.show_all();
         }
 
         // Restore the cursor on the same entry when it still exists; after a
         // directory change the old path is gone and the cursor starts at the
         // top.
         let cursor_index = cursor_path
-            .and_then(|p| self.paths.iter().position(|e| e.path == p))
+            .and_then(|p| self.visible_entries().position(|e| e.path == p))
             .unwrap_or(0);
         self.state = TableState::default();
         self.state.select(Some(cursor_index));
@@ -908,7 +921,7 @@ impl Pane {
             return OpenAction::Nothing;
         };
 
-        let Some(entry) = self.paths.get(i) else {
+        let Some(entry) = self.visible_entry(i) else {
             return OpenAction::Nothing;
         };
 
@@ -1230,11 +1243,7 @@ impl Panes {
         self.pane_right.reload(config, clear_selection);
     }
 
-    pub fn next_index(
-        row_count: &usize,
-        current: Option<usize>,
-        direction: MoveDirection,
-    ) -> usize {
+    pub fn next_index(row_count: usize, current: Option<usize>, direction: MoveDirection) -> usize {
         let max = row_count.saturating_sub(1);
         match direction {
             MoveDirection::Down => match current {
@@ -1252,7 +1261,7 @@ impl Panes {
 
     pub fn goto_next(&mut self, direction: MoveDirection) {
         let pane = self.get_active_pane_mut();
-        let next = Self::next_index(&pane.paths.len(), pane.state.selected(), direction);
+        let next = Self::next_index(pane.visible_len(), pane.state.selected(), direction);
 
         pane.state.select(Some(next));
     }
@@ -1730,7 +1739,7 @@ mod tests {
         }
 
         fn names(pane: &Pane) -> Vec<&str> {
-            pane.paths.iter().map(|e| e.name.as_str()).collect()
+            pane.visible_entries().map(|e| e.name.as_str()).collect()
         }
 
         #[test]
@@ -1740,7 +1749,7 @@ mod tests {
                 .unwrap();
 
             assert_eq!(names(&pane), vec!["..", "ab.rs"]);
-            assert_eq!(pane.paths[0].kind, EntryKind::Parent);
+            assert_eq!(pane.visible_entry(0).unwrap().kind, EntryKind::Parent);
             // First real entry is selected.
             assert_eq!(pane.state.selected(), Some(1));
         }
@@ -1750,7 +1759,7 @@ mod tests {
             let (_dir, mut pane) = test_pane();
             pane.set_filter(FilterSpec::Fuzzy(String::new())).unwrap();
 
-            assert_eq!(pane.paths.len(), 5);
+            assert_eq!(pane.visible_len(), 5);
         }
 
         #[test]
@@ -1768,7 +1777,7 @@ mod tests {
             let result = pane.set_filter(FilterSpec::Regex("(".to_string()));
 
             assert!(result.is_err());
-            assert_eq!(pane.paths.len(), 5);
+            assert_eq!(pane.visible_len(), 5);
             assert_eq!(pane.filter(), None);
         }
 
@@ -1777,10 +1786,10 @@ mod tests {
             let (_dir, mut pane) = test_pane();
             pane.set_filter(FilterSpec::Regex("^a".to_string()))
                 .unwrap();
-            assert_eq!(pane.paths.len(), 3);
+            assert_eq!(pane.visible_len(), 3);
 
             pane.clear_filter();
-            assert_eq!(pane.paths.len(), 5);
+            assert_eq!(pane.visible_len(), 5);
             assert_eq!(pane.filter(), None);
         }
 
@@ -1806,6 +1815,107 @@ mod tests {
                 pane.get_selected_entry().map(|e| e.name),
                 Some("b.txt".to_string())
             );
+        }
+    }
+
+    /// The listing used to be two vectors — every visible entry was a *clone*
+    /// of one in the full list — so each mutation had to be written twice, in
+    /// five places, each with its own hand-rolled strategy. These pin the
+    /// behaviour that used to depend on getting that right.
+    mod visible_and_full_listing_stay_consistent {
+        use super::*;
+
+        fn pane_with_files(names: &[&str]) -> (tempfile::TempDir, Pane) {
+            let dir = tempfile::tempdir().unwrap();
+            for name in names {
+                std::fs::File::create(dir.path().join(name)).unwrap();
+            }
+            let pane = Pane::new(&Config::default(), dir.path().to_str().unwrap());
+            (dir, pane)
+        }
+
+        fn row_of(pane: &Pane, name: &str) -> usize {
+            pane.visible_entries()
+                .position(|e| e.name == name)
+                .unwrap_or_else(|| panic!("{name} is not visible"))
+        }
+
+        #[test]
+        fn a_selection_survives_being_filtered_out_and_back() {
+            let (_dir, mut pane) = pane_with_files(&["keep.rs", "other.txt"]);
+
+            let row = row_of(&pane, "keep.rs");
+            pane.state.select(Some(row));
+            pane.toggle_select();
+            assert!(pane.has_selections());
+
+            // Filter it out of view, then bring it back.
+            pane.set_filter(FilterSpec::Fuzzy("other".into())).unwrap();
+            assert!(pane.has_selections(), "a hidden entry is still selected");
+
+            pane.clear_filter();
+            let row = row_of(&pane, "keep.rs");
+            assert!(
+                pane.visible_entry(row).unwrap().selected,
+                "the selection must come back with the entry"
+            );
+        }
+
+        #[test]
+        fn selected_entries_only_reports_what_is_on_screen() {
+            let (_dir, mut pane) = pane_with_files(&["keep.rs", "other.txt"]);
+
+            let row = row_of(&pane, "keep.rs");
+            pane.state.select(Some(row));
+            pane.toggle_select();
+
+            pane.set_filter(FilterSpec::Fuzzy("other".into())).unwrap();
+            assert!(
+                pane.selected_entries().is_empty(),
+                "an operation must not touch what the filter hides"
+            );
+            assert!(pane.has_selections(), "but it is still selected");
+        }
+
+        #[test]
+        fn select_matching_reaches_entries_the_filter_hides() {
+            let (_dir, mut pane) = pane_with_files(&["a.rs", "b.rs", "c.txt"]);
+            pane.set_filter(FilterSpec::Fuzzy("c.txt".into())).unwrap();
+
+            assert_eq!(pane.select_matching("*.rs"), 2);
+
+            pane.clear_filter();
+            let selected: Vec<&str> = pane
+                .visible_entries()
+                .filter(|e| e.selected)
+                .map(|e| e.name.as_str())
+                .collect();
+            assert_eq!(selected, vec!["a.rs", "b.rs"]);
+        }
+
+        #[test]
+        fn clearing_selections_clears_hidden_ones_too() {
+            let (_dir, mut pane) = pane_with_files(&["a.rs", "b.rs"]);
+            pane.select_matching("*");
+            assert!(pane.has_selections());
+
+            pane.set_filter(FilterSpec::Fuzzy("a".into())).unwrap();
+            pane.clear_selections();
+            pane.clear_filter();
+
+            assert!(!pane.has_selections(), "nothing may stay selected");
+        }
+
+        #[test]
+        fn a_filter_reorders_without_losing_entries() {
+            let (_dir, mut pane) = pane_with_files(&["a.rs", "b.rs", "c.rs"]);
+            let total = pane.entries.len();
+
+            pane.set_filter(FilterSpec::Regex("b".into())).unwrap();
+            assert!(pane.visible_len() < total);
+
+            pane.clear_filter();
+            assert_eq!(pane.visible_len(), total, "every entry comes back");
         }
     }
 
@@ -2117,40 +2227,40 @@ mod tests {
 
         #[test]
         fn down_wraps_from_last_to_first() {
-            assert_eq!(Panes::next_index(&3, Some(2), MoveDirection::Down), 0);
+            assert_eq!(Panes::next_index(3, Some(2), MoveDirection::Down), 0);
         }
 
         #[test]
         fn down_moves_to_next() {
-            assert_eq!(Panes::next_index(&3, Some(0), MoveDirection::Down), 1);
+            assert_eq!(Panes::next_index(3, Some(0), MoveDirection::Down), 1);
         }
 
         #[test]
         fn up_wraps_from_first_to_last() {
-            assert_eq!(Panes::next_index(&3, Some(0), MoveDirection::Up), 2);
+            assert_eq!(Panes::next_index(3, Some(0), MoveDirection::Up), 2);
         }
 
         #[test]
         fn up_moves_to_previous() {
-            assert_eq!(Panes::next_index(&3, Some(2), MoveDirection::Up), 1);
+            assert_eq!(Panes::next_index(3, Some(2), MoveDirection::Up), 1);
         }
 
         #[test]
         fn single_item_list_stays_at_zero() {
-            assert_eq!(Panes::next_index(&1, Some(0), MoveDirection::Down), 0);
-            assert_eq!(Panes::next_index(&1, Some(0), MoveDirection::Up), 0);
+            assert_eq!(Panes::next_index(1, Some(0), MoveDirection::Down), 0);
+            assert_eq!(Panes::next_index(1, Some(0), MoveDirection::Up), 0);
         }
 
         #[test]
         fn empty_list_returns_zero() {
-            assert_eq!(Panes::next_index(&0, None, MoveDirection::Down), 0);
-            assert_eq!(Panes::next_index(&0, None, MoveDirection::Up), 0);
+            assert_eq!(Panes::next_index(0, None, MoveDirection::Down), 0);
+            assert_eq!(Panes::next_index(0, None, MoveDirection::Up), 0);
         }
 
         #[test]
         fn none_selected_returns_zero() {
-            assert_eq!(Panes::next_index(&5, None, MoveDirection::Down), 0);
-            assert_eq!(Panes::next_index(&5, None, MoveDirection::Up), 0);
+            assert_eq!(Panes::next_index(5, None, MoveDirection::Down), 0);
+            assert_eq!(Panes::next_index(5, None, MoveDirection::Up), 0);
         }
     }
 
