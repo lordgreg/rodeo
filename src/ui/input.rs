@@ -1516,6 +1516,40 @@ mod tests {
         assert!(!app.preview_open(), "only one overlay at a time");
     }
 
+    /// Reported from a real session: Space, `?`, Ctrl+g used to leave the
+    /// preview, the help table and the find-in-files popup all open, drawn on
+    /// top of one another, because each was tracked separately and nothing
+    /// closed the previous one.
+    #[test]
+    fn opening_a_third_popup_still_leaves_exactly_one_open() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "hello").unwrap();
+        let mut app = test_app(dir.path());
+
+        app.dispatch_key(&key(KeyCode::Char('j'), KeyModifiers::NONE));
+
+        for (code, modifiers, expected) in [
+            (KeyCode::Char(' '), KeyModifiers::NONE, OverlayKind::Preview),
+            (
+                KeyCode::Char('?'),
+                KeyModifiers::SHIFT,
+                OverlayKind::Keybinds,
+            ),
+            (
+                KeyCode::Char('g'),
+                KeyModifiers::CONTROL,
+                OverlayKind::FindInFiles,
+            ),
+        ] {
+            app.dispatch_key(&key(code, modifiers));
+            assert_eq!(
+                app.overlay_kind(),
+                Some(expected),
+                "{code:?} should leave only {expected:?} open"
+            );
+        }
+    }
+
     #[test]
     fn preview_toggles_off_on_a_second_press() {
         let dir = tempfile::tempdir().unwrap();
