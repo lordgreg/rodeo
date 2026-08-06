@@ -6,7 +6,7 @@
 
 use std::path::PathBuf;
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
     Frame,
     layout::{Alignment, Rect},
@@ -144,25 +144,10 @@ impl Dialog {
             DialogKind::Input { value, .. } => match key.code {
                 KeyCode::Enter => Some(DialogResult::Submitted(value.value.clone())),
                 KeyCode::Esc => Some(DialogResult::Cancelled),
-                KeyCode::Left => {
-                    value.left();
+                _ => {
+                    value.handle_key(key);
                     None
                 }
-                KeyCode::Right => {
-                    value.right();
-                    None
-                }
-                KeyCode::Backspace => {
-                    value.backspace();
-                    None
-                }
-                KeyCode::Char(c)
-                    if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT =>
-                {
-                    value.insert(c);
-                    None
-                }
-                _ => None,
             },
             DialogKind::Message { .. } => match key.code {
                 KeyCode::Enter | KeyCode::Esc => Some(DialogResult::Cancelled),
@@ -235,6 +220,7 @@ impl Component for Dialog {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crossterm::event::KeyModifiers;
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)

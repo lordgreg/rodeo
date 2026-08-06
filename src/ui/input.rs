@@ -20,7 +20,7 @@ use super::{
     popup_preview::PopupPreview,
     popup_trash::TrashView,
     search::{FilterSpec, Search},
-    textinput::TextInput,
+    textinput::{TextEdit, TextInput},
     uiconfig::ActivePane,
 };
 use crate::config::Config;
@@ -139,33 +139,16 @@ impl App {
         match key.code {
             KeyCode::Enter => self.confirm_search(),
             KeyCode::Esc => self.cancel_search(),
-            KeyCode::Backspace => {
-                if let Some(s) = self.search.as_mut() {
-                    s.input.backspace();
-                }
-                self.apply_search();
-            }
             KeyCode::Down => self.panes.goto_next(MoveDirection::Down),
             KeyCode::Up => self.panes.goto_next(MoveDirection::Up),
-            KeyCode::Left => {
-                if let Some(s) = self.search.as_mut() {
-                    s.input.left();
+            _ => {
+                let Some(s) = self.search.as_mut() else {
+                    return;
+                };
+                if s.input.handle_key(key) == TextEdit::Changed {
+                    self.apply_search();
                 }
             }
-            KeyCode::Right => {
-                if let Some(s) = self.search.as_mut() {
-                    s.input.right();
-                }
-            }
-            KeyCode::Char(c)
-                if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT =>
-            {
-                if let Some(s) = self.search.as_mut() {
-                    s.input.insert(c);
-                }
-                self.apply_search();
-            }
-            _ => {}
         }
     }
 
@@ -243,9 +226,6 @@ impl App {
             KeyCode::Esc => {
                 self.find_in_files = None;
             }
-            KeyCode::Backspace => {
-                find.input.backspace();
-            }
             KeyCode::Down => {
                 find.move_down();
             }
@@ -272,18 +252,9 @@ impl App {
             KeyCode::PageUp => {
                 find.scroll_preview(-PREVIEW_SCROLL_LINES);
             }
-            KeyCode::Left => {
-                find.input.left();
+            _ => {
+                find.input.handle_key(key);
             }
-            KeyCode::Right => {
-                find.input.right();
-            }
-            KeyCode::Char(c)
-                if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT =>
-            {
-                find.input.insert(c);
-            }
-            _ => {}
         }
     }
 
@@ -315,10 +286,6 @@ impl App {
                 self.find_files = None;
                 self.pending_editor_file = Some(EditorTarget::new(entry.path));
             }
-            KeyCode::Backspace => {
-                finder.input.backspace();
-                finder.refilter();
-            }
             KeyCode::Down => finder.move_down(),
             KeyCode::Up => finder.move_up(),
             KeyCode::Char('n') if key.modifiers == KeyModifiers::CONTROL => finder.move_down(),
@@ -331,15 +298,11 @@ impl App {
             }
             KeyCode::PageDown => finder.scroll_preview(PREVIEW_SCROLL_LINES),
             KeyCode::PageUp => finder.scroll_preview(-PREVIEW_SCROLL_LINES),
-            KeyCode::Left => finder.input.left(),
-            KeyCode::Right => finder.input.right(),
-            KeyCode::Char(c)
-                if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT =>
-            {
-                finder.input.insert(c);
-                finder.refilter();
+            _ => {
+                if finder.input.handle_key(key) == TextEdit::Changed {
+                    finder.refilter();
+                }
             }
-            _ => {}
         }
     }
 
@@ -444,31 +407,13 @@ impl App {
                     self.err_status(format!("{errors} rename(s) failed"));
                 }
             }
-            KeyCode::Backspace => {
-                if let Some(br) = self.bulk_rename.as_mut() {
-                    br.pattern.backspace();
+            _ => {
+                if let Some(br) = self.bulk_rename.as_mut()
+                    && br.pattern.handle_key(key) == TextEdit::Changed
+                {
                     br.update_preview();
                 }
             }
-            KeyCode::Left => {
-                if let Some(br) = self.bulk_rename.as_mut() {
-                    br.pattern.left();
-                }
-            }
-            KeyCode::Right => {
-                if let Some(br) = self.bulk_rename.as_mut() {
-                    br.pattern.right();
-                }
-            }
-            KeyCode::Char(c)
-                if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT =>
-            {
-                if let Some(br) = self.bulk_rename.as_mut() {
-                    br.pattern.insert(c);
-                    br.update_preview();
-                }
-            }
-            _ => {}
         }
     }
 
@@ -1009,15 +954,14 @@ impl App {
                 }
                 return;
             }
-            KeyCode::Backspace => input.backspace(),
-            KeyCode::Left => input.left(),
-            KeyCode::Right => input.right(),
-            KeyCode::Char(c)
-                if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT =>
-            {
-                input.insert(c);
+            // Note this rebuilds the menu on a cursor move too, not just on an
+            // edit: that clears the Tab selection, so the next Tab starts
+            // cycling from the top.
+            _ => {
+                if input.handle_key(key) == TextEdit::Ignored {
+                    return;
+                }
             }
-            _ => return,
         }
 
         // Editing the line invalidates the menu: rebuild it from scratch.
