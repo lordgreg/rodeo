@@ -38,6 +38,7 @@ pub mod popup_keybinds;
 pub mod popup_preview;
 pub mod popup_trash;
 pub mod search;
+pub mod syntax;
 pub mod textinput;
 pub mod theme;
 pub mod uiconfig;

@@ -16,11 +16,11 @@ use log::info;
 use ratatui::style::Color;
 use serde::{Deserialize, Serialize};
 use syntect::highlighting::{
-    Color as SynColor, FontStyle, ScopeSelectors, StyleModifier, Theme as SynTheme, ThemeItem,
-    ThemeSettings,
+    Color as SynColor, ScopeSelectors, StyleModifier, Theme as SynTheme, ThemeItem, ThemeSettings,
 };
 
 use crate::config::CONFIG_DIR;
+use crate::ui::syntax::{PaletteSlot, SYNTAX_RULES};
 
 pub const DEFAULT_THEME_FILENAME: &str = "default.toml";
 pub const DEFAULT_THEME_NAME: &str = "default";
@@ -63,26 +63,36 @@ fn find_theme_file(name: &str) -> Option<PathBuf> {
         .find(|path| path.is_file())
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
-/// The palette. Values are `#rrggbb` (or `#rgb`) strings in the theme file and
-/// are parsed into terminal colours when the theme is loaded.
-pub struct Colors {
-    background: HexColor,
-    foreground: HexColor,
-    primary: HexColor,
-    secondary: HexColor,
-    success: HexColor,
-    warning: HexColor,
-    error: HexColor,
-    info: HexColor,
-    muted: HexColor,
-    border: HexColor,
-    surface: HexColor,
-    highlight: HexColor,
-    accent1: HexColor,
-    accent2: HexColor,
-    accent3: HexColor,
+/// Declares the palette once: the struct field, its serde name and its getter
+/// all come from this list.
+///
+/// The field list, the getters, the `Role` enum and the role→colour match used
+/// to be four parallel lists kept in step by hand. They had already drifted —
+/// `accent2` and `accent3` had no getters, so no widget could reach them even
+/// though every bundled theme defines them.
+macro_rules! palette {
+    ($($name:ident),* $(,)?) => {
+        #[derive(Serialize, Deserialize, Debug, Clone)]
+        /// The palette. Values are `#rrggbb` (or `#rgb`) strings in the theme
+        /// file and are parsed into terminal colours when the theme is loaded.
+        pub struct Colors {
+            $($name: HexColor,)*
+        }
+
+        impl Colors {
+            $(
+                pub fn $name(&self) -> Color {
+                    self.$name.color()
+                }
+            )*
+        }
+    };
 }
+
+palette!(
+    background, foreground, primary, secondary, success, warning, error, info, muted, border,
+    surface, highlight, accent1, accent2, accent3,
+);
 
 /// A colour written as `#rrggbb` or `#rgb` in a theme file.
 ///
@@ -148,60 +158,6 @@ impl<'de> Deserialize<'de> for HexColor {
     }
 }
 
-impl Colors {
-    pub fn background(&self) -> Color {
-        self.background.color()
-    }
-
-    pub fn foreground(&self) -> Color {
-        self.foreground.color()
-    }
-
-    pub fn primary(&self) -> Color {
-        self.primary.color()
-    }
-
-    pub fn secondary(&self) -> Color {
-        self.secondary.color()
-    }
-
-    pub fn success(&self) -> Color {
-        self.success.color()
-    }
-
-    pub fn warning(&self) -> Color {
-        self.warning.color()
-    }
-
-    pub fn error(&self) -> Color {
-        self.error.color()
-    }
-
-    pub fn info(&self) -> Color {
-        self.info.color()
-    }
-
-    pub fn muted(&self) -> Color {
-        self.muted.color()
-    }
-
-    pub fn border(&self) -> Color {
-        self.border.color()
-    }
-
-    pub fn surface(&self) -> Color {
-        self.surface.color()
-    }
-
-    pub fn highlight(&self) -> Color {
-        self.highlight.color()
-    }
-
-    pub fn accent1(&self) -> Color {
-        self.accent1.color()
-    }
-}
-
 #[derive(Serialize, Deserialize, Debug, Clone)]
 /// A named colour palette, loaded from a TOML file.
 pub struct Theme {
@@ -209,165 +165,6 @@ pub struct Theme {
     pub description: String,
     pub colors: Colors,
 }
-
-/// A slot in the palette, used to describe syntax colours without repeating
-/// hex strings.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Role {
-    Foreground,
-    Background,
-    Muted,
-    Primary,
-    Secondary,
-    Success,
-    Warning,
-    Error,
-    Info,
-    Highlight,
-    Accent1,
-    Accent2,
-    Accent3,
-}
-
-/// Scope → palette mapping for syntax highlighting.
-///
-/// One colour per *role* (keyword, type, function, string, number, …) so a
-/// file reads consistently. syntect scores selectors by specificity, so a more
-/// specific rule wins regardless of the order here.
-///
-/// Scope names were read out of the bundled Sublime grammars rather than
-/// guessed — guessing is what left type names and macros uncoloured before
-/// (Rust emits `entity.name.struct`, not `entity.name.type.struct`, and
-/// `support.macro`, not `support.function.macro`).
-///
-/// Note on `storage.type`: these grammars use it both for declaration keywords
-/// (Rust `let`/`fn`, Python `class`/`def`) and for primitive type names
-/// (`u64`, `str`) — `let` and `u64` carry the *identical* scope. It is
-/// therefore mapped to the keyword colour, since declaration keywords are far
-/// more common; real type names arrive as `entity.name.*` / `support.type` and
-/// get the type colour.
-const SYNTAX_RULES: &[(&str, Role, FontStyle)] = &[
-    // Fallback for identifiers; anything unmatched uses settings.foreground.
-    (
-        "source, text, variable",
-        Role::Foreground,
-        FontStyle::empty(),
-    ),
-    // Comments.
-    (
-        "comment, punctuation.definition.comment",
-        Role::Muted,
-        FontStyle::ITALIC,
-    ),
-    // Punctuation and separators stay quiet, uniformly.
-    (
-        "punctuation, punctuation.separator, punctuation.terminator, \
-         punctuation.accessor, punctuation.section, punctuation.definition, \
-         meta.brace",
-        Role::Muted,
-        FontStyle::empty(),
-    ),
-    // Keywords: `use`, `pub`, `let`, `fn`, `struct`, `impl`, `class`, `def`.
-    (
-        "keyword, keyword.other, keyword.declaration, storage, \
-         storage.modifier, storage.type",
-        Role::Primary,
-        FontStyle::empty(),
-    ),
-    (
-        "keyword.control, keyword.control.flow, keyword.control.conditional, \
-         keyword.control.import, keyword.control.exception",
-        Role::Primary,
-        FontStyle::BOLD,
-    ),
-    // Operators.
-    (
-        "keyword.operator, punctuation.definition.generic",
-        Role::Secondary,
-        FontStyle::empty(),
-    ),
-    // Type names — distinct from the keywords that introduce them.
-    (
-        "entity.name.type, entity.name.class, entity.name.struct, \
-         entity.name.enum, entity.name.trait, entity.name.interface, \
-         entity.name.impl, entity.name.union, entity.name.namespace, \
-         support.type, support.class, entity.other.inherited-class",
-        Role::Accent2,
-        FontStyle::empty(),
-    ),
-    // Functions and macros: definitions and calls share a colour.
-    (
-        "entity.name.function, variable.function, support.function, \
-         support.macro, entity.name.macro",
-        Role::Info,
-        FontStyle::empty(),
-    ),
-    // Strings.
-    (
-        "string, string.quoted, string.regexp, markup.raw, markup.inserted",
-        Role::Success,
-        FontStyle::empty(),
-    ),
-    // Interpolation inside strings must not look like string content.
-    (
-        "constant.character.escape, punctuation.definition.template-expression, \
-         meta.interpolation, string.interpolated",
-        Role::Warning,
-        FontStyle::empty(),
-    ),
-    // Numbers, booleans, null, self/this.
-    (
-        "constant, constant.numeric, constant.language, constant.other, \
-         variable.language, support.constant",
-        Role::Accent1,
-        FontStyle::empty(),
-    ),
-    // Parameters and attributes.
-    (
-        "variable.parameter, entity.other.attribute-name, \
-         entity.name.label, meta.annotation, meta.attribute",
-        Role::Accent3,
-        FontStyle::empty(),
-    ),
-    // Preprocessor / attributes-as-metadata.
-    (
-        "meta.preprocessor, keyword.other.preprocessor",
-        Role::Warning,
-        FontStyle::empty(),
-    ),
-    // Markup tags (HTML/XML/JSX) — previously coloured as operators.
-    (
-        "entity.name.tag, punctuation.definition.tag",
-        Role::Primary,
-        FontStyle::empty(),
-    ),
-    // Anything the grammar flags as broken.
-    (
-        "invalid, invalid.illegal, markup.deleted",
-        Role::Error,
-        FontStyle::empty(),
-    ),
-    ("invalid.deprecated", Role::Warning, FontStyle::empty()),
-    // Markdown and friends.
-    (
-        "markup.heading, entity.name.section",
-        Role::Highlight,
-        FontStyle::BOLD,
-    ),
-    ("markup.list, markup.quote", Role::Muted, FontStyle::empty()),
-    (
-        "markup.underline.link, markup.link",
-        Role::Info,
-        FontStyle::UNDERLINE,
-    ),
-    ("markup.italic", Role::Foreground, FontStyle::ITALIC),
-    ("markup.bold", Role::Foreground, FontStyle::BOLD),
-    (
-        "markup.changed, meta.diff",
-        Role::Warning,
-        FontStyle::empty(),
-    ),
-];
 
 impl Theme {
     /// Builds a syntect theme from this palette.
@@ -378,21 +175,21 @@ impl Theme {
     /// what the bundled Sublime grammars actually emit.
     pub fn to_syntect_theme(&self) -> SynTheme {
         let settings = ThemeSettings {
-            foreground: Some(self.syn(Role::Foreground)),
-            background: Some(self.syn(Role::Background)),
+            foreground: Some(self.syn(Colors::foreground)),
+            background: Some(self.syn(Colors::background)),
             ..ThemeSettings::default()
         };
 
         let scopes = SYNTAX_RULES
             .iter()
-            .filter_map(|(selector, role, font)| {
+            .filter_map(|(selector, slot, font)| {
                 let scope = ScopeSelectors::from_str(selector)
                     .map_err(|e| log::warn!("invalid scope selector '{selector}': {e}"))
                     .ok()?;
                 Some(ThemeItem {
                     scope,
                     style: StyleModifier {
-                        foreground: Some(self.syn(*role)),
+                        foreground: Some(self.syn(*slot)),
                         background: None,
                         font_style: Some(*font),
                     },
@@ -409,24 +206,8 @@ impl Theme {
     }
 
     /// Palette lookup in syntect's colour type.
-    fn syn(&self, role: Role) -> SynColor {
-        let color = match role {
-            Role::Foreground => self.colors.foreground,
-            Role::Background => self.colors.background,
-            Role::Muted => self.colors.muted,
-            Role::Primary => self.colors.primary,
-            Role::Secondary => self.colors.secondary,
-            Role::Success => self.colors.success,
-            Role::Warning => self.colors.warning,
-            Role::Error => self.colors.error,
-            Role::Info => self.colors.info,
-            Role::Highlight => self.colors.highlight,
-            Role::Accent1 => self.colors.accent1,
-            Role::Accent2 => self.colors.accent2,
-            Role::Accent3 => self.colors.accent3,
-        };
-
-        match color.color() {
+    fn syn(&self, slot: PaletteSlot) -> SynColor {
+        match slot(&self.colors) {
             Color::Rgb(r, g, b) => SynColor { r, g, b, a: 0xFF },
             _ => SynColor {
                 r: 0,
@@ -560,6 +341,32 @@ mod tests {
             out.push_str(&format!("{key} = \"{color}\"\n"));
         }
         out
+    }
+
+    #[test]
+    fn every_palette_colour_has_a_getter() {
+        let t = Theme::builtin().unwrap();
+        // accent2/accent3 had no getters at all: defined in every bundled
+        // theme, reachable from no widget.
+        for (name, got) in [
+            ("background", t.colors.background()),
+            ("foreground", t.colors.foreground()),
+            ("primary", t.colors.primary()),
+            ("secondary", t.colors.secondary()),
+            ("success", t.colors.success()),
+            ("warning", t.colors.warning()),
+            ("error", t.colors.error()),
+            ("info", t.colors.info()),
+            ("muted", t.colors.muted()),
+            ("border", t.colors.border()),
+            ("surface", t.colors.surface()),
+            ("highlight", t.colors.highlight()),
+            ("accent1", t.colors.accent1()),
+            ("accent2", t.colors.accent2()),
+            ("accent3", t.colors.accent3()),
+        ] {
+            assert!(matches!(got, Color::Rgb(_, _, _)), "{name} did not resolve");
+        }
     }
 
     #[test]
@@ -837,9 +644,4 @@ success = "#a6e3a1"
         assert_eq!(theme.colors.background(), Color::Rgb(30, 30, 46));
         assert_eq!(theme.colors.primary(), Color::Rgb(137, 180, 250));
     }
-
-    // Note: load_theme and get_theme_list tests are skipped because:
-    // 1. They read from the filesystem (themes/ directory)
-    // 2. load_from_file calls process::exit on error (can't test easily)
-    // 3. The themes directory may not exist in test environment
 }

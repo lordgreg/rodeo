@@ -21,6 +21,9 @@
   clears the selection, and does nothing once there is nothing left to back
   out of — a reflexive second press used to exit rodeo. Quitting is `q`
   or `:q`.
+* The `accent2` and `accent3` theme colours were unreachable: every bundled
+  theme defines them, but no widget could read them. They now have accessors
+  like the rest of the palette.
 * Pressing `?` with the file preview open drew the help table and the preview
   on top of one another. Opening one popup now closes whatever was already
   there, and a second `Space` closes the preview instead of rebuilding it.
