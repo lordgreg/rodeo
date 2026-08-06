@@ -26,8 +26,25 @@ fn default_theme() -> String {
     "default".to_string()
 }
 
+/// The user's home directory, looked up at *runtime*.
+///
+/// This used to be `env!("HOME")` — the compile-time macro — so the build
+/// machine's home was baked into the binary. A distro package built in
+/// `/build` started every user in `/build`, and the crate failed to compile
+/// wherever `HOME` was unset (CI containers, nix, scratch images).
+fn home_dir() -> String {
+    home_or_root(std::env::var("HOME").ok())
+}
+
+/// The lookup rule, split out so it can be tested without mutating the
+/// process environment (which would race every other test).
+fn home_or_root(home: Option<String>) -> String {
+    home.filter(|home| !home.is_empty())
+        .unwrap_or_else(|| "/".to_string())
+}
+
 fn default_initial_directory() -> String {
-    env!("HOME").to_string()
+    home_dir()
 }
 fn default_sort_type() -> SortType {
     SortType::Name
@@ -146,6 +163,28 @@ impl Config {
         }
     }
 
+    /// Replaces start directories that no longer exist with the home directory.
+    ///
+    /// Needed for more than tidiness: versions before the `env!("HOME")` fix
+    /// wrote the *build machine's* home into the user's `config.toml` on first
+    /// run, so a stale absolute path is already on disk for existing installs
+    /// and fixing the default alone would not reach them. A directory removed
+    /// between runs lands here too.
+    fn repair_initial_dirs(&mut self) {
+        for (side, dir) in [
+            ("left", &mut self.initial_directory_left),
+            ("right", &mut self.initial_directory_right),
+        ] {
+            if Path::new(dir.as_str()).is_dir() {
+                continue;
+            }
+
+            let home = home_dir();
+            warn!("initial {side} directory {dir:?} is not a directory, starting in {home}");
+            *dir = home;
+        }
+    }
+
     pub fn load_config_from_file(filename: &str) -> io::Result<Config> {
         let config_str = match std::fs::read_to_string(filename) {
             Ok(s) => s,
@@ -225,7 +264,9 @@ impl Config {
                 "cannot get config path.".to_string(),
             )
         })?;
-        Self::load_config_from_file(path)
+        let mut config = Self::load_config_from_file(path)?;
+        config.repair_initial_dirs();
+        Ok(config)
     }
 }
 
@@ -247,6 +288,45 @@ mod tests {
         assert!(config.filter_hidden);
         assert!(config.filter_entries.is_empty());
         assert!(config.keybindings.is_empty());
+    }
+
+    #[test]
+    fn an_unset_or_empty_home_still_yields_a_usable_directory() {
+        assert_eq!(home_or_root(Some("/home/u".to_string())), "/home/u");
+        // An unset HOME used to be a *compile* error via env!("HOME").
+        assert_eq!(home_or_root(None), "/");
+        assert_eq!(home_or_root(Some(String::new())), "/");
+    }
+
+    /// `env!("HOME")` is the compile-time macro: it baked the build machine's
+    /// home into the binary. The lookup has to happen at run time.
+    #[test]
+    fn the_default_start_directory_is_read_at_run_time() {
+        let Ok(home) = std::env::var("HOME") else {
+            return; // Nothing to compare against in this environment.
+        };
+        assert_eq!(default_initial_directory(), home);
+    }
+
+    #[test]
+    fn a_start_directory_that_no_longer_exists_falls_back_to_home() {
+        let mut config = Config {
+            initial_directory_left: "/definitely/not/a/real/directory".to_string(),
+            initial_directory_right: "/tmp".to_string(),
+            ..Default::default()
+        };
+
+        config.repair_initial_dirs();
+
+        // The stale path — e.g. a build machine's home written into the config
+        // file by an older rodeo — is replaced with somewhere that exists; a
+        // directory that is still valid is left alone.
+        assert!(
+            Path::new(&config.initial_directory_left).is_dir(),
+            "{:?}",
+            config.initial_directory_left
+        );
+        assert_eq!(config.initial_directory_right, "/tmp");
     }
 
     #[test]
