@@ -1465,6 +1465,12 @@ impl App {
         }
     }
 
+    /// The universal dismiss chain: back out of the innermost thing first.
+    ///
+    /// Esc deliberately does *not* quit. It used to, once there was nothing
+    /// left to dismiss, which made one keypress mean either "clear my filter"
+    /// or "exit" depending on state the user cannot see — press it twice out
+    /// of reflex and rodeo was gone. Quitting is `q` or `:q`.
     fn handle_esc(&mut self) {
         if let Some(p) = &self.progress {
             p.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -1474,8 +1480,6 @@ impl App {
             self.panes.get_active_pane_mut().clear_filter();
         } else if self.panes.get_active_pane().has_selections() {
             self.panes.get_active_pane_mut().clear_selections();
-        } else {
-            self.exit = true;
         }
     }
 }
@@ -1514,6 +1518,34 @@ mod tests {
         app.dispatch_key(&key(KeyCode::Char('?'), KeyModifiers::NONE));
         assert!(app.keybinds_open());
         assert!(!app.preview_open(), "only one overlay at a time");
+    }
+
+    /// Esc backs out of one thing at a time and stops there. It used to quit
+    /// once the chain ran dry, so a reflexive second press killed the app.
+    #[test]
+    fn esc_dismisses_but_never_quits() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "hello").unwrap();
+        let mut app = test_app(dir.path());
+        let esc = key(KeyCode::Esc, KeyModifiers::NONE);
+
+        app.dispatch_key(&key(KeyCode::Char('j'), KeyModifiers::NONE));
+        app.dispatch_key(&key(KeyCode::Char(' '), KeyModifiers::NONE));
+        assert!(app.preview_open());
+
+        app.dispatch_key(&esc);
+        assert!(app.overlay.is_none(), "first Esc closes the popup");
+        assert!(!app.exit);
+
+        // Nothing left to dismiss: Esc is now a no-op, however often it comes.
+        for _ in 0..5 {
+            app.dispatch_key(&esc);
+        }
+        assert!(!app.exit, "Esc must never quit");
+
+        // `q` still does.
+        app.dispatch_key(&key(KeyCode::Char('q'), KeyModifiers::NONE));
+        assert!(app.exit);
     }
 
     /// Reported from a real session: Space, `?`, Ctrl+g used to leave the

@@ -129,7 +129,7 @@ const KEYBINDS: &[Keybind] = &[
         "Restore / delete permanently / select",
         &[],
     ),
-    bind("Esc", "Close / clear / quit", &[]),
+    bind("Esc", "Close / clear filter / clear selection", &[]),
     bind("q", "Quit", &[Action::Quit]),
 ];
 

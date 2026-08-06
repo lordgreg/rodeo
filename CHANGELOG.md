@@ -17,6 +17,10 @@
 * The header's git branch and counts come from the listing's own `git status`
   run. Opening a directory used to start seven `git` processes on the UI
   thread; it now starts four.
+* `Esc` no longer quits. It closes a popup, then clears the filter, then
+  clears the selection, and does nothing once there is nothing left to back
+  out of — a reflexive second press used to exit rodeo. Quitting is `q`
+  or `:q`.
 * Pressing `?` with the file preview open drew the help table and the preview
   on top of one another. Opening one popup now closes whatever was already
   there, and a second `Space` closes the preview instead of rebuilding it.
