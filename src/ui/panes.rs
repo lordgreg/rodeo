@@ -5,12 +5,11 @@
 //! name/size/date instead of squeezing everything.
 
 use std::{
-    fs::{self},
+    fs,
+    ops::Range,
     path::{Path, PathBuf},
     time::SystemTime,
 };
-
-use chrono;
 
 use ratatui::{
     Frame,
@@ -346,6 +345,106 @@ impl Entry {
     }
 }
 
+/// `Span::styled` when there is a style, a plain span when there is not.
+///
+/// This four-line match was written out eight times inside `highlight_name`.
+fn span(text: String, style: Option<Style>) -> Span<'static> {
+    match style {
+        Some(style) => Span::styled(text, style),
+        None => Span::from(text),
+    }
+}
+
+/// The active filter, compiled once so a listing can be highlighted row by row.
+///
+/// Building this per row was costing a pattern parse and a `nucleo::Matcher`
+/// (or a regex compile) for every visible entry on every frame.
+enum Highlighter {
+    Off,
+    Fuzzy {
+        pattern: nucleo::pattern::Pattern,
+        matcher: nucleo::Matcher,
+        buf: Vec<char>,
+        indices: Vec<u32>,
+    },
+    Regex(regex::Regex),
+}
+
+impl Highlighter {
+    fn new(filter: Option<&FilterSpec>) -> Self {
+        match filter {
+            None => Self::Off,
+            Some(FilterSpec::Fuzzy(pattern)) => Self::Fuzzy {
+                pattern: nucleo::pattern::Pattern::parse(
+                    pattern,
+                    nucleo::pattern::CaseMatching::Smart,
+                    nucleo::pattern::Normalization::Smart,
+                ),
+                matcher: nucleo::Matcher::new(nucleo::Config::DEFAULT),
+                buf: Vec::new(),
+                indices: Vec::new(),
+            },
+            // An invalid regex highlights nothing rather than failing the draw.
+            Some(FilterSpec::Regex(pattern)) => match regex::Regex::new(pattern) {
+                Ok(re) => Self::Regex(re),
+                Err(_) => Self::Off,
+            },
+        }
+    }
+
+    /// Character ranges of `name` that the filter matched, in order and
+    /// non-overlapping. Adjacent characters are merged into one range so a
+    /// run of matches becomes a single span.
+    fn matched_ranges(&mut self, name: &str) -> Vec<Range<usize>> {
+        match self {
+            Self::Off => Vec::new(),
+            Self::Fuzzy {
+                pattern,
+                matcher,
+                buf,
+                indices,
+            } => {
+                indices.clear();
+                let haystack = nucleo::Utf32Str::new(name, buf);
+                if pattern.score(haystack, matcher).is_none() {
+                    return Vec::new();
+                }
+
+                // `score` and `indices` each need the haystack, and building it
+                // borrows `buf`, so it is rebuilt here rather than held.
+                let haystack = nucleo::Utf32Str::new(name, buf);
+                pattern.indices(haystack, matcher, indices);
+                indices.sort_unstable();
+                indices.dedup();
+
+                let char_count = name.chars().count();
+                let mut ranges: Vec<Range<usize>> = Vec::new();
+                for &idx in indices.iter() {
+                    let idx = idx as usize;
+                    if idx >= char_count {
+                        continue;
+                    }
+                    match ranges.last_mut() {
+                        Some(last) if last.end == idx => last.end = idx + 1,
+                        _ => ranges.push(idx..idx + 1),
+                    }
+                }
+                ranges
+            }
+            Self::Regex(re) => match re.find(name) {
+                // Byte offsets from the regex, character offsets out: the
+                // caller indexes into a Vec<char>.
+                Some(m) => {
+                    let start = name[..m.start()].chars().count();
+                    let end = start + m.as_str().chars().count();
+                    std::iter::once(start..end).collect()
+                }
+                None => Vec::new(),
+            },
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 /// One directory pane: its listing, cursor, selection and filter.
 pub struct Pane {
@@ -495,140 +594,47 @@ impl Pane {
         stats
     }
 
-    /// Returns highlighted name spans for a given entry name based on active filter.
-    /// If no filter is active, returns the name with the given style.
+    /// Name spans for one entry, with the filter's matches picked out.
+    ///
+    /// `highlighter` is built once per frame by the caller: this used to parse
+    /// the pattern and construct a `nucleo::Matcher` — or compile the regex —
+    /// once per row, per frame.
     fn highlight_name(
-        &self,
+        highlighter: &mut Highlighter,
         name: &str,
         base_style: Option<Style>,
         theme: &Theme,
     ) -> Vec<Span<'static>> {
-        let filter = match &self.filter {
-            Some(f) => f,
-            None => {
-                return vec![match base_style {
-                    Some(style) => Span::styled(name.to_string(), style),
-                    None => Span::from(name.to_string()),
-                }];
-            }
+        let matched = highlighter.matched_ranges(name);
+        if matched.is_empty() {
+            return vec![span(name.to_string(), base_style)];
+        }
+
+        let highlight_style = match base_style {
+            Some(style) => style.bg(theme.colors.warning()),
+            None => Style::new().bg(theme.colors.warning()),
         };
 
-        match filter {
-            FilterSpec::Fuzzy(pattern) => {
-                let parsed = nucleo::pattern::Pattern::parse(
-                    pattern,
-                    nucleo::pattern::CaseMatching::Smart,
-                    nucleo::pattern::Normalization::Smart,
-                );
-                let mut matcher = nucleo::Matcher::new(nucleo::Config::DEFAULT);
-                let mut buf = Vec::new();
-                let mut indices = Vec::new();
+        let chars: Vec<char> = name.chars().collect();
+        let mut spans = Vec::new();
+        let mut at = 0;
 
-                // Try to get match indices
-                if parsed
-                    .score(nucleo::Utf32Str::new(name, &mut buf), &mut matcher)
-                    .is_some()
-                {
-                    parsed.indices(
-                        nucleo::Utf32Str::new(name, &mut buf),
-                        &mut matcher,
-                        &mut indices,
-                    );
-                }
-
-                if indices.is_empty() {
-                    // No match or no indices, return unstyled
-                    return vec![match base_style {
-                        Some(style) => Span::styled(name.to_string(), style),
-                        None => Span::from(name.to_string()),
-                    }];
-                }
-
-                // Build spans with highlighted characters
-                let mut spans = Vec::new();
-                let chars: Vec<char> = name.chars().collect();
-                let mut last_idx = 0;
-
-                for &idx in &indices {
-                    let idx = idx as usize;
-                    if idx >= chars.len() {
-                        continue;
-                    }
-
-                    // Add non-matching segment before this match
-                    if idx > last_idx {
-                        let segment: String = chars[last_idx..idx].iter().collect();
-                        spans.push(match base_style {
-                            Some(style) => Span::styled(segment, style),
-                            None => Span::from(segment),
-                        });
-                    }
-
-                    // Add highlighted match character
-                    let ch: String = chars[idx..idx + 1].iter().collect();
-                    let highlight_style = match base_style {
-                        Some(style) => style.bg(theme.colors.warning()),
-                        None => Style::new().bg(theme.colors.warning()),
-                    };
-                    spans.push(Span::styled(ch, highlight_style));
-                    last_idx = idx + 1;
-                }
-
-                // Add remaining non-matching segment
-                if last_idx < chars.len() {
-                    let segment: String = chars[last_idx..].iter().collect();
-                    spans.push(match base_style {
-                        Some(style) => Span::styled(segment, style),
-                        None => Span::from(segment),
-                    });
-                }
-
-                spans
+        for range in matched {
+            if range.start > at {
+                spans.push(span(chars[at..range.start].iter().collect(), base_style));
             }
-            FilterSpec::Regex(pattern) => {
-                // For regex, highlight the entire match
-                let Ok(re) = regex::Regex::new(pattern) else {
-                    return vec![match base_style {
-                        Some(style) => Span::styled(name.to_string(), style),
-                        None => Span::from(name.to_string()),
-                    }];
-                };
-
-                if let Some(m) = re.find(name) {
-                    let mut spans = Vec::new();
-
-                    // Before match
-                    if m.start() > 0 {
-                        spans.push(match base_style {
-                            Some(style) => Span::styled(name[..m.start()].to_string(), style),
-                            None => Span::from(name[..m.start()].to_string()),
-                        });
-                    }
-
-                    // Matched portion
-                    let highlight_style = match base_style {
-                        Some(style) => style.bg(theme.colors.warning()),
-                        None => Style::new().bg(theme.colors.warning()),
-                    };
-                    spans.push(Span::styled(m.as_str().to_string(), highlight_style));
-
-                    // After match
-                    if m.end() < name.len() {
-                        spans.push(match base_style {
-                            Some(style) => Span::styled(name[m.end()..].to_string(), style),
-                            None => Span::from(name[m.end()..].to_string()),
-                        });
-                    }
-
-                    spans
-                } else {
-                    vec![match base_style {
-                        Some(style) => Span::styled(name.to_string(), style),
-                        None => Span::from(name.to_string()),
-                    }]
-                }
-            }
+            spans.push(Span::styled(
+                chars[range.start..range.end].iter().collect::<String>(),
+                highlight_style,
+            ));
+            at = range.end;
         }
+
+        if at < chars.len() {
+            spans.push(span(chars[at..].iter().collect(), base_style));
+        }
+
+        spans
     }
 
     /// Message to show when the listing has nothing worth displaying.
@@ -648,6 +654,9 @@ impl Pane {
     }
 
     fn entry_rows(&self, theme: &Theme, columns: ColumnSet) -> Vec<Row<'static>> {
+        // Compiled once for the whole listing, not once per row.
+        let mut highlighter = Highlighter::new(self.filter.as_ref());
+
         self.paths
             .iter()
             .map(|e| {
@@ -676,7 +685,12 @@ impl Pane {
                             name_style.unwrap_or_else(|| Style::new().fg(theme.colors.muted())),
                         ));
                     }
-                    spans.extend(self.highlight_name(&e.name, name_style, theme));
+                    spans.extend(Self::highlight_name(
+                        &mut highlighter,
+                        &e.name,
+                        name_style,
+                        theme,
+                    ));
                     if let Some(target) = &e.link_target {
                         spans.push(Span::styled(
                             format!(" -> {}", target.display()),
@@ -1617,6 +1631,84 @@ mod tests {
 
             assert!(!entry.is_symlink);
             assert_eq!(entry.link_target, None);
+        }
+    }
+
+    mod highlighter {
+        use super::*;
+
+        fn ranges(filter: Option<FilterSpec>, name: &str) -> Vec<Range<usize>> {
+            Highlighter::new(filter.as_ref()).matched_ranges(name)
+        }
+
+        #[test]
+        fn no_filter_highlights_nothing() {
+            assert!(ranges(None, "readme.md").is_empty());
+        }
+
+        #[test]
+        fn a_regex_marks_its_whole_match() {
+            let got = ranges(Some(FilterSpec::Regex("read".into())), "readme.md");
+            assert_eq!(got, vec![0..4]);
+        }
+
+        #[test]
+        fn a_regex_that_does_not_match_marks_nothing() {
+            assert!(ranges(Some(FilterSpec::Regex("zzz".into())), "readme.md").is_empty());
+        }
+
+        /// Ranges index into a `Vec<char>`, but the regex reports bytes.
+        #[test]
+        fn regex_ranges_are_character_offsets_not_byte_offsets() {
+            let got = ranges(Some(FilterSpec::Regex("b".into())), "äöü_b");
+            assert_eq!(got, vec![4..5], "three 2-byte chars precede the match");
+        }
+
+        #[test]
+        fn an_invalid_regex_highlights_nothing_instead_of_failing() {
+            assert!(ranges(Some(FilterSpec::Regex("[unclosed".into())), "a.txt").is_empty());
+        }
+
+        #[test]
+        fn a_fuzzy_match_marks_the_matched_characters() {
+            let got = ranges(Some(FilterSpec::Fuzzy("rdm".into())), "readme.md");
+            let marked: String = "readme.md"
+                .chars()
+                .enumerate()
+                .filter(|(i, _)| got.iter().any(|r| r.contains(i)))
+                .map(|(_, c)| c)
+                .collect();
+            assert_eq!(marked, "rdm");
+        }
+
+        /// Consecutive hits collapse into one range so they render as a single
+        /// span rather than one span per character.
+        #[test]
+        fn adjacent_fuzzy_matches_merge_into_one_range() {
+            let got = ranges(Some(FilterSpec::Fuzzy("read".into())), "readme.md");
+            assert_eq!(got, vec![0..4]);
+        }
+
+        #[test]
+        fn ranges_are_ordered_and_do_not_overlap() {
+            let got = ranges(Some(FilterSpec::Fuzzy("rme".into())), "readme.md");
+            for pair in got.windows(2) {
+                assert!(pair[0].end <= pair[1].start, "{got:?}");
+            }
+        }
+
+        /// The matcher is reused across rows, so state from one name must not
+        /// leak into the next.
+        #[test]
+        fn one_highlighter_handles_many_names_independently() {
+            let mut hl = Highlighter::new(Some(&FilterSpec::Fuzzy("md".into())));
+
+            let first = hl.matched_ranges("readme.md");
+            let miss = hl.matched_ranges("zzz");
+            let again = hl.matched_ranges("readme.md");
+
+            assert!(miss.is_empty());
+            assert_eq!(first, again, "a non-matching name must not corrupt state");
         }
     }
 
