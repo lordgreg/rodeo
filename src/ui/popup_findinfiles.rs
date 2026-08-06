@@ -21,14 +21,11 @@ use syntect::highlighting;
 
 use crate::ui::{
     component::Component,
-    filepreview::{Preview, build_preview, render_preview},
-    popup_findfiles::{MIN_WIDTH_FOR_PREVIEW, render_query_line},
+    filepreview::{PreviewPane, build_preview},
+    popup_findfiles::{LIST_PERCENT, MIN_WIDTH_FOR_PREVIEW, render_query_line},
     textinput::TextInput,
     theme::Theme,
 };
-
-/// Share of the popup width given to the hit list.
-const LIST_PERCENT: u16 = 45;
 
 #[derive(Debug, Clone)]
 pub struct FindMatch {
@@ -65,20 +62,15 @@ pub struct FindInFiles {
     /// What the walk skipped, shown in the footer so a short result list is
     /// explained where it is seen.
     filter_label: Option<String>,
-    /// Syntax colours shared with the file preview popup. `None` in tests and
-    /// before the first search, where plain text is fine.
-    syn_theme: Option<Arc<highlighting::Theme>>,
-    /// Cached preview and the hit it belongs to.
-    preview: Option<Preview>,
-    preview_for: Option<(PathBuf, usize)>,
-    /// Manual scroll away from the centred match line, in lines.
-    preview_scroll: i32,
+    /// Cached preview of the highlighted hit, keyed by path and line, with
+    /// any manual scroll away from the centred match line.
+    preview: PreviewPane<(PathBuf, usize)>,
 }
 
 impl FindInFiles {
     pub fn new(syn_theme: Arc<highlighting::Theme>) -> Self {
         Self {
-            syn_theme: Some(syn_theme),
+            preview: PreviewPane::new(syn_theme),
             ..Self::default()
         }
     }
@@ -128,7 +120,7 @@ impl FindInFiles {
         let i = self.list_state.selected().unwrap_or(0);
         if i > 0 {
             self.list_state.select(Some(i - 1));
-            self.preview_scroll = 0;
+            self.preview.reset_scroll();
         }
     }
 
@@ -139,20 +131,18 @@ impl FindInFiles {
         let i = self.list_state.selected().unwrap_or(0);
         if i + 1 < self.results.len() {
             self.list_state.select(Some(i + 1));
-            self.preview_scroll = 0;
+            self.preview.reset_scroll();
         }
     }
 
     /// Scrolls the preview without moving the selection, like Telescope's
     /// `Ctrl+d`/`Ctrl+u`. Clamped against the loaded window at render time.
     pub fn scroll_preview(&mut self, delta: i32) {
-        self.preview_scroll = self.preview_scroll.saturating_add(delta);
+        self.preview.scroll_by(delta);
     }
 
     fn invalidate_preview(&mut self) {
-        self.preview = None;
-        self.preview_for = None;
-        self.preview_scroll = 0;
+        self.preview.invalidate();
     }
 
     /// Path of a hit as shown in the list: relative to the search root when
@@ -168,40 +158,24 @@ impl FindInFiles {
 
     /// Builds (or reuses) the preview for the current selection.
     fn ensure_preview(&mut self) {
-        let Some(m) = self.selected_match() else {
-            self.preview = None;
-            self.preview_for = None;
-            return;
-        };
-        let key = (m.path.clone(), m.line_num);
-        if self.preview_for.as_ref() == Some(&key) {
-            return;
-        }
-        let theme = self.syn_theme.clone().unwrap_or_default();
-        self.preview = Some(build_preview(&key.0, key.1, &theme));
-        self.preview_for = Some(key);
-        self.preview_scroll = 0;
+        let key = self.selected_match().map(|m| (m.path.clone(), m.line_num));
+        self.preview.ensure(key, |(path, line), syntax| {
+            build_preview(path, *line, syntax)
+        });
     }
 
     /// Draws the preview pane for the current selection into `area`.
     fn render_preview(&mut self, frame: &mut Frame<'_>, theme: &Theme, area: Rect) {
-        let title = match self.selected_match() {
-            Some(m) => format!("{}:{}", self.display_path(m), m.line_num),
-            None => "Preview".to_string(),
+        let (title, anchor) = match self.selected_match() {
+            Some(m) => (
+                format!("{}:{}", self.display_path(m), m.line_num),
+                Some(m.line_num),
+            ),
+            None => ("Preview".to_string(), None),
         };
+
         self.ensure_preview();
-        let anchor = self.selected_match().map(|m| m.line_num);
-        let mut scroll = self.preview_scroll;
-        render_preview(
-            frame,
-            theme,
-            area,
-            &title,
-            self.preview.as_ref(),
-            anchor,
-            &mut scroll,
-        );
-        self.preview_scroll = scroll;
+        self.preview.render(frame, theme, area, &title, anchor);
     }
 }
 
@@ -370,13 +344,13 @@ mod tests {
         ]);
 
         find.ensure_preview();
-        assert_eq!(find.preview_for, Some((path.clone(), 1)));
+        assert_eq!(find.preview.built_for().cloned(), Some((path.clone(), 1)));
 
         find.move_down();
         // Selection moved: the cache no longer matches and is rebuilt.
-        assert_eq!(find.preview_for, Some((path.clone(), 1)));
+        assert_eq!(find.preview.built_for().cloned(), Some((path.clone(), 1)));
         find.ensure_preview();
-        assert_eq!(find.preview_for, Some((path, 2)));
+        assert_eq!(find.preview.built_for().cloned(), Some((path, 2)));
     }
 
     #[test]
@@ -398,9 +372,9 @@ mod tests {
         ]);
 
         find.scroll_preview(10);
-        assert_eq!(find.preview_scroll, 10);
+        assert_eq!(find.preview.scroll(), 10);
         find.move_down();
-        assert_eq!(find.preview_scroll, 0);
+        assert_eq!(find.preview.scroll(), 0);
     }
 
     #[test]

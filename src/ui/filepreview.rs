@@ -7,6 +7,7 @@
 //! arithmetic exists once.
 
 use std::path::Path;
+use std::sync::Arc;
 
 use ratatui::{
     Frame,
@@ -213,9 +214,183 @@ pub fn render_preview(
     frame.render_widget(Paragraph::new(rendered), inner);
 }
 
+/// A cached preview, what it was built for, and how far it is scrolled.
+///
+/// The file finder and find-in-files each carried this as three loose fields
+/// plus a `syn_theme`, with their own copies of `scroll_preview`,
+/// `invalidate_preview` and `ensure_preview` — about fifty identical lines.
+/// `K` is whatever identifies the current selection: a path for one popup, a
+/// path and line number for the other.
+#[derive(Debug, Default)]
+pub struct PreviewPane<K> {
+    preview: Option<Preview>,
+    /// What `preview` was built for. `None` means nothing is cached.
+    built_for: Option<K>,
+    scroll: i32,
+    /// Syntax colours for the active theme. Non-optional: the popups used to
+    /// hold `Option<Arc<..>>` purely so they could derive `Default` for tests,
+    /// then unwrap it with `unwrap_or_default` at every use.
+    syntax: Arc<highlighting::Theme>,
+}
+
+impl<K: PartialEq> PreviewPane<K> {
+    pub fn new(syntax: Arc<highlighting::Theme>) -> Self {
+        Self {
+            preview: None,
+            built_for: None,
+            scroll: 0,
+            syntax,
+        }
+    }
+
+    /// Scrolls without moving the selection. Clamped against the loaded window
+    /// at render time.
+    pub fn scroll_by(&mut self, delta: i32) {
+        self.scroll = self.scroll.saturating_add(delta);
+    }
+
+    /// Returns to the natural offset for the current content, without
+    /// dropping it — the selection moved, so a manual scroll no longer
+    /// applies.
+    pub fn reset_scroll(&mut self) {
+        self.scroll = 0;
+    }
+
+    /// Drops the cache, e.g. because the result list changed underneath it.
+    pub fn invalidate(&mut self) {
+        self.preview = None;
+        self.built_for = None;
+        self.scroll = 0;
+    }
+
+    /// Builds the preview for `key`, reusing the cached one when the key has
+    /// not changed. `None` clears it.
+    ///
+    /// Rebuilding resets the scroll: the offset belonged to the old content.
+    pub fn ensure(
+        &mut self,
+        key: Option<K>,
+        build: impl FnOnce(&K, &highlighting::Theme) -> Preview,
+    ) {
+        let Some(key) = key else {
+            self.preview = None;
+            self.built_for = None;
+            return;
+        };
+
+        if self.built_for.as_ref() == Some(&key) {
+            return;
+        }
+
+        self.preview = Some(build(&key, &self.syntax));
+        self.built_for = Some(key);
+        self.scroll = 0;
+    }
+
+    pub fn render(
+        &mut self,
+        frame: &mut Frame<'_>,
+        theme: &Theme,
+        area: Rect,
+        title: &str,
+        anchor: Option<usize>,
+    ) {
+        let mut scroll = self.scroll;
+        render_preview(
+            frame,
+            theme,
+            area,
+            title,
+            self.preview.as_ref(),
+            anchor,
+            &mut scroll,
+        );
+        // `render_preview` clamps against the window it actually drew.
+        self.scroll = scroll;
+    }
+
+    #[cfg(test)]
+    pub fn built_for(&self) -> Option<&K> {
+        self.built_for.as_ref()
+    }
+
+    #[cfg(test)]
+    pub fn scroll(&self) -> i32 {
+        self.scroll
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    mod preview_pane {
+        use super::*;
+
+        fn pane() -> PreviewPane<u32> {
+            PreviewPane::new(Arc::new(highlighting::Theme::default()))
+        }
+
+        fn build(key: &u32, _syntax: &highlighting::Theme) -> Preview {
+            Preview::Error(format!("built for {key}"))
+        }
+
+        #[test]
+        fn the_cache_is_reused_while_the_key_is_unchanged() {
+            let mut pane = pane();
+            let mut builds = 0;
+
+            for _ in 0..3 {
+                pane.ensure(Some(7), |k, t| {
+                    builds += 1;
+                    build(k, t)
+                });
+            }
+
+            assert_eq!(builds, 1, "the same key must not rebuild");
+            assert_eq!(pane.built_for(), Some(&7));
+        }
+
+        #[test]
+        fn a_new_key_rebuilds_and_drops_a_manual_scroll() {
+            let mut pane = pane();
+            pane.ensure(Some(1), build);
+            pane.scroll_by(10);
+            assert_eq!(pane.scroll(), 10);
+
+            pane.ensure(Some(2), build);
+            assert_eq!(pane.built_for(), Some(&2));
+            assert_eq!(pane.scroll(), 0, "the offset belonged to the old content");
+        }
+
+        #[test]
+        fn no_selection_clears_the_cache() {
+            let mut pane = pane();
+            pane.ensure(Some(1), build);
+
+            pane.ensure(None, build);
+            assert_eq!(pane.built_for(), None);
+        }
+
+        #[test]
+        fn invalidate_drops_the_cache_and_the_scroll() {
+            let mut pane = pane();
+            pane.ensure(Some(1), build);
+            pane.scroll_by(5);
+
+            pane.invalidate();
+            assert_eq!(pane.built_for(), None);
+            assert_eq!(pane.scroll(), 0);
+        }
+
+        #[test]
+        fn scrolling_accumulates_in_both_directions() {
+            let mut pane = pane();
+            pane.scroll_by(10);
+            pane.scroll_by(-3);
+            assert_eq!(pane.scroll(), 7);
+        }
+    }
 
     #[test]
     fn preview_window_is_centred_on_the_anchor() {
