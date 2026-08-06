@@ -124,23 +124,16 @@ pub struct Config {
 }
 
 impl Default for Config {
+    /// Every field above carries a serde default, so an empty document *is*
+    /// the default configuration.
+    ///
+    /// Writing the field list out again here made a third copy that had to
+    /// agree with the other two by hand — they had already fallen out of
+    /// declaration order. Deserializing cannot fail while every field has a
+    /// default, and `an_empty_document_is_the_default_configuration` fails
+    /// loudly if one ever stops having one.
     fn default() -> Self {
-        Self {
-            theme: default_theme(),
-            initial_directory_left: default_initial_directory(),
-            initial_directory_right: default_initial_directory(),
-            sort_order: default_sort_order(),
-            sort_type: default_sort_type(),
-            show_hidden: default_show_hidden(),
-            directories_on_top: default_directories_on_top(),
-            active_pane: default_active_pane(),
-            editor: default_editor(),
-            icons: false,
-            filter_gitignore: default_filter_gitignore(),
-            filter_hidden: default_filter_hidden(),
-            filter_entries: Vec::new(),
-            keybindings: HashMap::new(),
-        }
+        toml::from_str("").expect("every Config field must have a serde default")
     }
 }
 
@@ -335,6 +328,24 @@ mod tests {
         assert_eq!(config.theme, "default");
         assert_eq!(config.sort_type, SortType::Name);
         assert_eq!(config.sort_order, SortOrder::Ascending);
+    }
+
+    /// `Config::default` deserializes an empty document, so a field added
+    /// without `#[serde(default)]` would make it panic. This is where that
+    /// shows up, rather than at startup on a user's machine.
+    #[test]
+    fn an_empty_document_is_the_default_configuration() {
+        let parsed: Result<Config, _> = toml::from_str("");
+        assert!(
+            parsed.is_ok(),
+            "a Config field is missing #[serde(default)]: {:?}",
+            parsed.err()
+        );
+
+        // And the two agree, field for field, via the serialized form.
+        let from_empty = toml::to_string(&parsed.unwrap()).unwrap();
+        let from_default = toml::to_string(&Config::default()).unwrap();
+        assert_eq!(from_empty, from_default);
     }
 
     #[test]

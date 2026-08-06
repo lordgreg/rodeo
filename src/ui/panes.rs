@@ -944,7 +944,6 @@ impl Pane {
             },
             _ => OpenAction::Nothing,
         }
-        // OpenAction::Nothing
     }
 
     pub fn header_to_cell(

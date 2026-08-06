@@ -149,15 +149,6 @@ impl FindInFiles {
         self.preview_scroll = self.preview_scroll.saturating_add(delta);
     }
 
-    pub fn clear(&mut self) {
-        self.input = TextInput::default();
-        self.results.clear();
-        self.list_state.select(None);
-        self.searching = false;
-        self.last_query = None;
-        self.invalidate_preview();
-    }
-
     fn invalidate_preview(&mut self) {
         self.preview = None;
         self.preview_for = None;
