@@ -9,13 +9,14 @@ pub enum ActivePane {
     Right,
 }
 
+/// Shared UI state.
+///
+/// Now empty: the two popup flags it used to carry were a second, drifting
+/// answer to "what is open" and have been replaced by `App::overlay`. It is
+/// still threaded through `Component::render`, where no implementor reads it —
+/// removing that parameter is a separate cleanup.
 #[derive(Debug, Default)]
-pub struct UiConfig {
-    // pub log_pane: bool,
-    // pub active_cmd_popup: bool,
-    pub active_keybind_popup: bool,
-    pub active_preview_popup: bool,
-}
+pub struct UiConfig {}
 
 impl UiConfig {
     pub fn new() -> Self {

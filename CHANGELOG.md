@@ -17,6 +17,9 @@
 * The header's git branch and counts come from the listing's own `git status`
   run. Opening a directory used to start seven `git` processes on the UI
   thread; it now starts four.
+* Pressing `?` with the file preview open drew the help table and the preview
+  on top of one another. Opening one popup now closes whatever was already
+  there, and a second `Space` closes the preview instead of rebuilding it.
 
 ## Added
 
