@@ -328,12 +328,15 @@ pub struct Pane {
     sort_order: SortOrder,
     /// Mirrors `config.icons`; kept per pane so rendering needs no config.
     icons: bool,
+    /// Repository summary from the same `git status` run that filled in the
+    /// per-entry statuses, so the header does not have to run git again.
+    git_summary: Option<git::RepoSummary>,
 }
 
 impl Pane {
     pub fn new(config: &Config, path: &str) -> Self {
         let path = path.to_string();
-        let (paths, hidden_count) = read_entries(&path, config);
+        let (paths, hidden_count, git_summary) = read_entries(&path, config);
         let sort_order = config.sort_order;
         let sort_type = config.sort_type;
 
@@ -347,6 +350,7 @@ impl Pane {
             sort_order,
             sort_type,
             icons: config.icons,
+            git_summary,
         };
 
         pane.state.select(Some(0));
@@ -355,6 +359,11 @@ impl Pane {
 
     pub fn filter(&self) -> Option<&FilterSpec> {
         self.filter.as_ref()
+    }
+
+    /// Branch and repository-wide counts, from the listing's own `git` run.
+    pub fn git_summary(&self) -> Option<&git::RepoSummary> {
+        self.git_summary.as_ref()
     }
 
     /// Narrows the visible entries by the given filter. The parent entry (`..`)
@@ -805,7 +814,7 @@ impl Pane {
             .map(|p| p.path.clone())
             .collect();
 
-        (self.all_paths, self.hidden_count) = read_entries(&self.path, config);
+        (self.all_paths, self.hidden_count, self.git_summary) = read_entries(&self.path, config);
 
         if !clear_selection {
             for entry in &mut self.all_paths {
@@ -1056,7 +1065,7 @@ fn sort_entries(entries: &mut [Entry], config: &Config) {
     });
 }
 
-fn read_entries(dir: &str, config: &Config) -> (Vec<Entry>, usize) {
+fn read_entries(dir: &str, config: &Config) -> (Vec<Entry>, usize, Option<git::RepoSummary>) {
     let mut hidden_count = 0;
 
     let mut entries: Vec<Entry> = match fs::read_dir(dir) {
@@ -1086,13 +1095,16 @@ fn read_entries(dir: &str, config: &Config) -> (Vec<Entry>, usize) {
 
     entries.insert(0, Entry::parent(dir));
 
-    if let Some(statuses) = git::status_map(Path::new(dir)) {
+    // One `git status` run serves both the per-entry column and the header's
+    // branch/counts, which is why the summary is carried back out of here.
+    let git_summary = git::repo_info(Path::new(dir)).map(|info| {
         for entry in &mut entries {
-            entry.git_status = statuses.get(&entry.name).copied();
+            entry.git_status = info.entries.get(&entry.name).copied();
         }
-    }
+        info.summary
+    });
 
-    (entries, hidden_count)
+    (entries, hidden_count, git_summary)
 }
 
 #[derive(PartialEq)]

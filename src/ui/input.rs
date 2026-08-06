@@ -323,8 +323,7 @@ impl App {
         if let Some(path) = select {
             self.panes.get_active_pane_mut().select_by_path(&path);
         }
-        self.header
-            .update(self.panes.get_active_pane().path.to_string());
+        self.sync_header();
     }
 
     fn handle_trash_key(&mut self, key: &KeyEvent) {
@@ -1077,8 +1076,7 @@ impl App {
             Ok(p) if p.is_dir() => {
                 self.panes.get_active_pane_mut().path = p.to_string_lossy().to_string();
                 self.panes.reload(&self.config, true);
-                self.header
-                    .update(self.panes.get_active_pane().path.to_string());
+                self.sync_header();
             }
             _ => {
                 self.err_status(format!("Not a directory: {arg}"));
@@ -1314,8 +1312,7 @@ impl App {
             Action::OpenEntry => match self.panes.get_active_pane_mut().open() {
                 OpenAction::DirectoryOpened | OpenAction::Reload => {
                     self.panes.reload(&self.config, true);
-                    self.header
-                        .update(self.panes.get_active_pane().path.to_string());
+                    self.sync_header();
                 }
                 OpenAction::FileOpened(path) => {
                     self.pending_editor_file = Some(EditorTarget::new(path));
@@ -1328,8 +1325,7 @@ impl App {
                     self.panes.get_active_pane_mut().go_to_parent(&path)
                 {
                     self.panes.reload(&self.config, true);
-                    self.header
-                        .update(self.panes.get_active_pane().path.to_string());
+                    self.sync_header();
                 }
             }
             Action::GotoFirst => self.panes.goto_first(),
@@ -1372,8 +1368,7 @@ impl App {
             Action::PaneRight => self.panes.set_active_pane(ActivePane::Right),
             Action::PaneToggle => {
                 self.panes.toggle_active_pane();
-                self.header
-                    .update(self.panes.get_active_pane().path.to_string());
+                self.sync_header();
             }
             Action::Help => {
                 self.ui_config.active_keybind_popup = !self.ui_config.active_keybind_popup;

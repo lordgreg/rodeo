@@ -1,5 +1,25 @@
 # Unreleased
 
+## Fixed
+
+* A theme file with a malformed colour no longer crashes rodeo mid-frame and
+  leaves the terminal unusable. Colours are checked when the theme loads, the
+  offending key is named, and rodeo starts on the built-in theme instead.
+  Three-digit colours (`#fff`) are now accepted.
+* The start directory is read from `$HOME` when rodeo runs, not when it was
+  built. Packaged builds used to start every user in the build machine's home
+  directory; an existing `config.toml` carrying such a path is repaired on
+  load.
+* The hint bar shows the keys that are actually bound. Bindings using `alt+`
+  or `shift+` were printed literally (`alt+j Copy`), and the bar shown while
+  entries are selected ignored the keymap entirely, always claiming `F5` /
+  `F6` / `F8`.
+* The header's git branch and counts come from the listing's own `git status`
+  run. Opening a directory used to start seven `git` processes on the UI
+  thread; it now starts four.
+
+## Added
+
 * `/` now opens a **file finder** popup: every file and directory below the
   active pane, searched by name as you type, with a preview beside the results.
   `Enter` takes the pane to the match, `Ctrl+e` opens it in `$EDITOR`.

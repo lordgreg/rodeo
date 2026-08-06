@@ -241,6 +241,10 @@ impl App {
         };
 
         app.footer.update_hints(&app.keymap);
+        // The panes have already run git while building their listings; this
+        // hands that result to the header so the branch is on screen from the
+        // first frame rather than only after the first navigation.
+        app.sync_header();
         app.report_keymap_warnings();
         app
     }
@@ -295,8 +299,7 @@ impl App {
                 // Keep flagged entries: an external change must not wipe the
                 // user's selection.
                 self.panes.reload(&self.config, false);
-                self.header
-                    .update(self.panes.get_active_pane().path.to_string());
+                self.sync_header();
                 self.refresh_fs_watches();
             }
 
@@ -444,8 +447,16 @@ impl App {
     /// have changed anything on disk.
     fn after_external_program(&mut self) {
         self.panes.reload(&self.config, false);
-        self.header
-            .update(self.panes.get_active_pane().path.to_string());
+        self.sync_header();
+    }
+
+    /// Points the header at the active pane. The git summary comes from the
+    /// listing's own `git status` run, so this costs no subprocesses.
+    pub(crate) fn sync_header(&mut self) {
+        let pane = self.panes.get_active_pane();
+        let path = pane.path.to_string();
+        let git = pane.git_summary().cloned();
+        self.header.update(path, git);
     }
 
     /// `true` while something modal covers the panes.
