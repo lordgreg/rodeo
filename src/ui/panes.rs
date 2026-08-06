@@ -143,11 +143,42 @@ pub enum SortType {
     Time,
 }
 
+impl SortType {
+    /// The next column in the rotation, wrapping.
+    pub fn next(self) -> Self {
+        match self {
+            Self::Flagged => Self::Name,
+            Self::Name => Self::Size,
+            Self::Size => Self::Time,
+            Self::Time => Self::Flagged,
+        }
+    }
+
+    /// The previous column in the rotation, wrapping.
+    pub fn prev(self) -> Self {
+        match self {
+            Self::Flagged => Self::Time,
+            Self::Time => Self::Size,
+            Self::Size => Self::Name,
+            Self::Name => Self::Flagged,
+        }
+    }
+}
+
 #[derive(PartialEq, Debug, Serialize, Deserialize, Clone, Copy)]
 /// Direction of the active sort.
 pub enum SortOrder {
     Ascending,
     Descending,
+}
+
+impl SortOrder {
+    pub fn reversed(self) -> Self {
+        match self {
+            Self::Ascending => Self::Descending,
+            Self::Descending => Self::Ascending,
+        }
+    }
 }
 
 #[derive(PartialEq, Debug, Clone)]
@@ -2028,6 +2059,59 @@ mod tests {
         fn none_selected_returns_zero() {
             assert_eq!(Panes::next_index(&5, None, MoveDirection::Down), 0);
             assert_eq!(Panes::next_index(&5, None, MoveDirection::Up), 0);
+        }
+    }
+
+    mod sort_rotation {
+        use super::*;
+
+        #[test]
+        fn next_and_prev_walk_the_whole_cycle() {
+            let order = [
+                SortType::Flagged,
+                SortType::Name,
+                SortType::Size,
+                SortType::Time,
+            ];
+
+            let mut sort = SortType::Flagged;
+            for expected in [
+                SortType::Name,
+                SortType::Size,
+                SortType::Time,
+                SortType::Flagged,
+            ] {
+                sort = sort.next();
+                assert_eq!(sort, expected);
+            }
+
+            // Walking back must retrace the same cycle, not a different one.
+            for expected in order.iter().rev() {
+                sort = sort.prev();
+                assert_eq!(sort, *expected);
+            }
+        }
+
+        #[test]
+        fn prev_is_the_inverse_of_next() {
+            for sort in [
+                SortType::Flagged,
+                SortType::Name,
+                SortType::Size,
+                SortType::Time,
+            ] {
+                assert_eq!(sort.next().prev(), sort);
+                assert_eq!(sort.prev().next(), sort);
+            }
+        }
+
+        #[test]
+        fn reversing_an_order_twice_restores_it() {
+            assert_eq!(SortOrder::Ascending.reversed(), SortOrder::Descending);
+            assert_eq!(
+                SortOrder::Ascending.reversed().reversed(),
+                SortOrder::Ascending
+            );
         }
     }
 

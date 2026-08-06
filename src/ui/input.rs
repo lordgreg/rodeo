@@ -1280,189 +1280,210 @@ impl App {
             }
         };
 
+        // One line per action. Anything that needs more than a call belongs in
+        // a named method below — this used to mix twenty one-line arms with
+        // eight inline blocks, and the blocks were where the logic hid.
         match action {
-            Action::OpenEntry => match self.panes.get_active_pane_mut().open() {
-                OpenAction::DirectoryOpened | OpenAction::Reload => {
-                    self.panes.reload(&self.config, true);
-                    self.sync_header();
-                }
-                OpenAction::FileOpened(path) => {
-                    self.pending_editor_file = Some(EditorTarget::new(path));
-                }
-                OpenAction::Nothing => {}
-            },
-            Action::ParentDir => {
-                let path = self.panes.get_active_pane().path.clone();
-                if let OpenAction::DirectoryOpened =
-                    self.panes.get_active_pane_mut().go_to_parent(&path)
-                {
-                    self.panes.reload(&self.config, true);
-                    self.sync_header();
-                }
-            }
+            Action::OpenEntry => self.open_entry(),
+            Action::ParentDir => self.go_to_parent(),
             Action::GotoFirst => self.panes.goto_first(),
             Action::GotoLast => self.panes.goto_last(),
             Action::ToggleSelect => self.panes.get_active_pane_mut().toggle_select(),
-            Action::SelectGlob => {
-                self.open_dialog(Dialog::input(
-                    "Select",
-                    "Wildcard pattern (* ?):",
-                    "",
-                    DialogAction::SelectGlob,
-                ));
-            }
-            Action::DirSizes => {
-                let count = self.panes.get_active_pane_mut().compute_dir_sizes();
-                self.ok_status(format!("Sizes computed for {count} directories"));
-            }
-            Action::BulkRename => {
-                let pane = self.panes.get_active_pane();
-                let targets = if pane.has_selections() {
-                    pane.selected_entries()
-                        .into_iter()
-                        .map(|e| e.path)
-                        .collect()
-                } else {
-                    // Fall back to the highlighted entry.
-                    pane.get_selected_entry()
-                        .filter(|e| !matches!(e.kind, EntryKind::Parent))
-                        .map(|e| vec![e.path])
-                        .unwrap_or_default()
-                };
-                if targets.len() < 2 {
-                    self.err_status("Select 2+ files with x before bulk rename".to_string());
-                } else {
-                    self.overlay = Some(Overlay::BulkRename(BulkRename::new(targets)));
-                }
-            }
+            Action::SelectGlob => self.prompt_select_glob(),
+            Action::DirSizes => self.compute_dir_sizes(),
+            Action::BulkRename => self.start_bulk_rename(),
             Action::Quit => self.exit = true,
             Action::PaneLeft => self.panes.set_active_pane(ActivePane::Left),
             Action::PaneRight => self.panes.set_active_pane(ActivePane::Right),
-            Action::PaneToggle => {
-                self.panes.toggle_active_pane();
-                self.sync_header();
-            }
-            Action::Help => {
-                self.overlay = if self.keybinds_open() {
-                    None
-                } else {
-                    Some(Overlay::Keybinds)
-                };
-            }
-            Action::Preview => {
-                if let Some(e) = self.panes.get_active_pane().get_selected_entry() {
-                    match e.kind {
-                        EntryKind::File | EntryKind::Directory | EntryKind::Symlink => {
-                            if self.preview_open() {
-                                self.overlay = None;
-                            } else {
-                                self.open_preview(PopupPreview::new(
-                                    Some(e),
-                                    self.syn_theme.clone(),
-                                ));
-                            }
-                        }
-                        EntryKind::Parent => log::warn!("Cannot preview parent directory."),
-                        EntryKind::Unknown => log::warn!("Unknown file type - cannot preview"),
-                    }
-                }
-            }
-            Action::MoveDown => {
-                self.panes.goto_next(MoveDirection::Down);
-            }
-            Action::MoveUp => {
-                self.panes.goto_next(MoveDirection::Up);
-            }
+            Action::PaneToggle => self.toggle_pane(),
+            Action::Help => self.toggle_keybinds(),
+            Action::Preview => self.toggle_preview(),
+            Action::MoveDown => self.panes.goto_next(MoveDirection::Down),
+            Action::MoveUp => self.panes.goto_next(MoveDirection::Up),
             Action::Rename => self.start_rename(),
-            Action::Search => {
-                let root = PathBuf::from(&self.panes.get_active_pane().path);
-                let filter = SearchFilter::from_config(&self.config);
-                self.overlay = Some(Overlay::FindFiles(FileFinder::new(
-                    root,
-                    &filter,
-                    self.syn_theme.clone(),
-                )));
-            }
-            Action::CommandPalette => {
-                self.input_mode = Some(InputMode::Command(TextInput::default()));
-                self.refresh_completion();
-            }
-            Action::Create => {
-                let parent = PathBuf::from(&self.panes.get_active_pane().path);
-                self.open_dialog(Dialog::input(
-                    "Create",
-                    "File name  (end with / for a directory):",
-                    "",
-                    DialogAction::Create { parent },
-                ));
-            }
-            Action::Yank => {
-                self.yank();
-            }
+            Action::Search => self.open_file_finder(),
+            Action::CommandPalette => self.open_command_line(),
+            Action::Create => self.prompt_create(),
+            Action::Yank => self.yank(),
             Action::Paste => self.paste(false),
             Action::PasteMove => self.paste(true),
-            Action::DeleteChord => {
-                if self.pending_d {
-                    self.pending_d = false;
-                    self.start_delete();
-                } else {
-                    self.pending_d = true;
-                }
-            }
+            Action::DeleteChord => self.delete_chord(),
             Action::Copy => self.start_copy(),
             Action::Move => self.start_move(),
             Action::Delete => self.start_delete(),
-            Action::SelectAll => {
-                let count = self.panes.get_active_pane_mut().select_all();
-                self.ok_status(format!("{count} selected"));
-            }
-            Action::FilterRegex => {
-                // Re-opening the bar keeps the pattern that is in force, so a
-                // filter can be corrected instead of retyped.
-                let initial = self
-                    .panes
-                    .get_active_pane()
-                    .filter()
-                    .map(|f| f.pattern().to_string())
-                    .unwrap_or_default();
-                self.input_mode = Some(InputMode::Filter(Search::new(initial)));
-            }
-            Action::FindInFiles => {
-                self.overlay = Some(Overlay::FindInFiles(FindInFiles::new(
-                    self.syn_theme.clone(),
-                )));
-            }
-            Action::ToggleHidden => {
-                self.config.show_hidden = !self.config.show_hidden;
-                self.panes.reload(&self.config, false);
-            }
+            Action::SelectAll => self.select_all(),
+            Action::FilterRegex => self.open_filter_bar(),
+            Action::FindInFiles => self.open_find_in_files(),
+            Action::ToggleHidden => self.toggle_hidden(),
             Action::Refresh => self.panes.reload(&self.config, false),
-            Action::SortNext => {
-                self.config.sort_type = match self.config.sort_type {
-                    SortType::Flagged => SortType::Name,
-                    SortType::Name => SortType::Size,
-                    SortType::Size => SortType::Time,
-                    SortType::Time => SortType::Flagged,
-                };
-                self.panes.reload(&self.config, false);
-            }
-            Action::SortPrev => {
-                self.config.sort_type = match self.config.sort_type {
-                    SortType::Flagged => SortType::Time,
-                    SortType::Time => SortType::Size,
-                    SortType::Size => SortType::Name,
-                    SortType::Name => SortType::Flagged,
-                };
-                self.panes.reload(&self.config, false);
-            }
-            Action::SortReverse => {
-                self.config.sort_order = match self.config.sort_order {
-                    SortOrder::Ascending => SortOrder::Descending,
-                    SortOrder::Descending => SortOrder::Ascending,
-                };
-                self.panes.reload(&self.config, false);
-            }
+            Action::SortNext => self.set_sort_type(self.config.sort_type.next()),
+            Action::SortPrev => self.set_sort_type(self.config.sort_type.prev()),
+            Action::SortReverse => self.set_sort_order(self.config.sort_order.reversed()),
         }
+    }
+
+    /// Opens the highlighted entry: a directory in the pane, a file in
+    /// `$EDITOR`.
+    fn open_entry(&mut self) {
+        match self.panes.get_active_pane_mut().open() {
+            OpenAction::DirectoryOpened | OpenAction::Reload => {
+                self.panes.reload(&self.config, true);
+                self.sync_header();
+            }
+            OpenAction::FileOpened(path) => {
+                self.pending_editor_file = Some(EditorTarget::new(path));
+            }
+            OpenAction::Nothing => {}
+        }
+    }
+
+    fn go_to_parent(&mut self) {
+        let path = self.panes.get_active_pane().path.clone();
+        if let OpenAction::DirectoryOpened = self.panes.get_active_pane_mut().go_to_parent(&path) {
+            self.panes.reload(&self.config, true);
+            self.sync_header();
+        }
+    }
+
+    fn prompt_select_glob(&mut self) {
+        self.open_dialog(Dialog::input(
+            "Select",
+            "Wildcard pattern (* ?):",
+            "",
+            DialogAction::SelectGlob,
+        ));
+    }
+
+    fn compute_dir_sizes(&mut self) {
+        let count = self.panes.get_active_pane_mut().compute_dir_sizes();
+        self.ok_status(format!("Sizes computed for {count} directories"));
+    }
+
+    /// Bulk rename works on the selection, or on the highlighted entry when
+    /// nothing is selected. Fewer than two targets is not worth a popup.
+    fn start_bulk_rename(&mut self) {
+        let pane = self.panes.get_active_pane();
+        let targets: Vec<PathBuf> = if pane.has_selections() {
+            pane.selected_entries()
+                .into_iter()
+                .map(|e| e.path)
+                .collect()
+        } else {
+            pane.get_selected_entry()
+                .filter(|e| !matches!(e.kind, EntryKind::Parent))
+                .map(|e| vec![e.path])
+                .unwrap_or_default()
+        };
+
+        if targets.len() < 2 {
+            self.err_status("Select 2+ files with x before bulk rename".to_string());
+        } else {
+            self.overlay = Some(Overlay::BulkRename(BulkRename::new(targets)));
+        }
+    }
+
+    fn toggle_pane(&mut self) {
+        self.panes.toggle_active_pane();
+        self.sync_header();
+    }
+
+    fn toggle_keybinds(&mut self) {
+        self.overlay = if self.keybinds_open() {
+            None
+        } else {
+            Some(Overlay::Keybinds)
+        };
+    }
+
+    fn toggle_preview(&mut self) {
+        let Some(entry) = self.panes.get_active_pane().get_selected_entry() else {
+            return;
+        };
+
+        match entry.kind {
+            EntryKind::File | EntryKind::Directory | EntryKind::Symlink => {
+                if self.preview_open() {
+                    self.overlay = None;
+                } else {
+                    self.open_preview(PopupPreview::new(Some(entry), self.syn_theme.clone()));
+                }
+            }
+            EntryKind::Parent => log::warn!("Cannot preview parent directory."),
+            EntryKind::Unknown => log::warn!("Unknown file type - cannot preview"),
+        }
+    }
+
+    fn open_file_finder(&mut self) {
+        let root = PathBuf::from(&self.panes.get_active_pane().path);
+        let filter = SearchFilter::from_config(&self.config);
+        self.overlay = Some(Overlay::FindFiles(FileFinder::new(
+            root,
+            &filter,
+            self.syn_theme.clone(),
+        )));
+    }
+
+    fn open_command_line(&mut self) {
+        self.input_mode = Some(InputMode::Command(TextInput::default()));
+        self.refresh_completion();
+    }
+
+    fn prompt_create(&mut self) {
+        let parent = PathBuf::from(&self.panes.get_active_pane().path);
+        self.open_dialog(Dialog::input(
+            "Create",
+            "File name  (end with / for a directory):",
+            "",
+            DialogAction::Create { parent },
+        ));
+    }
+
+    /// `dd` deletes; a lone `d` arms the chord and waits for the second key.
+    fn delete_chord(&mut self) {
+        if self.pending_d {
+            self.pending_d = false;
+            self.start_delete();
+        } else {
+            self.pending_d = true;
+        }
+    }
+
+    fn select_all(&mut self) {
+        let count = self.panes.get_active_pane_mut().select_all();
+        self.ok_status(format!("{count} selected"));
+    }
+
+    /// Re-opening the bar keeps the pattern that is in force, so a filter can
+    /// be corrected instead of retyped.
+    fn open_filter_bar(&mut self) {
+        let initial = self
+            .panes
+            .get_active_pane()
+            .filter()
+            .map(|f| f.pattern().to_string())
+            .unwrap_or_default();
+        self.input_mode = Some(InputMode::Filter(Search::new(initial)));
+    }
+
+    fn open_find_in_files(&mut self) {
+        self.overlay = Some(Overlay::FindInFiles(FindInFiles::new(
+            self.syn_theme.clone(),
+        )));
+    }
+
+    fn toggle_hidden(&mut self) {
+        self.config.show_hidden = !self.config.show_hidden;
+        self.panes.reload(&self.config, false);
+    }
+
+    fn set_sort_type(&mut self, sort_type: SortType) {
+        self.config.sort_type = sort_type;
+        self.panes.reload(&self.config, false);
+    }
+
+    fn set_sort_order(&mut self, sort_order: SortOrder) {
+        self.config.sort_order = sort_order;
+        self.panes.reload(&self.config, false);
     }
 
     /// The universal dismiss chain: back out of the innermost thing first.
