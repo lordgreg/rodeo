@@ -113,21 +113,30 @@ impl TrashView {
             .collect()
     }
 
+    /// The target entries in the form the `trash` crate wants.
+    ///
+    /// Restore and purge differ by one call; they used to differ by seventeen
+    /// duplicated lines, which is a poor way to build the argument to an
+    /// irreversible operation.
+    #[cfg(any(target_os = "linux", target_os = "android", target_os = "windows"))]
+    fn target_items(&self) -> Vec<trash::TrashItem> {
+        self.op_targets()
+            .iter()
+            .map(|e| trash::TrashItem {
+                id: e.id.clone(),
+                name: std::ffi::OsString::from(&e.name),
+                original_parent: e.original_parent.clone(),
+                time_deleted: 0,
+            })
+            .collect()
+    }
+
     /// Restore the target entries to their original locations.
     pub fn restore_targets(&self) -> Result<usize, String> {
         #[cfg(any(target_os = "linux", target_os = "android", target_os = "windows"))]
         {
-            let targets = self.op_targets();
-            let count = targets.len();
-            let items: Vec<trash::TrashItem> = targets
-                .iter()
-                .map(|e| trash::TrashItem {
-                    id: e.id.clone(),
-                    name: std::ffi::OsString::from(&e.name),
-                    original_parent: e.original_parent.clone(),
-                    time_deleted: 0,
-                })
-                .collect();
+            let items = self.target_items();
+            let count = items.len();
             trash::os_limited::restore_all(items).map_err(|e| format!("Restore failed: {e}"))?;
             Ok(count)
         }
@@ -139,17 +148,8 @@ impl TrashView {
     pub fn purge_targets(&self) -> Result<usize, String> {
         #[cfg(any(target_os = "linux", target_os = "android", target_os = "windows"))]
         {
-            let targets = self.op_targets();
-            let count = targets.len();
-            let items: Vec<trash::TrashItem> = targets
-                .iter()
-                .map(|e| trash::TrashItem {
-                    id: e.id.clone(),
-                    name: std::ffi::OsString::from(&e.name),
-                    original_parent: e.original_parent.clone(),
-                    time_deleted: 0,
-                })
-                .collect();
+            let items = self.target_items();
+            let count = items.len();
             trash::os_limited::purge_all(items).map_err(|e| format!("Purge failed: {e}"))?;
             Ok(count)
         }
@@ -246,5 +246,142 @@ impl Component for TrashView {
         let hint = Paragraph::new("r restore  D delete permanently  x toggle select  Esc close")
             .style(Style::new().fg(theme.colors.muted()));
         frame.render_widget(hint, chunks[1]);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    /// `TrashView` normally comes from the OS. These build one directly so the
+    /// selection logic can be tested without touching the real trash — the
+    /// restore and purge calls themselves are deliberately never exercised.
+    fn view(names: &[&str]) -> TrashView {
+        let entries = names
+            .iter()
+            .map(|n| TrashEntry {
+                id: std::ffi::OsString::from(*n),
+                name: (*n).to_string(),
+                original_path: PathBuf::from("/home/u").join(n),
+                original_parent: PathBuf::from("/home/u"),
+                selected: false,
+            })
+            .collect();
+        let mut view = TrashView {
+            entries,
+            list_state: ListState::default(),
+            error: None,
+        };
+        if !view.entries.is_empty() {
+            view.list_state.select(Some(0));
+        }
+        view
+    }
+
+    fn target_names(view: &TrashView) -> Vec<String> {
+        view.op_targets().iter().map(|e| e.name.clone()).collect()
+    }
+
+    #[test]
+    fn with_nothing_marked_the_highlighted_entry_is_the_target() {
+        let mut view = view(&["a", "b", "c"]);
+        assert_eq!(target_names(&view), vec!["a"]);
+
+        view.move_down();
+        assert_eq!(target_names(&view), vec!["b"]);
+    }
+
+    /// Marked entries win over the cursor: this decides what gets purged, so
+    /// the highlighted row must not sneak into the set.
+    #[test]
+    fn marked_entries_replace_the_highlighted_one() {
+        let mut view = view(&["a", "b", "c"]);
+        view.move_down();
+        view.move_down();
+        view.toggle_select(); // marks "c"
+        view.move_up();
+        view.move_up(); // cursor back on "a", which is not marked
+
+        assert_eq!(target_names(&view), vec!["c"]);
+    }
+
+    #[test]
+    fn every_marked_entry_is_a_target() {
+        let mut view = view(&["a", "b", "c"]);
+        view.toggle_select();
+        view.move_down();
+        view.move_down();
+        view.toggle_select();
+
+        assert_eq!(target_names(&view), vec!["a", "c"]);
+    }
+
+    #[test]
+    fn unmarking_the_last_entry_falls_back_to_the_cursor() {
+        let mut view = view(&["a", "b"]);
+        view.toggle_select();
+        assert_eq!(target_names(&view), vec!["a"]);
+
+        view.toggle_select(); // unmark
+        view.move_down();
+        assert_eq!(target_names(&view), vec!["b"]);
+    }
+
+    #[test]
+    fn an_empty_trash_has_no_targets() {
+        let view = view(&[]);
+        assert!(view.op_targets().is_empty());
+        assert_eq!(view.selected_idx(), None);
+    }
+
+    #[test]
+    fn movement_is_clamped_at_both_ends() {
+        let mut view = view(&["a", "b"]);
+
+        view.move_up();
+        assert_eq!(view.selected_idx(), Some(0), "cannot go above the first");
+
+        view.move_down();
+        view.move_down();
+        view.move_down();
+        assert_eq!(view.selected_idx(), Some(1), "cannot go past the last");
+    }
+
+    #[test]
+    fn movement_on_an_empty_trash_selects_nothing() {
+        let mut view = view(&[]);
+        view.move_down();
+        view.move_up();
+        assert_eq!(view.selected_idx(), None);
+    }
+
+    #[test]
+    fn toggle_without_a_selection_does_nothing() {
+        let mut view = view(&[]);
+        view.toggle_select();
+        assert!(view.op_targets().is_empty());
+    }
+
+    /// The items handed to restore/purge must be exactly the targets — a
+    /// mismatch here deletes the wrong files irreversibly.
+    #[cfg(any(target_os = "linux", target_os = "android", target_os = "windows"))]
+    #[test]
+    fn target_items_match_the_targets_one_for_one() {
+        let mut view = view(&["a", "b", "c"]);
+        view.toggle_select();
+        view.move_down();
+        view.move_down();
+        view.toggle_select(); // "a" and "c"
+
+        let items = view.target_items();
+        let names: Vec<String> = items
+            .iter()
+            .map(|i| i.name.to_string_lossy().into_owned())
+            .collect();
+
+        assert_eq!(names, vec!["a", "c"]);
+        let parent = PathBuf::from("/home/u");
+        assert!(items.iter().all(|i| i.original_parent == parent));
     }
 }
