@@ -27,6 +27,55 @@ use crate::config::Config;
 use crate::fs::{filter::SearchFilter, ops};
 use crate::ui::theme::Theme;
 
+/// A copy or a move.
+///
+/// The two differ only in which `ops` call runs, what the footer says and
+/// which dialog action carries the confirmation — they used to be four
+/// functions, and `start_copy`/`start_move` differed by three lines out of
+/// twenty-nine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Transfer {
+    Copy,
+    Move,
+}
+
+impl Transfer {
+    /// Whether the source is removed afterwards.
+    fn is_cut(self) -> bool {
+        matches!(self, Self::Move)
+    }
+
+    /// Lower-case, for "Cannot copy '...'".
+    fn verb(self) -> &'static str {
+        match self {
+            Self::Copy => "copy",
+            Self::Move => "move",
+        }
+    }
+
+    /// What the footer says once it is done.
+    fn done_label(self) -> &'static str {
+        match self {
+            Self::Copy => "Copied",
+            Self::Move => "Moved",
+        }
+    }
+
+    fn apply(self, src: &Path, dest_dir: &Path) -> std::io::Result<()> {
+        match self {
+            Self::Copy => ops::copy_entry(src, dest_dir),
+            Self::Move => ops::move_entry(src, dest_dir),
+        }
+    }
+
+    fn dialog_action(self, sources: Vec<PathBuf>, dest_dir: PathBuf) -> DialogAction {
+        match self {
+            Self::Copy => DialogAction::Copy { sources, dest_dir },
+            Self::Move => DialogAction::Move { sources, dest_dir },
+        }
+    }
+}
+
 /// Longest command echoed back in a footer message, so a long one-liner does
 /// not push the key hints off the bar.
 const SHELL_LABEL_WIDTH: usize = 24;
@@ -553,13 +602,13 @@ impl App {
                 self.delete_permanent(paths);
             }
             (DialogAction::Copy { sources, dest_dir }, DialogResult::Confirmed) => {
-                self.copy_entries(sources, dest_dir);
+                self.transfer_entries(Transfer::Copy, sources, dest_dir);
             }
             (DialogAction::Move { sources, dest_dir }, DialogResult::Confirmed) => {
-                self.move_entries(sources, dest_dir);
+                self.transfer_entries(Transfer::Move, sources, dest_dir);
             }
             (DialogAction::PasteMove { sources, dest_dir }, DialogResult::Confirmed) => {
-                self.move_entries(sources, dest_dir);
+                self.transfer_entries(Transfer::Move, sources, dest_dir);
                 self.clipboard.clear();
                 self.clipboard_cut = false;
             }
@@ -749,6 +798,16 @@ impl App {
     }
 
     fn start_copy(&mut self) {
+        self.start_transfer_op(Transfer::Copy);
+    }
+
+    fn start_move(&mut self) {
+        self.start_transfer_op(Transfer::Move);
+    }
+
+    /// Checks the targets, then either asks about overwrites or gets on with
+    /// it. Copy and move used to be two functions differing by three lines.
+    fn start_transfer_op(&mut self, transfer: Transfer) {
         let sources = self.op_targets();
         if sources.is_empty() {
             return;
@@ -771,74 +830,32 @@ impl App {
             self.open_dialog(Dialog::confirm(
                 "Overwrite?",
                 format!("{conflicts} item(s) exist in the other pane. Overwrite?"),
-                DialogAction::Copy { sources, dest_dir },
+                transfer.dialog_action(sources, dest_dir),
             ));
         } else {
-            self.copy_entries(sources, dest_dir);
+            self.transfer_entries(transfer, sources, dest_dir);
         }
     }
 
     /// Transfers larger than this run in the background with a progress gauge.
     const ASYNC_THRESHOLD_BYTES: u64 = 10 * 1024 * 1024;
 
-    fn copy_entries(&mut self, sources: Vec<PathBuf>, dest_dir: PathBuf) {
+    fn transfer_entries(&mut self, transfer: Transfer, sources: Vec<PathBuf>, dest_dir: PathBuf) {
         if ops::total_size(&sources) > Self::ASYNC_THRESHOLD_BYTES {
-            self.start_transfer(sources, dest_dir, false);
+            self.start_transfer(sources, dest_dir, transfer.is_cut());
             return;
         }
+
         for src in &sources {
-            if let Err(e) = ops::copy_entry(src, &dest_dir) {
-                self.err_status(format!("Cannot copy '{}': {e}", src.display()));
+            if let Err(e) = transfer.apply(src, &dest_dir) {
+                let verb = transfer.verb();
+                self.err_status(format!("Cannot {verb} '{}': {e}", src.display()));
                 return;
             }
         }
+
         self.panes.reload(&self.config, false);
-        self.ok_status("Copied".to_string());
-    }
-
-    fn start_move(&mut self) {
-        let sources = self.op_targets();
-        if sources.is_empty() {
-            return;
-        }
-
-        let dest_dir = PathBuf::from(&self.panes.get_inactive_pane().path);
-        for src in &sources {
-            if let Err(msg) = ops::check_transfer_paths(src, &dest_dir) {
-                self.err_status(msg);
-                return;
-            }
-        }
-
-        let conflicts = sources
-            .iter()
-            .filter(|s| dest_dir.join(ops::file_name_of(s)).exists())
-            .count();
-
-        if conflicts > 0 {
-            self.open_dialog(Dialog::confirm(
-                "Overwrite?",
-                format!("{conflicts} item(s) exist in the other pane. Overwrite?"),
-                DialogAction::Move { sources, dest_dir },
-            ));
-        } else {
-            self.move_entries(sources, dest_dir);
-        }
-    }
-
-    fn move_entries(&mut self, sources: Vec<PathBuf>, dest_dir: PathBuf) {
-        if ops::total_size(&sources) > Self::ASYNC_THRESHOLD_BYTES {
-            self.start_transfer(sources, dest_dir, true);
-            return;
-        }
-        for src in &sources {
-            if let Err(e) = ops::move_entry(src, &dest_dir) {
-                self.err_status(format!("Cannot move '{}': {e}", src.display()));
-                return;
-            }
-        }
-        self.panes.reload(&self.config, false);
-        self.ok_status("Moved".to_string());
+        self.ok_status(transfer.done_label().to_string());
     }
 
     /// Starts a background copy (cut=false) or move (cut=true) with a progress
@@ -909,11 +926,11 @@ impl App {
         }
 
         if cut {
-            self.move_entries(sources, dest_dir);
+            self.transfer_entries(Transfer::Move, sources, dest_dir);
             self.clipboard.clear();
             self.clipboard_cut = false;
         } else {
-            self.copy_entries(sources, dest_dir);
+            self.transfer_entries(Transfer::Copy, sources, dest_dir);
         }
     }
 
@@ -1522,6 +1539,62 @@ mod tests {
 
     fn key(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
         KeyEvent::new(code, modifiers)
+    }
+
+    /// Copy and move ran through two near-identical functions, so a fix to one
+    /// could miss the other. They share one path now; these pin the parts that
+    /// have to stay different.
+    mod transfers {
+        use super::*;
+
+        #[test]
+        fn only_a_move_removes_the_source() {
+            assert!(!Transfer::Copy.is_cut());
+            assert!(Transfer::Move.is_cut());
+        }
+
+        #[test]
+        fn each_reports_itself_in_the_footer() {
+            assert_eq!(Transfer::Copy.done_label(), "Copied");
+            assert_eq!(Transfer::Move.done_label(), "Moved");
+            assert_eq!(Transfer::Copy.verb(), "copy");
+            assert_eq!(Transfer::Move.verb(), "move");
+        }
+
+        #[test]
+        fn each_confirms_with_its_own_dialog_action() {
+            let sources = vec![PathBuf::from("/a")];
+            let dest = PathBuf::from("/b");
+
+            assert!(matches!(
+                Transfer::Copy.dialog_action(sources.clone(), dest.clone()),
+                DialogAction::Copy { .. }
+            ));
+            assert!(matches!(
+                Transfer::Move.dialog_action(sources, dest),
+                DialogAction::Move { .. }
+            ));
+        }
+
+        #[test]
+        fn a_copy_leaves_the_source_and_a_move_does_not() {
+            let dir = tempfile::tempdir().unwrap();
+            let dest = dir.path().join("dest");
+            std::fs::create_dir(&dest).unwrap();
+
+            for (transfer, name, source_survives) in [
+                (Transfer::Copy, "c.txt", true),
+                (Transfer::Move, "m.txt", false),
+            ] {
+                let src = dir.path().join(name);
+                std::fs::write(&src, "x").unwrap();
+
+                transfer.apply(&src, &dest).expect("transfer");
+
+                assert!(dest.join(name).exists(), "{transfer:?} did not arrive");
+                assert_eq!(src.exists(), source_survives, "{transfer:?} source");
+            }
+        }
     }
 
     /// The preview and the keybinds popup used to be independent booleans, so
