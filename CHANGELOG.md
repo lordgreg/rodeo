@@ -1,4 +1,4 @@
-# Unreleased
+# 0.2.0
 
 ## Fixed
 
@@ -14,9 +14,21 @@
   or `shift+` were printed literally (`alt+j Copy`), and the bar shown while
   entries are selected ignored the keymap entirely, always claiming `F5` /
   `F6` / `F8`.
-* The header's git branch and counts come from the listing's own `git status`
-  run. Opening a directory used to start seven `git` processes on the UI
-  thread; it now starts four.
+* Opening a directory no longer waits for git. The branch, the counts and the
+  status column all come from one `git status` per pane, and that runs on a
+  background thread: the listing appears at once and the status column fills
+  in a moment later. Navigating used to start seven `git` processes on the UI
+  thread and block on all of them, which was felt on any large repository.
+* Previewing a very large file no longer freezes rodeo. The preview reads the
+  lines it needs and stops, capped at 8 MiB, instead of loading the whole file
+  into memory — a multi-gigabyte log, or a binary containing no newline at
+  all, used to be read in full.
+* Image previews are decoded once instead of once per frame. Every redraw used
+  to re-read the file from disk, decode it again, and re-probe the terminal
+  for its graphics support while the frame was being painted.
+* Directory listings do less work per entry: one `stat` call for an ordinary
+  file or directory where there were three, and three for a symlink where
+  there were six. Large directories open noticeably faster.
 * `Esc` no longer quits. It closes a popup, then clears the filter, then
   clears the selection, and does nothing once there is nothing left to back
   out of — a reflexive second press used to exit rodeo. Quitting is `q`
