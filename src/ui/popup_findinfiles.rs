@@ -157,7 +157,10 @@ impl FindInFiles {
     }
 
     /// Builds (or reuses) the preview for the current selection.
-    fn ensure_preview(&mut self) {
+    ///
+    /// Called before the frame, never during it: building reads a file from
+    /// disk, which has no business happening inside a draw.
+    pub(crate) fn prepare(&mut self) {
         let key = self.selected_match().map(|m| (m.path.clone(), m.line_num));
         self.preview.ensure(key, |(path, line), syntax| {
             build_preview(path, *line, syntax)
@@ -174,7 +177,6 @@ impl FindInFiles {
             None => ("Preview".to_string(), None),
         };
 
-        self.ensure_preview();
         self.preview.render(frame, theme, area, &title, anchor);
     }
 }
@@ -343,13 +345,13 @@ mod tests {
             },
         ]);
 
-        find.ensure_preview();
+        find.prepare();
         assert_eq!(find.preview.built_for().cloned(), Some((path.clone(), 1)));
 
         find.move_down();
         // Selection moved: the cache no longer matches and is rebuilt.
         assert_eq!(find.preview.built_for().cloned(), Some((path.clone(), 1)));
-        find.ensure_preview();
+        find.prepare();
         assert_eq!(find.preview.built_for().cloned(), Some((path, 2)));
     }
 

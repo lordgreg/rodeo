@@ -11,24 +11,22 @@ use std::{
     time::SystemTime,
 };
 
+use crate::{
+    config::Config,
+    types::{ActivePane, SortOrder, SortType},
+    ui::{
+        component::Component,
+        git::{self, GitEntryStatus, GitStatus as GitEntryState},
+        search::FilterSpec,
+        theme::Theme,
+    },
+};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, HorizontalAlignment, Layout, Rect},
     style::{Style, Stylize},
     text::{Line, Span},
     widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState},
-};
-use serde::{Deserialize, Serialize};
-
-use crate::{
-    config::Config,
-    ui::{
-        component::Component,
-        git::{self, GitEntryStatus, GitStatus as GitEntryState},
-        search::FilterSpec,
-        theme::Theme,
-        uiconfig::ActivePane,
-    },
 };
 
 /// Width of the size column: `123.4 KB` plus a space.
@@ -133,53 +131,6 @@ pub(crate) fn format_date(t: SystemTime) -> String {
     dt.format("%Y-%m-%d %H:%M").to_string()
 }
 
-#[derive(PartialEq, Debug, Serialize, Deserialize, Clone, Copy)]
-/// Column the listing is ordered by.
-pub enum SortType {
-    Flagged,
-    Name,
-    Size,
-    Time,
-}
-
-impl SortType {
-    /// The next column in the rotation, wrapping.
-    pub fn next(self) -> Self {
-        match self {
-            Self::Flagged => Self::Name,
-            Self::Name => Self::Size,
-            Self::Size => Self::Time,
-            Self::Time => Self::Flagged,
-        }
-    }
-
-    /// The previous column in the rotation, wrapping.
-    pub fn prev(self) -> Self {
-        match self {
-            Self::Flagged => Self::Time,
-            Self::Time => Self::Size,
-            Self::Size => Self::Name,
-            Self::Name => Self::Flagged,
-        }
-    }
-}
-
-#[derive(PartialEq, Debug, Serialize, Deserialize, Clone, Copy)]
-/// Direction of the active sort.
-pub enum SortOrder {
-    Ascending,
-    Descending,
-}
-
-impl SortOrder {
-    pub fn reversed(self) -> Self {
-        match self {
-            Self::Ascending => Self::Descending,
-            Self::Descending => Self::Ascending,
-        }
-    }
-}
-
 #[derive(PartialEq, Debug, Clone)]
 /// What a listing entry is. Symlinks keep their *resolved* kind so that
 /// navigating and editing follow the link; only broken or exotic targets stay
@@ -252,24 +203,56 @@ pub struct Entry {
 
 impl Entry {
     pub fn new(path: PathBuf) -> Self {
-        // symlink_metadata does not follow links: one call classifies most
-        // entries. Symlinks keep their *resolved* kind (File/Directory) so
-        // navigation and editing follow the link; only broken or
-        // non-file/non-dir targets stay EntryKind::Symlink.
-        let (is_symlink, link_target, kind) = match std::fs::symlink_metadata(&path) {
-            Ok(meta) if meta.file_type().is_symlink() => {
-                let resolved = if path.is_file() {
-                    EntryKind::File
-                } else if path.is_dir() {
-                    EntryKind::Directory
-                } else {
-                    EntryKind::Symlink
-                };
-                (true, std::fs::read_link(&path).ok(), resolved)
-            }
-            Ok(meta) if meta.is_dir() => (false, None, EntryKind::Directory),
-            Ok(meta) if meta.is_file() => (false, None, EntryKind::File),
-            _ => (false, None, EntryKind::Unknown),
+        let lstat = fs::symlink_metadata(&path).ok();
+        Self::build(path, lstat)
+    }
+
+    /// Builds an entry from a directory iterator, reusing the stat the
+    /// iterator already had to do.
+    ///
+    /// `DirEntry::metadata` is `lstat` on Unix — it does not follow the link —
+    /// so it is exactly what [`Entry::build`] wants.
+    fn from_dir_entry(entry: &fs::DirEntry) -> Self {
+        Self::build(entry.path(), entry.metadata().ok())
+    }
+
+    /// The one place entry metadata is turned into columns.
+    ///
+    /// This used to issue three `stat`-family calls for an ordinary file and
+    /// six for a symlink, two of them a straight duplicate `lstat`. Now the
+    /// single `lstat` in `lstat` answers the kind, the permissions and the
+    /// owner, and the target is only stat'ed when there actually is a link to
+    /// follow: one syscall for an ordinary entry, three for a symlink.
+    fn build(path: PathBuf, lstat: Option<fs::Metadata>) -> Self {
+        let is_symlink = lstat
+            .as_ref()
+            .is_some_and(|meta| meta.file_type().is_symlink());
+
+        // Size and date describe what a symlink points at, so following it
+        // costs one `stat` — but only for the symlinks, not for every entry.
+        let target = if is_symlink {
+            path.metadata().ok()
+        } else {
+            None
+        };
+
+        // Symlinks keep their *resolved* kind (File/Directory) so navigation
+        // and editing follow the link; broken links, and links to anything
+        // that is neither a file nor a directory, stay EntryKind::Symlink.
+        let kind = match (is_symlink, &lstat, &target) {
+            (_, None, _) => EntryKind::Unknown,
+            (true, _, Some(meta)) if meta.is_file() => EntryKind::File,
+            (true, _, Some(meta)) if meta.is_dir() => EntryKind::Directory,
+            (true, _, _) => EntryKind::Symlink,
+            (false, Some(meta), _) if meta.is_dir() => EntryKind::Directory,
+            (false, Some(meta), _) if meta.is_file() => EntryKind::File,
+            (false, _, _) => EntryKind::Unknown,
+        };
+
+        let link_target = if is_symlink {
+            fs::read_link(&path).ok()
+        } else {
+            None
         };
 
         let name = path
@@ -277,14 +260,22 @@ impl Entry {
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| "-".to_string());
 
-        let (permissions, owner) = path
-            .symlink_metadata()
-            .map(|meta| (format_permissions(&meta), owner_of(&meta)))
-            .unwrap_or_else(|_| ("-".to_string(), "-".to_string()));
+        // Permissions and owner are the link's own, hence `lstat` and not the
+        // target — which is what the old duplicate `symlink_metadata` call was
+        // for.
+        let (permissions, owner) = lstat
+            .as_ref()
+            .map(|meta| (format_permissions(meta), owner_of(meta)))
+            .unwrap_or_else(|| ("-".to_string(), "-".to_string()));
 
-        let (size, modified, raw_size, raw_modified) = path
-            .metadata()
-            .ok()
+        // For anything but a symlink `lstat` already is the target's metadata.
+        let stat = if is_symlink {
+            target.as_ref()
+        } else {
+            lstat.as_ref()
+        };
+
+        let (size, modified, raw_size, raw_modified) = stat
             .map(|meta| {
                 (
                     format_size(meta.len()),
@@ -445,8 +436,12 @@ impl Highlighter {
     }
 }
 
-#[derive(Debug, Clone)]
 /// One directory pane: its listing, cursor, selection and filter.
+///
+/// Deliberately not `Clone`: a pane owns the receiving end of its background
+/// `git status`, and a copy sharing (or silently losing) that job would be a
+/// bug waiting to happen. Nothing cloned a pane in any case.
+#[derive(Debug)]
 pub struct Pane {
     pub state: TableState,
     pub path: String,
@@ -465,18 +460,21 @@ pub struct Pane {
     /// Repository summary from the same `git status` run that filled in the
     /// per-entry statuses, so the header does not have to run git again.
     git_summary: Option<git::RepoSummary>,
+    /// A `git status` still running in the background, if any. Its result is
+    /// picked up by [`Pane::poll_git`].
+    pending_git: Option<git::PendingRepoInfo>,
 }
 
 impl Pane {
     pub fn new(config: &Config, path: &str) -> Self {
         let path = path.to_string();
-        let (entries, hidden_count, git_summary) = read_entries(&path, config);
+        let (entries, hidden_count) = read_entries(&path, config);
         let sort_order = config.sort_order;
         let sort_type = config.sort_type;
 
         let mut pane = Self {
             state: TableState::default(),
-            path,
+            path: path.clone(),
             visible: (0..entries.len()).collect(),
             entries,
             filter: None,
@@ -484,11 +482,53 @@ impl Pane {
             sort_order,
             sort_type,
             icons: config.icons,
-            git_summary,
+            git_summary: None,
+            pending_git: Some(git::PendingRepoInfo::spawn(Path::new(&path))),
         };
 
         pane.state.select(Some(0));
         pane
+    }
+
+    /// `true` while a background `git status` is still running.
+    ///
+    /// The event loop uses this to keep polling instead of blocking on input,
+    /// so the status column appears without needing a keypress.
+    pub fn git_pending(&self) -> bool {
+        self.pending_git.is_some()
+    }
+
+    /// Applies a finished background `git status`, if one has arrived.
+    ///
+    /// Returns `true` when the listing changed, so the caller knows to redraw
+    /// and to re-point the header.
+    pub fn poll_git(&mut self) -> bool {
+        let Some(pending) = self.pending_git.as_ref() else {
+            return false;
+        };
+        let Some(info) = pending.take() else {
+            return false; // still running
+        };
+        self.pending_git = None;
+
+        match info {
+            Some(info) => {
+                for entry in &mut self.entries {
+                    entry.git_status = info.entries.get(&entry.name).copied();
+                }
+                self.git_summary = Some(info.summary);
+            }
+            None => {
+                // Not a worktree — or git is not installed. Either way the
+                // column and the header summary stay empty.
+                for entry in &mut self.entries {
+                    entry.git_status = None;
+                }
+                self.git_summary = None;
+            }
+        }
+
+        true
     }
 
     pub fn filter(&self) -> Option<&FilterSpec> {
@@ -872,7 +912,11 @@ impl Pane {
             .map(|p| p.path.clone())
             .collect();
 
-        (self.entries, self.hidden_count, self.git_summary) = read_entries(&self.path, config);
+        (self.entries, self.hidden_count) = read_entries(&self.path, config);
+        // Dropping any previous receiver here is what discards a stale answer:
+        // the old worker's send fails and its result is never applied to this
+        // listing.
+        self.pending_git = Some(git::PendingRepoInfo::spawn(Path::new(&self.path)));
 
         if !clear_selection {
             for entry in &mut self.entries {
@@ -1118,23 +1162,28 @@ fn sort_entries(entries: &mut [Entry], config: &Config) {
     });
 }
 
-fn read_entries(dir: &str, config: &Config) -> (Vec<Entry>, usize, Option<git::RepoSummary>) {
+/// Lists `dir` into sorted [`Entry`] values.
+///
+/// Deliberately does no git work: that is a subprocess and belongs on a worker
+/// thread ([`git::PendingRepoInfo`]), not in the middle of a reload the user is
+/// waiting on.
+fn read_entries(dir: &str, config: &Config) -> (Vec<Entry>, usize) {
     let mut hidden_count = 0;
 
     let mut entries: Vec<Entry> = match fs::read_dir(dir) {
+        // The DirEntry is carried through the filter rather than being
+        // reduced to a path: it already knows the name (no syscall) and can
+        // hand its own `lstat` to `Entry`.
         Ok(rd) => rd
             .filter_map(|e| e.ok())
-            .map(|e| e.path())
-            .filter(|p| {
-                let is_hidden = p
-                    .file_name()
-                    .is_some_and(|n| n.to_string_lossy().starts_with('.'));
+            .filter(|e| {
+                let is_hidden = e.file_name().to_string_lossy().starts_with('.');
                 if is_hidden {
                     hidden_count += 1;
                 }
                 config.show_hidden || !is_hidden
             })
-            .map(Entry::new)
+            .map(|e| Entry::from_dir_entry(&e))
             .collect(),
 
         Err(e) => {
@@ -1148,16 +1197,7 @@ fn read_entries(dir: &str, config: &Config) -> (Vec<Entry>, usize, Option<git::R
 
     entries.insert(0, Entry::parent(dir));
 
-    // One `git status` run serves both the per-entry column and the header's
-    // branch/counts, which is why the summary is carried back out of here.
-    let git_summary = git::repo_info(Path::new(dir)).map(|info| {
-        for entry in &mut entries {
-            entry.git_status = info.entries.get(&entry.name).copied();
-        }
-        info.summary
-    });
-
-    (entries, hidden_count, git_summary)
+    (entries, hidden_count)
 }
 
 #[derive(PartialEq)]
@@ -1240,6 +1280,23 @@ impl Panes {
     pub fn reload(&mut self, config: &Config, clear_selection: bool) {
         self.pane_left.reload(config, clear_selection);
         self.pane_right.reload(config, clear_selection);
+    }
+
+    /// `true` while either pane is waiting on a background `git status`.
+    pub fn git_pending(&self) -> bool {
+        self.pane_left.git_pending() || self.pane_right.git_pending()
+    }
+
+    /// Applies whatever background `git status` results have arrived.
+    ///
+    /// Returns `true` if either pane changed, so the caller can re-point the
+    /// header at the active pane's new summary.
+    pub fn poll_git(&mut self) -> bool {
+        // Not `||`: short-circuiting would leave the right pane's result
+        // sitting in its channel until the next frame.
+        let left = self.pane_left.poll_git();
+        let right = self.pane_right.poll_git();
+        left || right
     }
 
     pub fn next_index(row_count: usize, current: Option<usize>, direction: MoveDirection) -> usize {
@@ -1640,6 +1697,32 @@ mod tests {
             assert!(!entry.is_symlink);
             assert_eq!(entry.link_target, None);
         }
+
+        /// The listing path reuses the stat `read_dir` already did. That is
+        /// only a saving if it produces exactly what the plain path does.
+        #[cfg(unix)]
+        #[test]
+        fn a_reused_dir_entry_stat_gives_the_same_entry() {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(dir.path().join("file.txt"), "hello").unwrap();
+            std::fs::create_dir(dir.path().join("sub")).unwrap();
+            std::os::unix::fs::symlink(dir.path().join("file.txt"), dir.path().join("link.txt"))
+                .unwrap();
+            std::os::unix::fs::symlink(dir.path().join("gone"), dir.path().join("broken")).unwrap();
+
+            let mut checked = 0;
+            for raw in std::fs::read_dir(dir.path()).unwrap() {
+                let raw = raw.unwrap();
+                assert_eq!(
+                    Entry::from_dir_entry(&raw),
+                    Entry::new(raw.path()),
+                    "{:?} differs between the two constructors",
+                    raw.path()
+                );
+                checked += 1;
+            }
+            assert_eq!(checked, 4);
+        }
     }
 
     mod highlighter {
@@ -1717,6 +1800,69 @@ mod tests {
 
             assert!(miss.is_empty());
             assert_eq!(first, again, "a non-matching name must not corrupt state");
+        }
+    }
+
+    mod background_git {
+        use super::*;
+
+        /// Blocks until the pane's worker thread reports in, so the assertions
+        /// below are about the result and not about the timing.
+        fn settle(pane: &mut Pane) {
+            for _ in 0..600 {
+                if pane.poll_git() {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            panic!("the background git status never finished");
+        }
+
+        /// The listing must be usable before git has answered — that is the
+        /// entire point of moving it off the UI thread.
+        #[test]
+        fn a_pane_lists_entries_before_git_has_answered() {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::File::create(dir.path().join("a.rs")).unwrap();
+
+            let pane = Pane::new(&Config::default(), dir.path().to_str().unwrap());
+
+            assert!(pane.git_pending(), "git must be running in the background");
+            assert!(
+                pane.visible_entries().any(|e| e.name == "a.rs"),
+                "entries must be listed without waiting for git"
+            );
+            assert!(pane.git_summary().is_none(), "no summary until git answers");
+        }
+
+        #[test]
+        fn a_directory_outside_a_worktree_settles_with_no_summary() {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::File::create(dir.path().join("a.rs")).unwrap();
+            let mut pane = Pane::new(&Config::default(), dir.path().to_str().unwrap());
+
+            settle(&mut pane);
+
+            assert!(!pane.git_pending(), "the pane must stop waiting");
+            assert!(pane.git_summary().is_none());
+            assert!(pane.visible_entries().all(|e| e.git_status.is_none()));
+            assert!(!pane.poll_git(), "a settled pane has nothing left to apply");
+        }
+
+        /// A reload starts a fresh job; the previous one must not be applied
+        /// to the new listing.
+        #[test]
+        fn reloading_restarts_the_background_job() {
+            let dir = tempfile::tempdir().unwrap();
+            let config = Config::default();
+            let mut pane = Pane::new(&config, dir.path().to_str().unwrap());
+            settle(&mut pane);
+
+            pane.reload(&config, false);
+
+            assert!(pane.git_pending(), "reload must re-run git");
+            settle(&mut pane);
+            assert!(!pane.git_pending());
         }
     }
 

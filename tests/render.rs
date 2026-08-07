@@ -18,8 +18,14 @@ fn app_in(dir: &std::path::Path) -> App {
     App::new(Theme::builtin().expect("built-in theme"), config)
 }
 
+/// One frame, driven exactly as the run loop drives it: prepare, then paint.
+///
+/// The `prepare_frame` call is not incidental. The draw closure is paint-only
+/// — it reads state and never builds it — so a test that skipped preparation
+/// would render empty previews and prove nothing.
 fn draw(app: &mut App, width: u16, height: u16) -> ratatui::buffer::Buffer {
     let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("test terminal");
+    app.prepare_frame();
     terminal
         .draw(|frame| app.render(frame))
         .expect("render must not fail");

@@ -2,30 +2,51 @@
 
 ## Priority Items
 
-### 1. `App::render` syncs state/filesystem mid-draw
-`src/ui/mod.rs` — `render()` calls `sync_header()` and filesystem reads during the draw phase. State should be prepared before `ratatui::run` starts the frame, not inside it. Moving sync out of `render` would make the draw path purely data-in, paint-out.
-
-### 2. `App::run` ~106 lines doing 6 jobs
-`src/ui/mod.rs` — `run()` orchestrates terminal setup, event loop, rendering, and cleanup. Splitting into smaller functions (e.g. `init_terminal`, `event_loop`, `shutdown`) would improve readability and testability.
-
-### 3. `filepreview.rs` sync `read_to_string` with no size cap
-`src/ui/filepreview.rs` — `render_preview` does `fs::read_to_string` on the full file with no size guard. Large files will block the UI. Add a byte limit or switch to async/streaming reads.
-
-### 4. `Entry::new` ~6 syscalls per entry
-`src/entry.rs` — each `Entry::new` call does `metadata`, `symlink_metadata`, `read_link`, etc. Reducing syscall count (e.g. batch stat calls or caching) would speed up directory listings significantly.
-
-### 5. `config.rs` ↔ `ui` circular dependency
-`src/config.rs` defines `SortType` and `ActivePane` which live in `ui/` but are serde-persisted. This creates a circular dependency between config and UI layers. Extract shared types into a small `src/types.rs` or similar.
-
-### 6. Git still synchronous on UI thread
-`src/ui/git.rs` — `repo_info` spawns background threads, but initial git calls (`git status`, `git log`) on the UI thread can still block. Needs measurement first to confirm if this is actually a problem in practice.
-
-### 7. `Component::render` still has `_ui` cleanup
-`src/ui/component.rs` — the `UiConfig` struct was deleted but the `_ui` parameter remains in the trait signature (now `_ui: &()`). Clean up the trait to remove the vestigial parameter entirely.
+Nothing outstanding. The seven items that stood here were closed for 0.2.0 —
+see below for what each turned out to be.
 
 ---
 
-## Completed (reference)
+## Completed
+
+### 0.2.0 — the seven priority items
+
+- **1. `App::render` syncing state mid-draw.** The draw is now data-in,
+  paint-out. `App::prepare_frame` settles everything the frame reads first:
+  the preview popup's file-type probe and loader spawn, and both search
+  popups' preview builds, all used to run inside the `terminal.draw` closure.
+  Image previews were the worst case — the file was re-read and re-decoded on
+  *every frame*, and `Picker::from_query_stdio` (which spawns `tmux` and
+  blocks reading stdin) ran with it. Images decode once on a worker thread,
+  the terminal is probed once behind a `OnceLock`, and the protocol is cached
+  per area, failures included.
+- **2. `App::run` doing six jobs in 108 lines.** Split into `draw_frame`,
+  `absorb_filesystem_events`, `wait_for_input`, `run_pending_editor` and
+  `run_pending_shell_command`; `run` itself is now 12 lines. Note the original
+  note was wrong about terminal setup/teardown: `ratatui::run` in `main` owns
+  those, so there was no `init`/`shutdown` pair to extract.
+- **3. Unbounded `read_to_string` in the preview.** `build_preview` streams
+  the file instead of slurping it, stops at the last line it needs, and caps
+  the read at 8 MiB — so a huge log, or a binary with no newline in it, cannot
+  be pulled into memory. Lines before the window are walked past and dropped,
+  which bounds the line buffer as well as the byte count.
+- **4. `Entry::new` syscall count.** One `lstat` now answers the kind, the
+  permissions and the owner; the target is only `stat`ed when there is a link
+  to follow. Three syscalls became one for an ordinary entry, six became three
+  for a symlink. The listing reuses `DirEntry`'s own stat rather than throwing
+  it away. (The note said `src/entry.rs`; the type lives in `ui/panes.rs`.)
+- **5. `config.rs` ↔ `ui` circular dependency.** `SortType`, `SortOrder` and
+  `ActivePane` moved to `src/types.rs`, which depends on nothing but serde.
+  `config` no longer mentions `ui` at all. `ui/uiconfig.rs` is gone.
+- **6. Git on the UI thread.** `git::PendingRepoInfo` runs `git status` on a
+  worker thread; the listing draws immediately and the status column fills in
+  when the answer arrives. (The note said `repo_info` already spawned threads
+  and mentioned a `git log` call — neither was true: `git.rs` had no threads
+  at all, and there is no `git log`.)
+- **7. `Component::render`'s vestigial `_ui` parameter.** Already done before
+  0.2.0, in `46b8a99`. The entry was stale.
+
+### 0.1.0 and earlier
 
 - B1: theme.rs `parse_hex` rewrite + `HexColor` newtype + fallback on bad theme
 - B2: runtime HOME lookup + repair stale configs

@@ -13,7 +13,7 @@ use super::{
     completion::Completion,
     dialog::{Dialog, DialogAction, DialogResult},
     keymap::{Action, Binding},
-    panes::{EntryKind, MoveDirection, OpenAction, SortOrder, SortType},
+    panes::{EntryKind, MoveDirection, OpenAction},
     popup_bulkrename::BulkRename,
     popup_findfiles::FileFinder,
     popup_findinfiles::FindInFiles,
@@ -21,10 +21,10 @@ use super::{
     popup_trash::TrashView,
     search::{FilterSpec, Search},
     textinput::{TextEdit, TextInput},
-    uiconfig::ActivePane,
 };
 use crate::config::Config;
 use crate::fs::{filter::SearchFilter, ops};
+use crate::types::{ActivePane, SortOrder, SortType};
 use crate::ui::theme::Theme;
 
 /// A copy or a move.

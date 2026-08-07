@@ -13,10 +13,7 @@ use std::{
 use log::{info, warn};
 use serde::{Deserialize, Serialize};
 
-use crate::ui::{
-    panes::{SortOrder, SortType},
-    uiconfig::ActivePane,
-};
+use crate::types::{ActivePane, SortOrder, SortType};
 
 pub const CONFIG_FILENAME: &str = "config.toml";
 pub const CONFIG_DIR: &str = "rodeo";

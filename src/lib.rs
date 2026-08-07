@@ -5,10 +5,12 @@
 //!
 //! - [`config`]: YAML configuration loading/saving and keybinding overrides.
 //! - [`fs`]: file operation logic (copy/move/delete, size walks, transfers).
+//! - [`types`]: small values shared by the configuration and the UI.
 //! - [`ui`]: the ratatui application — panes, popups, dialogs, input handling.
 
 pub mod cli;
 pub mod config;
 pub mod fs;
 pub mod logging;
+pub mod types;
 pub mod ui;

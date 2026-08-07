@@ -41,7 +41,6 @@ pub mod search;
 pub mod syntax;
 pub mod textinput;
 pub mod theme;
-pub mod uiconfig;
 
 use component::Component;
 use dialog::Dialog;
@@ -286,9 +285,9 @@ impl App {
         };
 
         app.footer.update_hints(&app.keymap);
-        // The panes have already run git while building their listings; this
-        // hands that result to the header so the branch is on screen from the
-        // first frame rather than only after the first navigation.
+        // Points the header at the starting directory. The branch and counts
+        // are still being fetched on a worker thread and land a frame or two
+        // later, through `poll_git` in the event loop.
         app.sync_header();
         app.report_keymap_warnings();
         app
@@ -320,111 +319,156 @@ impl App {
         )));
     }
 
+    /// The event loop.
+    ///
+    /// Note what is *not* here: terminal setup and teardown. `ratatui::run` in
+    /// `main` owns those and hands this an already-configured terminal, so
+    /// there is no `init`/`shutdown` pair to split out. What is left is one
+    /// turn of rodeo's life, and each turn is these five steps — which used to
+    /// be a hundred lines of inline detail, and are now readable in one
+    /// screen.
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> std::io::Result<()> {
         while !self.exit {
-            // Done before the draw, not inside it: an open preview follows the
-            // highlighted entry, and rebuilding it reads from disk.
-            self.sync_preview_to_selection();
-            terminal.draw(|frame| self.render(frame))?;
-
-            // Drain all pending filesystem events; arm the debounce timer.
-            // Access (read/open) events are ignored: rodeo itself reads files
-            // while building a preview, and reloading on those would fight the
-            // cursor.
-            while let Ok(Ok(event)) = self.fs_notify_rx.try_recv() {
-                if event.kind.is_access() {
-                    continue;
-                }
-                self.fs_debounce = Some(Instant::now());
-            }
-
-            // After 150 ms of FS silence, reload both panes and re-sync watches.
-            if self
-                .fs_debounce
-                .is_some_and(|t| t.elapsed() >= Duration::from_millis(150))
-            {
-                self.fs_debounce = None;
-                // Keep flagged entries: an external change must not wipe the
-                // user's selection.
-                self.panes.reload(&self.config, false);
-                self.sync_header();
-                self.refresh_fs_watches();
-            }
-
-            let preview_loading = self.preview().is_some_and(|p| p.is_loading());
-            let needs_tick =
-                self.progress.is_some() || preview_loading || self.fs_debounce.is_some();
-
-            if needs_tick {
-                // While a transfer runs, a preview is loading, or a debounce
-                // is pending, poll with a short timeout so animation stays
-                // smooth and Esc remains responsive.
-                if crossterm::event::poll(Duration::from_millis(50))? {
-                    self.handle_input()?;
-                }
-                self.pump_progress();
-            } else {
-                self.handle_input()?;
-            }
-
-            // After each input event, sync watched directories to current panes.
+            self.draw_frame(terminal)?;
+            self.absorb_filesystem_events();
+            self.wait_for_input()?;
+            // Navigation may have changed which directories matter.
             self.refresh_fs_watches();
+            self.run_pending_editor(terminal)?;
+            self.run_pending_shell_command(terminal)?;
+        }
+        Ok(())
+    }
 
-            if let Some(target) = self.pending_editor_file.take() {
-                let path = target.path.clone();
-                let mtime_before = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+    /// Settles all state the frame depends on, then paints exactly one frame.
+    fn draw_frame(&mut self, terminal: &mut DefaultTerminal) -> std::io::Result<()> {
+        // Everything the frame reads is settled before the frame starts.
+        self.prepare_frame();
+        // A background `git status` may have finished since the last frame;
+        // fold it in before painting rather than after.
+        if self.panes.poll_git() {
+            self.sync_header();
+        }
+        terminal.draw(|frame| self.render(frame))?;
+        Ok(())
+    }
 
-                let editor = self.config.editor.clone();
-                let args = target.args(&editor);
-                suspended(terminal, || {
-                    let _ = Command::new(&editor).args(&args).status();
-                })?;
-                self.after_external_program();
-
-                let mtime_after = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
-                if mtime_after != mtime_before {
-                    self.ok_status(format!("Modified: {}", path.display()));
-                }
+    /// Takes in what changed on disk while rodeo was busy elsewhere.
+    ///
+    /// Events are debounced rather than acted on directly: a single `cargo
+    /// build` produces thousands, and reloading on each would be a reload per
+    /// file written.
+    fn absorb_filesystem_events(&mut self) {
+        // Access (read/open) events are ignored: rodeo itself reads files
+        // while building a preview, and reloading on those would fight the
+        // cursor.
+        while let Ok(Ok(event)) = self.fs_notify_rx.try_recv() {
+            if event.kind.is_access() {
+                continue;
             }
+            self.fs_debounce = Some(Instant::now());
+        }
 
-            // A captured command cannot be trusted to have left the screen
-            // alone: programs that want a terminal open /dev/tty and draw on it
-            // regardless of the pipes they were given, and rodeo's diffing
-            // renderer would leave whatever they drew on screen.
-            if std::mem::take(&mut self.pending_redraw) {
-                restore_terminal_state(terminal);
+        // After 150 ms of filesystem silence, reload both panes.
+        if self
+            .fs_debounce
+            .is_some_and(|t| t.elapsed() >= Duration::from_millis(150))
+        {
+            self.fs_debounce = None;
+            // Keep flagged entries: an external change must not wipe the
+            // user's selection.
+            self.panes.reload(&self.config, false);
+            self.sync_header();
+            self.refresh_fs_watches();
+        }
+    }
+
+    /// Waits for the user, blocking only when nothing else needs attention.
+    ///
+    /// Anything with a deadline — a running transfer, a loading preview, a
+    /// pending debounce, a background `git status` — forces a short poll
+    /// instead, so those finish on their own rather than on the next keypress.
+    fn wait_for_input(&mut self) -> std::io::Result<()> {
+        let needs_tick = self.progress.is_some()
+            || self.preview().is_some_and(|p| p.is_loading())
+            || self.fs_debounce.is_some()
+            || self.panes.git_pending();
+
+        if !needs_tick {
+            return self.handle_input();
+        }
+
+        if crossterm::event::poll(Duration::from_millis(50))? {
+            self.handle_input()?;
+        }
+        self.pump_progress();
+        Ok(())
+    }
+
+    /// Hands the terminal to `$EDITOR` if something asked for it, and reports
+    /// whether the file came back changed.
+    fn run_pending_editor(&mut self, terminal: &mut DefaultTerminal) -> std::io::Result<()> {
+        let Some(target) = self.pending_editor_file.take() else {
+            return Ok(());
+        };
+
+        let path = target.path.clone();
+        let mtime_before = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+
+        let editor = self.config.editor.clone();
+        let args = target.args(&editor);
+        suspended(terminal, || {
+            let _ = Command::new(&editor).args(&args).status();
+        })?;
+        self.after_external_program();
+
+        let mtime_after = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+        if mtime_after != mtime_before {
+            self.ok_status(format!("Modified: {}", path.display()));
+        }
+        Ok(())
+    }
+
+    /// Runs a `:term` command with the screen to itself, and reports how it
+    /// went.
+    ///
+    /// The repaint comes first: a *captured* command (`:!`) cannot be trusted
+    /// to have left the screen alone, because programs that want a terminal
+    /// open `/dev/tty` and draw on it regardless of the pipes they were given,
+    /// and rodeo's diffing renderer would leave whatever they drew on screen.
+    fn run_pending_shell_command(&mut self, terminal: &mut DefaultTerminal) -> std::io::Result<()> {
+        if std::mem::take(&mut self.pending_redraw) {
+            restore_terminal_state(terminal);
+        }
+
+        let Some(command) = self.pending_terminal_command.take() else {
+            return Ok(());
+        };
+
+        let status = suspended(terminal, || {
+            let status = Command::new("sh").args(["-c", &command]).status();
+
+            // The child owned the screen; pause so its output can be read
+            // before rodeo paints over it again.
+            match &status {
+                Ok(status) if status.success() => print!("\n[:term finished] "),
+                Ok(status) => print!("\n[:term exited {}] ", exit_label(status)),
+                Err(e) => print!("\n[:term failed: {e}] "),
             }
+            print!("press Enter to return to rodeo");
+            let _ = std::io::Write::flush(&mut std::io::stdout());
+            let _ = std::io::BufRead::read_line(&mut std::io::stdin().lock(), &mut String::new());
 
-            if let Some(command) = self.pending_terminal_command.take() {
-                let status = suspended(terminal, || {
-                    let status = Command::new("sh").args(["-c", &command]).status();
+            status
+        })?;
+        self.after_external_program();
 
-                    // The child owned the screen; pause so its output can be
-                    // read before rodeo paints over it again.
-                    match &status {
-                        Ok(status) if status.success() => print!("\n[:term finished] "),
-                        Ok(status) => print!("\n[:term exited {}] ", exit_label(status)),
-                        Err(e) => print!("\n[:term failed: {e}] "),
-                    }
-                    print!("press Enter to return to rodeo");
-                    let _ = std::io::Write::flush(&mut std::io::stdout());
-                    let _ = std::io::BufRead::read_line(
-                        &mut std::io::stdin().lock(),
-                        &mut String::new(),
-                    );
-
-                    status
-                })?;
-                self.after_external_program();
-
-                match status {
-                    Ok(status) if !status.success() => {
-                        self.err_status(format!(":term — exit {}", exit_label(&status)));
-                    }
-                    Err(e) => self.err_status(format!("Cannot run: {e}")),
-                    _ => {}
-                }
+        match status {
+            Ok(status) if !status.success() => {
+                self.err_status(format!(":term — exit {}", exit_label(&status)));
             }
+            Err(e) => self.err_status(format!("Cannot run: {e}")),
+            _ => {}
         }
         Ok(())
     }
@@ -512,6 +556,29 @@ impl App {
     /// A transfer counts: it blocks further operations until it finishes.
     fn has_overlay(&self) -> bool {
         self.overlay.is_some() || self.progress.is_some()
+    }
+
+    /// Brings every piece of state the frame will read up to date, before the
+    /// frame starts.
+    ///
+    /// The draw is meant to be data-in, paint-out. Three overlays used to
+    /// break that: the preview popup decided a file's type and spawned its
+    /// loader from inside `render`, and both search popups read the selected
+    /// file from disk to build their preview pane — a `terminal.draw` closure
+    /// that opened files and rewrote widget state. All of that happens here
+    /// now.
+    ///
+    /// Public because it is half of the frame contract: every caller that
+    /// draws — the run loop, and the render tests — must call this first.
+    pub fn prepare_frame(&mut self) {
+        self.sync_preview_to_selection();
+
+        match &mut self.overlay {
+            Some(Overlay::Preview(preview)) => preview.prepare(),
+            Some(Overlay::FindFiles(finder)) => finder.prepare(),
+            Some(Overlay::FindInFiles(finder)) => finder.prepare(),
+            _ => {}
+        }
     }
 
     /// Keeps an entry-bound preview pointed at the highlighted entry.

@@ -5,7 +5,7 @@
 //! computed on a worker thread while a spinner shows, and the result is cached
 //! for as long as the selection does not change.
 
-use ratatui_image::{Image, Resize, picker::Picker};
+use ratatui_image::{Image, Resize, picker::Picker, protocol::Protocol};
 use std::io;
 use std::io::BufRead;
 use std::io::Read;
@@ -45,7 +45,13 @@ const MAX_POPUP_HEIGHT: u16 = 50;
 
 enum PreviewContent {
     Text(Text<'static>),
-    Image(String),
+    /// A decoded image, ready to be turned into a terminal protocol.
+    ///
+    /// This used to be the *path*, with the open-and-decode left to the draw:
+    /// every single frame re-read the file off disk, decoded it in full and
+    /// re-queried the terminal for its graphics protocol. Decoding once, when
+    /// the preview is prepared, is the whole difference.
+    Image(Box<image::DynamicImage>),
     Error(String),
     /// Background thread is computing the content; spinner shown meanwhile.
     Loading,
@@ -68,6 +74,13 @@ pub struct PopupPreview {
     /// line longer than the popup is simply cut off at the right edge, which
     /// hides most of a prose document (README lines run past 300 columns).
     wrap: bool,
+    /// The image protocol, and the area it was built for.
+    ///
+    /// Resizing the popup invalidates it and nothing else does, so a still
+    /// image costs one conversion rather than one per frame. The inner
+    /// `Option` records a *failed* conversion, so a failure is not retried
+    /// every frame either.
+    image_protocol: Option<(Rect, Option<Protocol>)>,
 }
 
 #[derive(PartialEq, Debug)]
@@ -83,6 +96,19 @@ pub enum FileType {
 }
 
 static SYNTAX_SET: OnceLock<SyntaxSet> = OnceLock::new();
+static PICKER: OnceLock<Picker> = OnceLock::new();
+
+/// How this terminal can draw images, detected once.
+///
+/// `Picker::from_query_stdio` is not a cheap getter: it spawns `tmux` to allow
+/// passthrough, flips the terminal into raw mode, writes a query to stdout and
+/// blocks reading the reply from stdin. Upstream says outright that it must not
+/// be called while terminal events are being read. It used to run inside
+/// `Component::render` — on every frame, since a failed conversion never
+/// cached anything. Detect once, off the draw path, and reuse the answer.
+fn picker() -> &'static Picker {
+    PICKER.get_or_init(|| Picker::from_query_stdio().unwrap_or_else(|_| Picker::halfblocks()))
+}
 
 /// The shared syntax definitions, loaded once. Other components (find-in-files
 /// preview) highlight with the same set so colours match everywhere.
@@ -137,6 +163,7 @@ impl PopupPreview {
             loading_rx: None,
             loading_started: None,
             wrap: true,
+            image_protocol: None,
         }
     }
 
@@ -154,6 +181,7 @@ impl PopupPreview {
             loading_rx: None,
             loading_started: None,
             wrap: true,
+            image_protocol: None,
         }
     }
 
@@ -162,6 +190,64 @@ impl PopupPreview {
     /// spinner animates without waiting for a keypress.
     pub fn is_loading(&self) -> bool {
         matches!(self.content, Some(PreviewContent::Loading))
+    }
+
+    /// Resolves what to show, before the frame is drawn.
+    ///
+    /// This decides the file's type (an `lstat` plus a 8 KiB sniff read),
+    /// either loads small content inline or hands the slow kinds to a worker
+    /// thread, and picks up a finished worker's result. All of it used to
+    /// happen inside `Component::render` — a draw that opened files, spawned
+    /// threads and rewrote the widget's own state. The draw is now paint-only
+    /// and reads `self.content` as it finds it.
+    pub(crate) fn prepare(&mut self) {
+        let Some(entry) = self.selected.as_ref() else {
+            return; // a free-text preview (`:!` output) has nothing to load
+        };
+        let path = entry.path.as_os_str().to_string_lossy().to_string();
+
+        // First time: decide how to load content.
+        if self.content.is_none() {
+            match Self::get_file_type(&path) {
+                FileType::Binary | FileType::Symlink => {
+                    // These are always fast (256-byte hex dump / symlink read)
+                    // so there is no perceptible delay worth a spinner.
+                    let syn_theme = self.syn_theme.clone().unwrap_or_default();
+                    self.content = Some(Self::get_file_content(&path, &syn_theme));
+                }
+                _ => {
+                    // Text (syntax highlighting), archive listing, directory
+                    // size walk, PDF extraction and image decoding can all
+                    // take noticeable time on large inputs — offload every one
+                    // of them so the popup opens instantly with a spinner.
+                    let syn_theme = self.syn_theme.clone().unwrap_or_default();
+                    let (tx, rx) = mpsc::channel();
+                    std::thread::spawn(move || {
+                        let _ = tx.send(Self::get_file_content(&path, &syn_theme));
+                    });
+                    self.loading_rx = Some(rx);
+                    self.loading_started = Some(Instant::now());
+                    self.content = Some(PreviewContent::Loading);
+                }
+            }
+        }
+
+        // If a background load is in progress, poll for completion.
+        if matches!(self.content, Some(PreviewContent::Loading))
+            && let Some(rx) = &self.loading_rx
+            && let Ok(ready) = rx.try_recv()
+        {
+            self.content = Some(ready);
+            self.loading_rx = None;
+            self.loading_started = None;
+        }
+
+        // Probing the terminal for its image capabilities talks to stdin and
+        // stdout. Force it here, where that is safe, so the draw only ever
+        // reads the cached answer.
+        if matches!(self.content, Some(PreviewContent::Image(_))) {
+            picker();
+        }
     }
 
     /// Toggles line wrapping; code is sometimes easier to read unwrapped.
@@ -214,6 +300,19 @@ impl PopupPreview {
         self.selected.as_ref()
     }
 
+    /// Reads and decodes an image, turning either failure into the message the
+    /// draw used to produce on the spot.
+    fn decode_image(path: &str) -> PreviewContent {
+        let reader = match image::ImageReader::open(path) {
+            Ok(reader) => reader,
+            Err(e) => return PreviewContent::Error(format!("Cannot open image: {e}")),
+        };
+        match reader.decode() {
+            Ok(image) => PreviewContent::Image(Box::new(image)),
+            Err(e) => PreviewContent::Error(format!("Image decode error: {e}")),
+        }
+    }
+
     fn get_file_type(path: &str) -> FileType {
         if let Ok(meta) = std::fs::symlink_metadata(path) {
             if meta.is_dir() {
@@ -261,7 +360,7 @@ impl PopupPreview {
     fn get_file_content(path: &str, syn_theme: &highlighting::Theme) -> PreviewContent {
         match Self::get_file_type(path) {
             FileType::Ascii => Self::text_preview(path, syn_theme),
-            FileType::Image => PreviewContent::Image(path.to_string()),
+            FileType::Image => Self::decode_image(path),
             FileType::Directory => PopupPreview::directory_preview(path),
             FileType::Archive => Self::archive_preview(path),
             FileType::Pdf => Self::pdf_preview(path),
@@ -570,53 +669,7 @@ impl Component for PopupPreview {
             return;
         }
 
-        let Some(entry) = self.selected.as_ref() else {
-            return;
-        };
-        let path = entry.path.as_os_str().to_string_lossy();
-
-        // First time: decide how to load content.
-        if self.content.is_none() {
-            let file_type = Self::get_file_type(&path);
-            match file_type {
-                FileType::Image => {
-                    // ratatui-image decodes the file lazily during render —
-                    // just storing the path is instant.
-                    self.content = Some(PreviewContent::Image(path.to_string()));
-                }
-                FileType::Binary | FileType::Symlink => {
-                    // These are always fast (256-byte hex dump / symlink read)
-                    // so there is no perceptible delay worth a spinner.
-                    let syn_theme = self.syn_theme.clone().unwrap_or_default();
-                    self.content = Some(Self::get_file_content(&path, &syn_theme));
-                }
-                _ => {
-                    // Text (syntax highlighting), archive listing, directory
-                    // size walk, and PDF extraction can all take noticeable
-                    // time on large inputs — offload every one of them so the
-                    // popup opens instantly with a spinner.
-                    let path_owned = path.to_string();
-                    let syn_theme = self.syn_theme.clone().unwrap_or_default();
-                    let (tx, rx) = mpsc::channel();
-                    std::thread::spawn(move || {
-                        let _ = tx.send(Self::get_file_content(&path_owned, &syn_theme));
-                    });
-                    self.loading_rx = Some(rx);
-                    self.loading_started = Some(Instant::now());
-                    self.content = Some(PreviewContent::Loading);
-                }
-            }
-        }
-
-        // If a background load is in progress, poll for completion.
-        if matches!(self.content, Some(PreviewContent::Loading))
-            && let Some(rx) = &self.loading_rx
-            && let Ok(ready) = rx.try_recv()
-        {
-            self.content = Some(ready);
-            self.loading_rx = None;
-            self.loading_started = None;
-        }
+        // From here on the content was resolved by `prepare`, before the draw.
 
         // Render spinner while loading.
         if matches!(self.content, Some(PreviewContent::Loading)) {
@@ -649,41 +702,39 @@ impl Component for PopupPreview {
                 let paragraph = self.text_paragraph(&text.clone(), inner_area);
                 frame.render_widget(paragraph, inner_area);
             }
-            PreviewContent::Image(path) => {
-                let dyn_img = match image::ImageReader::open(path) {
-                    Ok(reader) => match reader.decode() {
-                        Ok(img) => img,
-                        Err(e) => {
-                            frame.render_widget(
-                                Paragraph::new(format!("Image decode error: {e}")),
-                                inner_area,
-                            );
-                            return;
-                        }
-                    },
-                    Err(e) => {
-                        frame.render_widget(
-                            Paragraph::new(format!("Cannot open image: {e}")),
-                            inner_area,
-                        );
-                        return;
-                    }
-                };
+            PreviewContent::Image(decoded) => {
+                // Converting to a terminal protocol needs the area, so it
+                // cannot move to `prepare` — but it only has to be redone when
+                // the area actually changes, which is the popup being resized.
+                // Failures are cached as well, so a broken conversion is
+                // attempted once per size and not once per frame.
+                let stale = self
+                    .image_protocol
+                    .as_ref()
+                    .is_none_or(|(area, _)| *area != inner_area);
 
-                let picker = Picker::from_query_stdio().unwrap_or_else(|_| Picker::halfblocks());
-                let size = Size::from(inner_area);
-                let image = match picker.new_protocol(dyn_img, size, Resize::Fit(None)) {
-                    Ok(protocol) => protocol,
-                    Err(e) => {
-                        frame.render_widget(
-                            Paragraph::new(format!("protocol error: {e}")),
-                            inner_area,
-                        );
-                        return;
+                if stale {
+                    let built = picker()
+                        .new_protocol(
+                            decoded.as_ref().clone(),
+                            Size::from(inner_area),
+                            Resize::Fit(None),
+                        )
+                        .map_err(|e| log::warn!("cannot build image protocol: {e}"))
+                        .ok();
+                    self.image_protocol = Some((inner_area, built));
+                }
+
+                match self.image_protocol.as_ref() {
+                    Some((_, Some(protocol))) => {
+                        frame.render_widget(Image::new(protocol), inner_area)
                     }
-                };
-                let image = Image::new(&image);
-                frame.render_widget(image, inner_area);
+                    _ => frame.render_widget(
+                        Paragraph::new("Cannot display this image in this terminal.")
+                            .style(Style::default().fg(theme.colors.muted())),
+                        inner_area,
+                    ),
+                }
             }
             PreviewContent::Error(msg) => {
                 frame.render_widget(

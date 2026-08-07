@@ -11,6 +11,8 @@ use std::{
     collections::HashMap,
     path::{Path, PathBuf},
     process::Command,
+    sync::mpsc,
+    thread,
 };
 
 use ratatui::style::Color;
@@ -112,10 +114,55 @@ pub struct RepoInfo {
     pub summary: RepoSummary,
 }
 
+/// A [`repo_info`] call running on a worker thread.
+///
+/// `git status` is a subprocess walking a whole worktree: on a large or
+/// cold-cache repository it takes long enough to be felt, and it used to run
+/// inline in the pane reload, so every navigation froze the UI for as long as
+/// git took. The listing is now drawn immediately without a status column and
+/// the column fills in when the answer arrives, which is the one thing a
+/// background thread has to buy to be worth having.
+#[derive(Debug)]
+pub struct PendingRepoInfo {
+    rx: mpsc::Receiver<Option<RepoInfo>>,
+}
+
+impl PendingRepoInfo {
+    /// Starts the `git` calls and returns without waiting for them.
+    pub fn spawn(dir: &Path) -> Self {
+        let (tx, rx) = mpsc::channel();
+        let dir = dir.to_path_buf();
+
+        thread::spawn(move || {
+            // A send failure means the pane reloaded again and dropped the
+            // receiver, so this answer is simply no longer wanted.
+            let _ = tx.send(repo_info(&dir));
+        });
+
+        Self { rx }
+    }
+
+    /// The result if the worker has produced one. Never blocks.
+    ///
+    /// The outer `Option` is "has it finished"; the inner one is
+    /// [`repo_info`]'s own "is this a worktree at all".
+    pub fn take(&self) -> Option<Option<RepoInfo>> {
+        match self.rx.try_recv() {
+            Ok(info) => Some(info),
+            Err(mpsc::TryRecvError::Empty) => None,
+            // Disconnected without a value means the worker panicked. Report
+            // "not a repository" so the pane stops waiting for ever.
+            Err(mpsc::TryRecvError::Disconnected) => Some(None),
+        }
+    }
+}
+
 /// Git status for `pane_dir`: per-child statuses and a repository summary.
 ///
 /// Files are matched directly; directories aggregate the most severe status of
 /// any status-bearing path beneath them. Returns `None` outside a git worktree.
+///
+/// Blocking, and called from a worker thread — see [`PendingRepoInfo`].
 pub fn repo_info(pane_dir: &Path) -> Option<RepoInfo> {
     let (root, branch) = repo_head(pane_dir)?;
     let output = Command::new("git")

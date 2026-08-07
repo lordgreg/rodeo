@@ -169,14 +169,15 @@ impl FileFinder {
         self.preview.invalidate();
     }
 
-    fn render_preview(&mut self, frame: &mut Frame<'_>, theme: &Theme, area: Rect) {
+    /// Builds (or reuses) the preview for the current selection.
+    ///
+    /// Called before the frame, never during it: building reads a file — or
+    /// lists a directory — from disk, which has no business happening inside
+    /// a draw.
+    pub(crate) fn prepare(&mut self) {
         let selected = self.selected().cloned();
-        let title = match &selected {
-            Some(entry) => entry.display(),
-            None => "Preview".to_string(),
-        };
-
         let is_dir = selected.as_ref().is_some_and(|e| e.is_dir);
+
         self.preview
             .ensure(selected.map(|e| e.path), |path, syntax| {
                 if is_dir {
@@ -185,6 +186,13 @@ impl FileFinder {
                     build_preview(path, 1, syntax)
                 }
             });
+    }
+
+    fn render_preview(&mut self, frame: &mut Frame<'_>, theme: &Theme, area: Rect) {
+        let title = match self.selected() {
+            Some(entry) => entry.display(),
+            None => "Preview".to_string(),
+        };
 
         // No anchor: a file finder preview starts at the top of the file.
         self.preview.render(frame, theme, area, &title, None);
