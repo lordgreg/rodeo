@@ -6,7 +6,7 @@
 
 use std::path::PathBuf;
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
     Frame,
     layout::{Alignment, Rect},
@@ -19,7 +19,6 @@ use crate::ui::{
     component::{Component, centered_popup, content_size},
     textinput::TextInput,
     theme::Theme,
-    uiconfig::UiConfig,
 };
 
 /// Dialogs never get narrower than this, so a short question still reads as a
@@ -144,25 +143,10 @@ impl Dialog {
             DialogKind::Input { value, .. } => match key.code {
                 KeyCode::Enter => Some(DialogResult::Submitted(value.value.clone())),
                 KeyCode::Esc => Some(DialogResult::Cancelled),
-                KeyCode::Left => {
-                    value.left();
+                _ => {
+                    value.handle_key(key);
                     None
                 }
-                KeyCode::Right => {
-                    value.right();
-                    None
-                }
-                KeyCode::Backspace => {
-                    value.backspace();
-                    None
-                }
-                KeyCode::Char(c)
-                    if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT =>
-                {
-                    value.insert(c);
-                    None
-                }
-                _ => None,
             },
             DialogKind::Message { .. } => match key.code {
                 KeyCode::Enter | KeyCode::Esc => Some(DialogResult::Cancelled),
@@ -173,7 +157,7 @@ impl Dialog {
 }
 
 impl Component for Dialog {
-    fn render(&mut self, frame: &mut Frame<'_>, theme: &Theme, _ui: &UiConfig, area: Rect) {
+    fn render(&mut self, frame: &mut Frame<'_>, theme: &Theme, area: Rect) {
         let content_lines: Vec<Line> = match &self.kind {
             DialogKind::Confirm { message } => vec![
                 Line::from(message.as_str()),
@@ -235,6 +219,7 @@ impl Component for Dialog {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crossterm::event::KeyModifiers;
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)

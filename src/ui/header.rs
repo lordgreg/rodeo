@@ -1,8 +1,6 @@
 //! The top bar: pane statistics, a breadcrumb of the active path, git branch
 //! and free space on the device.
 
-use std::process::Command;
-
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, HorizontalAlignment, Layout, Rect},
@@ -13,67 +11,19 @@ use ratatui::{
 
 use crate::ui::{
     component::Component,
+    git::RepoSummary,
     panes::{PaneStats, format_size},
     theme::Theme,
-    uiconfig::UiConfig,
 };
 
 /// Ellipsis used when the breadcrumb does not fit.
 const ELLIPSIS: &str = "…/";
 
-#[derive(Default, Debug, Clone)]
-struct GitStatus {
-    pub branch: String,
-    pub modified: i32,
-    pub untracked: i32,
-}
-
-impl GitStatus {
-    pub fn try_from_path(path: &str) -> Option<Self> {
-        Command::new("git")
-            .args(["-C", path, "rev-parse", "--is-inside-work-tree"])
-            .output()
-            .ok()?;
-
-        let branch = Command::new("git")
-            .args(["-C", path, "branch", "--show-current"])
-            .output()
-            .ok()
-            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-            .filter(|f| !f.is_empty())?;
-
-        let status = Command::new("git")
-            .args(["-C", path, "status", "--porcelain"])
-            .output()
-            .ok()
-            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())?;
-
-        let mut modified = 0;
-        let mut untracked = 0;
-        for line in status.lines() {
-            if line.is_empty() {
-                continue;
-            }
-            if line.starts_with("??") {
-                untracked += 1;
-            } else {
-                modified += 1;
-            }
-        }
-
-        Some(Self {
-            branch,
-            modified,
-            untracked,
-        })
-    }
-}
-
 #[derive(Debug, Default)]
 pub struct Header {
     pub directory: String,
     stats: Option<PaneStats>,
-    git_status: Option<GitStatus>,
+    git_status: Option<RepoSummary>,
     /// Bytes available on the filesystem holding `directory`. Sampled when the
     /// directory changes, not per frame.
     free_space: Option<u64>,
@@ -88,7 +38,6 @@ impl Header {
             free_space: None,
         };
         header.free_space = free_space(&header.directory);
-        header.git_status = GitStatus::try_from_path(&header.directory);
         header
     }
 
@@ -117,10 +66,13 @@ impl Header {
         Line::from(spans)
     }
 
-    pub fn update(&mut self, directory: String) {
+    /// Points the header at a directory. `git` is whatever the pane's own
+    /// `git status` run reported — the header used to shell out to git three
+    /// more times here, duplicating work the pane had already done.
+    pub fn update(&mut self, directory: String, git: Option<RepoSummary>) {
         self.directory = directory;
 
-        self.git_status = self.update_git(&self.directory);
+        self.git_status = git;
         self.free_space = free_space(&self.directory);
     }
 
@@ -195,10 +147,6 @@ impl Header {
         ))
     }
 
-    fn update_git(&self, path: &str) -> Option<GitStatus> {
-        GitStatus::try_from_path(path)
-    }
-
     fn git_to_line(&self, theme: &Theme) -> Line<'static> {
         match &self.git_status {
             Some(g) => {
@@ -224,7 +172,7 @@ impl Header {
 }
 
 impl Component for Header {
-    fn render(&mut self, frame: &mut Frame<'_>, theme: &Theme, _ui: &UiConfig, area: Rect) {
+    fn render(&mut self, frame: &mut Frame<'_>, theme: &Theme, area: Rect) {
         let bg_block = Block::default().style(Style::default().bg(theme.colors.surface()));
         let inner_area = bg_block.inner(area);
         frame.render_widget(bg_block, area);
@@ -316,6 +264,35 @@ mod tests {
             git_status: None,
             free_space: None,
         }
+    }
+
+    /// The header no longer runs git itself — it is handed the pane's summary.
+    /// Forgetting to pass it would silently blank the branch.
+    #[test]
+    fn update_takes_the_git_summary_it_is_given() {
+        let theme = Theme::builtin().unwrap();
+        let mut header = header_at("/tmp");
+
+        header.update(
+            "/tmp".to_string(),
+            Some(RepoSummary {
+                branch: "trunk".to_string(),
+                modified: 2,
+                untracked: 1,
+            }),
+        );
+
+        assert_eq!(line_text(&header.git_to_line(&theme)), "git:trunk !2 ?1");
+    }
+
+    #[test]
+    fn a_directory_outside_a_repository_shows_no_git_segment() {
+        let theme = Theme::builtin().unwrap();
+        let mut header = header_at("/tmp");
+
+        header.update("/tmp".to_string(), None);
+
+        assert_eq!(line_text(&header.git_to_line(&theme)), "");
     }
 
     #[test]

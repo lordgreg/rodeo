@@ -5,31 +5,28 @@
 //! name/size/date instead of squeezing everything.
 
 use std::{
-    fs::{self},
+    fs,
+    ops::Range,
     path::{Path, PathBuf},
     time::SystemTime,
 };
 
-use chrono;
-
+use crate::{
+    config::Config,
+    types::{ActivePane, SortOrder, SortType},
+    ui::{
+        component::Component,
+        git::{self, GitEntryStatus, GitStatus as GitEntryState},
+        search::FilterSpec,
+        theme::Theme,
+    },
+};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, HorizontalAlignment, Layout, Rect},
     style::{Style, Stylize},
     text::{Line, Span},
     widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState},
-};
-use serde::{Deserialize, Serialize};
-
-use crate::{
-    config::Config,
-    ui::{
-        component::Component,
-        git::{self, GitEntryStatus, GitStatus as GitEntryState},
-        search::FilterSpec,
-        theme::Theme,
-        uiconfig::{ActivePane, UiConfig},
-    },
 };
 
 /// Width of the size column: `123.4 KB` plus a space.
@@ -134,22 +131,6 @@ pub(crate) fn format_date(t: SystemTime) -> String {
     dt.format("%Y-%m-%d %H:%M").to_string()
 }
 
-#[derive(PartialEq, Debug, Serialize, Deserialize, Clone, Copy)]
-/// Column the listing is ordered by.
-pub enum SortType {
-    Flagged,
-    Name,
-    Size,
-    Time,
-}
-
-#[derive(PartialEq, Debug, Serialize, Deserialize, Clone, Copy)]
-/// Direction of the active sort.
-pub enum SortOrder {
-    Ascending,
-    Descending,
-}
-
 #[derive(PartialEq, Debug, Clone)]
 /// What a listing entry is. Symlinks keep their *resolved* kind so that
 /// navigating and editing follow the link; only broken or exotic targets stay
@@ -222,24 +203,56 @@ pub struct Entry {
 
 impl Entry {
     pub fn new(path: PathBuf) -> Self {
-        // symlink_metadata does not follow links: one call classifies most
-        // entries. Symlinks keep their *resolved* kind (File/Directory) so
-        // navigation and editing follow the link; only broken or
-        // non-file/non-dir targets stay EntryKind::Symlink.
-        let (is_symlink, link_target, kind) = match std::fs::symlink_metadata(&path) {
-            Ok(meta) if meta.file_type().is_symlink() => {
-                let resolved = if path.is_file() {
-                    EntryKind::File
-                } else if path.is_dir() {
-                    EntryKind::Directory
-                } else {
-                    EntryKind::Symlink
-                };
-                (true, std::fs::read_link(&path).ok(), resolved)
-            }
-            Ok(meta) if meta.is_dir() => (false, None, EntryKind::Directory),
-            Ok(meta) if meta.is_file() => (false, None, EntryKind::File),
-            _ => (false, None, EntryKind::Unknown),
+        let lstat = fs::symlink_metadata(&path).ok();
+        Self::build(path, lstat)
+    }
+
+    /// Builds an entry from a directory iterator, reusing the stat the
+    /// iterator already had to do.
+    ///
+    /// `DirEntry::metadata` is `lstat` on Unix — it does not follow the link —
+    /// so it is exactly what [`Entry::build`] wants.
+    fn from_dir_entry(entry: &fs::DirEntry) -> Self {
+        Self::build(entry.path(), entry.metadata().ok())
+    }
+
+    /// The one place entry metadata is turned into columns.
+    ///
+    /// This used to issue three `stat`-family calls for an ordinary file and
+    /// six for a symlink, two of them a straight duplicate `lstat`. Now the
+    /// single `lstat` in `lstat` answers the kind, the permissions and the
+    /// owner, and the target is only stat'ed when there actually is a link to
+    /// follow: one syscall for an ordinary entry, three for a symlink.
+    fn build(path: PathBuf, lstat: Option<fs::Metadata>) -> Self {
+        let is_symlink = lstat
+            .as_ref()
+            .is_some_and(|meta| meta.file_type().is_symlink());
+
+        // Size and date describe what a symlink points at, so following it
+        // costs one `stat` — but only for the symlinks, not for every entry.
+        let target = if is_symlink {
+            path.metadata().ok()
+        } else {
+            None
+        };
+
+        // Symlinks keep their *resolved* kind (File/Directory) so navigation
+        // and editing follow the link; broken links, and links to anything
+        // that is neither a file nor a directory, stay EntryKind::Symlink.
+        let kind = match (is_symlink, &lstat, &target) {
+            (_, None, _) => EntryKind::Unknown,
+            (true, _, Some(meta)) if meta.is_file() => EntryKind::File,
+            (true, _, Some(meta)) if meta.is_dir() => EntryKind::Directory,
+            (true, _, _) => EntryKind::Symlink,
+            (false, Some(meta), _) if meta.is_dir() => EntryKind::Directory,
+            (false, Some(meta), _) if meta.is_file() => EntryKind::File,
+            (false, _, _) => EntryKind::Unknown,
+        };
+
+        let link_target = if is_symlink {
+            fs::read_link(&path).ok()
+        } else {
+            None
         };
 
         let name = path
@@ -247,14 +260,22 @@ impl Entry {
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| "-".to_string());
 
-        let (permissions, owner) = path
-            .symlink_metadata()
-            .map(|meta| (format_permissions(&meta), owner_of(&meta)))
-            .unwrap_or_else(|_| ("-".to_string(), "-".to_string()));
+        // Permissions and owner are the link's own, hence `lstat` and not the
+        // target — which is what the old duplicate `symlink_metadata` call was
+        // for.
+        let (permissions, owner) = lstat
+            .as_ref()
+            .map(|meta| (format_permissions(meta), owner_of(meta)))
+            .unwrap_or_else(|| ("-".to_string(), "-".to_string()));
 
-        let (size, modified, raw_size, raw_modified) = path
-            .metadata()
-            .ok()
+        // For anything but a symlink `lstat` already is the target's metadata.
+        let stat = if is_symlink {
+            target.as_ref()
+        } else {
+            lstat.as_ref()
+        };
+
+        let (size, modified, raw_size, raw_modified) = stat
             .map(|meta| {
                 (
                     format_size(meta.len()),
@@ -315,46 +336,208 @@ impl Entry {
     }
 }
 
-#[derive(Debug, Clone)]
+/// `Span::styled` when there is a style, a plain span when there is not.
+///
+/// This four-line match was written out eight times inside `highlight_name`.
+fn span(text: String, style: Option<Style>) -> Span<'static> {
+    match style {
+        Some(style) => Span::styled(text, style),
+        None => Span::from(text),
+    }
+}
+
+/// The active filter, compiled once so a listing can be highlighted row by row.
+///
+/// Building this per row was costing a pattern parse and a `nucleo::Matcher`
+/// (or a regex compile) for every visible entry on every frame.
+enum Highlighter {
+    Off,
+    Fuzzy {
+        pattern: nucleo::pattern::Pattern,
+        matcher: nucleo::Matcher,
+        buf: Vec<char>,
+        indices: Vec<u32>,
+    },
+    Regex(regex::Regex),
+}
+
+impl Highlighter {
+    fn new(filter: Option<&FilterSpec>) -> Self {
+        match filter {
+            None => Self::Off,
+            Some(FilterSpec::Fuzzy(pattern)) => Self::Fuzzy {
+                pattern: nucleo::pattern::Pattern::parse(
+                    pattern,
+                    nucleo::pattern::CaseMatching::Smart,
+                    nucleo::pattern::Normalization::Smart,
+                ),
+                matcher: nucleo::Matcher::new(nucleo::Config::DEFAULT),
+                buf: Vec::new(),
+                indices: Vec::new(),
+            },
+            // An invalid regex highlights nothing rather than failing the draw.
+            Some(FilterSpec::Regex(pattern)) => match regex::Regex::new(pattern) {
+                Ok(re) => Self::Regex(re),
+                Err(_) => Self::Off,
+            },
+        }
+    }
+
+    /// Character ranges of `name` that the filter matched, in order and
+    /// non-overlapping. Adjacent characters are merged into one range so a
+    /// run of matches becomes a single span.
+    fn matched_ranges(&mut self, name: &str) -> Vec<Range<usize>> {
+        match self {
+            Self::Off => Vec::new(),
+            Self::Fuzzy {
+                pattern,
+                matcher,
+                buf,
+                indices,
+            } => {
+                indices.clear();
+                let haystack = nucleo::Utf32Str::new(name, buf);
+                if pattern.score(haystack, matcher).is_none() {
+                    return Vec::new();
+                }
+
+                // `score` and `indices` each need the haystack, and building it
+                // borrows `buf`, so it is rebuilt here rather than held.
+                let haystack = nucleo::Utf32Str::new(name, buf);
+                pattern.indices(haystack, matcher, indices);
+                indices.sort_unstable();
+                indices.dedup();
+
+                let char_count = name.chars().count();
+                let mut ranges: Vec<Range<usize>> = Vec::new();
+                for &idx in indices.iter() {
+                    let idx = idx as usize;
+                    if idx >= char_count {
+                        continue;
+                    }
+                    match ranges.last_mut() {
+                        Some(last) if last.end == idx => last.end = idx + 1,
+                        _ => ranges.push(idx..idx + 1),
+                    }
+                }
+                ranges
+            }
+            Self::Regex(re) => match re.find(name) {
+                // Byte offsets from the regex, character offsets out: the
+                // caller indexes into a Vec<char>.
+                Some(m) => {
+                    let start = name[..m.start()].chars().count();
+                    let end = start + m.as_str().chars().count();
+                    std::iter::once(start..end).collect()
+                }
+                None => Vec::new(),
+            },
+        }
+    }
+}
+
 /// One directory pane: its listing, cursor, selection and filter.
+///
+/// Deliberately not `Clone`: a pane owns the receiving end of its background
+/// `git status`, and a copy sharing (or silently losing) that job would be a
+/// bug waiting to happen. Nothing cloned a pane in any case.
+#[derive(Debug)]
 pub struct Pane {
     pub state: TableState,
     pub path: String,
-    paths: Vec<Entry>,
-    all_paths: Vec<Entry>,
+    /// Every entry in the directory. The single source of truth for what is
+    /// selected, how big a directory is, and so on.
+    entries: Vec<Entry>,
+    /// Indices into [`Self::entries`], in display order: the filter narrows
+    /// and reorders this rather than cloning the entries it keeps.
+    visible: Vec<usize>,
     filter: Option<FilterSpec>,
     hidden_count: usize,
     sort_type: SortType,
     sort_order: SortOrder,
     /// Mirrors `config.icons`; kept per pane so rendering needs no config.
     icons: bool,
+    /// Repository summary from the same `git status` run that filled in the
+    /// per-entry statuses, so the header does not have to run git again.
+    git_summary: Option<git::RepoSummary>,
+    /// A `git status` still running in the background, if any. Its result is
+    /// picked up by [`Pane::poll_git`].
+    pending_git: Option<git::PendingRepoInfo>,
 }
 
 impl Pane {
     pub fn new(config: &Config, path: &str) -> Self {
         let path = path.to_string();
-        let (paths, hidden_count) = read_entries(&path, config);
+        let (entries, hidden_count) = read_entries(&path, config);
         let sort_order = config.sort_order;
         let sort_type = config.sort_type;
 
         let mut pane = Self {
             state: TableState::default(),
-            path,
-            all_paths: paths.clone(),
-            paths,
+            path: path.clone(),
+            visible: (0..entries.len()).collect(),
+            entries,
             filter: None,
             hidden_count,
             sort_order,
             sort_type,
             icons: config.icons,
+            git_summary: None,
+            pending_git: Some(git::PendingRepoInfo::spawn(Path::new(&path))),
         };
 
         pane.state.select(Some(0));
         pane
     }
 
+    /// `true` while a background `git status` is still running.
+    ///
+    /// The event loop uses this to keep polling instead of blocking on input,
+    /// so the status column appears without needing a keypress.
+    pub fn git_pending(&self) -> bool {
+        self.pending_git.is_some()
+    }
+
+    /// Applies a finished background `git status`, if one has arrived.
+    ///
+    /// Returns `true` when the listing changed, so the caller knows to redraw
+    /// and to re-point the header.
+    pub fn poll_git(&mut self) -> bool {
+        let Some(pending) = self.pending_git.as_ref() else {
+            return false;
+        };
+        let Some(info) = pending.take() else {
+            return false; // still running
+        };
+        self.pending_git = None;
+
+        match info {
+            Some(info) => {
+                for entry in &mut self.entries {
+                    entry.git_status = info.entries.get(&entry.name).copied();
+                }
+                self.git_summary = Some(info.summary);
+            }
+            None => {
+                // Not a worktree — or git is not installed. Either way the
+                // column and the header summary stay empty.
+                for entry in &mut self.entries {
+                    entry.git_status = None;
+                }
+                self.git_summary = None;
+            }
+        }
+
+        true
+    }
+
     pub fn filter(&self) -> Option<&FilterSpec> {
         self.filter.as_ref()
+    }
+
+    /// Branch and repository-wide counts, from the listing's own `git` run.
+    pub fn git_summary(&self) -> Option<&git::RepoSummary> {
+        self.git_summary.as_ref()
     }
 
     /// Narrows the visible entries by the given filter. The parent entry (`..`)
@@ -365,7 +548,7 @@ impl Pane {
         match &filter {
             FilterSpec::Fuzzy(pattern) => {
                 if pattern.is_empty() {
-                    self.paths = self.all_paths.clone();
+                    self.show_all();
                 } else {
                     let parsed = nucleo::pattern::Pattern::parse(
                         pattern,
@@ -389,49 +572,77 @@ impl Pane {
     }
 
     pub fn clear_filter(&mut self) {
-        self.paths = self.all_paths.clone();
+        self.show_all();
         self.filter = None;
         self.state.select(Some(0));
     }
 
-    /// Rebuilds the visible entry list from `all_paths`, keeping entries the
-    /// rank function scores `Some` and ordering them best-first (stable).
+    /// Rebuilds the visible list, keeping entries the rank function scores
+    /// `Some` and ordering them best-first (stable).
     fn apply_rank(&mut self, mut rank: impl FnMut(&str) -> Option<u32>) {
-        let (parents, rest): (Vec<&Entry>, Vec<&Entry>) = self
-            .all_paths
-            .iter()
-            .partition(|e| e.kind == EntryKind::Parent);
+        let mut parents: Vec<usize> = Vec::new();
+        let mut scored: Vec<(u32, usize)> = Vec::new();
 
-        let mut scored: Vec<(u32, &Entry)> = rest
-            .iter()
-            .filter_map(|e| rank(&e.name).map(|s| (s, *e)))
-            .collect();
+        for (i, entry) in self.entries.iter().enumerate() {
+            if entry.kind == EntryKind::Parent {
+                parents.push(i);
+            } else if let Some(score) = rank(&entry.name) {
+                scored.push((score, i));
+            }
+        }
+        // Stable, so equally-scored entries keep their listing order.
         scored.sort_by_key(|(score, _)| std::cmp::Reverse(*score));
 
-        self.paths = parents
-            .iter()
-            .map(|e| (*e).clone())
-            .chain(scored.into_iter().map(|(_, e)| e.clone()))
+        let parent_count = parents.len();
+        self.visible = parents
+            .into_iter()
+            .chain(scored.into_iter().map(|(_, i)| i))
             .collect();
 
         // Select the first real entry (after the pinned parent) if any.
-        self.state.select(Some(if self.paths.len() > parents.len() {
-            parents.len()
-        } else {
-            0
-        }));
+        self.state
+            .select(Some(if self.visible.len() > parent_count {
+                parent_count
+            } else {
+                0
+            }));
+    }
+
+    /// Shows every entry, in listing order.
+    fn show_all(&mut self) {
+        self.visible = (0..self.entries.len()).collect();
+    }
+
+    /// The entries on screen, in display order.
+    fn visible_entries(&self) -> impl Iterator<Item = &Entry> {
+        self.visible.iter().filter_map(|&i| self.entries.get(i))
+    }
+
+    /// The entry shown on `row`, if there is one.
+    fn visible_entry(&self, row: usize) -> Option<&Entry> {
+        self.entries.get(*self.visible.get(row)?)
+    }
+
+    fn visible_entry_mut(&mut self, row: usize) -> Option<&mut Entry> {
+        self.entries.get_mut(*self.visible.get(row)?)
+    }
+
+    /// How many entries are on screen.
+    pub fn visible_len(&self) -> usize {
+        self.visible.len()
     }
 
     pub fn select_by_path(&mut self, path: &Path) {
-        if let Some(i) = self.paths.iter().position(|e| e.path == path) {
-            self.state.select(Some(i));
+        let row = self.visible_entries().position(|e| e.path == path);
+        if let Some(row) = row {
+            self.state.select(Some(row));
         }
     }
 
     pub fn get_selected_entry(&self) -> Option<Entry> {
         let selected = self.state.selected()?;
 
-        self.paths.get(selected).cloned()
+        self.visible_entry(selected).cloned()
     }
 
     pub fn stats(&self) -> PaneStats {
@@ -440,7 +651,7 @@ impl Pane {
             ..Default::default()
         };
 
-        for entry in &self.paths {
+        for entry in self.visible_entries() {
             match entry.kind {
                 EntryKind::Parent => {}
                 EntryKind::Directory => stats.dirs += 1,
@@ -455,147 +666,53 @@ impl Pane {
         stats
     }
 
-    /// Returns highlighted name spans for a given entry name based on active filter.
-    /// If no filter is active, returns the name with the given style.
+    /// Name spans for one entry, with the filter's matches picked out.
+    ///
+    /// `highlighter` is built once per frame by the caller: this used to parse
+    /// the pattern and construct a `nucleo::Matcher` — or compile the regex —
+    /// once per row, per frame.
     fn highlight_name(
-        &self,
+        highlighter: &mut Highlighter,
         name: &str,
         base_style: Option<Style>,
         theme: &Theme,
     ) -> Vec<Span<'static>> {
-        let filter = match &self.filter {
-            Some(f) => f,
-            None => {
-                return vec![match base_style {
-                    Some(style) => Span::styled(name.to_string(), style),
-                    None => Span::from(name.to_string()),
-                }];
-            }
+        let matched = highlighter.matched_ranges(name);
+        if matched.is_empty() {
+            return vec![span(name.to_string(), base_style)];
+        }
+
+        let highlight_style = match base_style {
+            Some(style) => style.bg(theme.colors.warning()),
+            None => Style::new().bg(theme.colors.warning()),
         };
 
-        match filter {
-            FilterSpec::Fuzzy(pattern) => {
-                let parsed = nucleo::pattern::Pattern::parse(
-                    pattern,
-                    nucleo::pattern::CaseMatching::Smart,
-                    nucleo::pattern::Normalization::Smart,
-                );
-                let mut matcher = nucleo::Matcher::new(nucleo::Config::DEFAULT);
-                let mut buf = Vec::new();
-                let mut indices = Vec::new();
+        let chars: Vec<char> = name.chars().collect();
+        let mut spans = Vec::new();
+        let mut at = 0;
 
-                // Try to get match indices
-                if parsed
-                    .score(nucleo::Utf32Str::new(name, &mut buf), &mut matcher)
-                    .is_some()
-                {
-                    parsed.indices(
-                        nucleo::Utf32Str::new(name, &mut buf),
-                        &mut matcher,
-                        &mut indices,
-                    );
-                }
-
-                if indices.is_empty() {
-                    // No match or no indices, return unstyled
-                    return vec![match base_style {
-                        Some(style) => Span::styled(name.to_string(), style),
-                        None => Span::from(name.to_string()),
-                    }];
-                }
-
-                // Build spans with highlighted characters
-                let mut spans = Vec::new();
-                let chars: Vec<char> = name.chars().collect();
-                let mut last_idx = 0;
-
-                for &idx in &indices {
-                    let idx = idx as usize;
-                    if idx >= chars.len() {
-                        continue;
-                    }
-
-                    // Add non-matching segment before this match
-                    if idx > last_idx {
-                        let segment: String = chars[last_idx..idx].iter().collect();
-                        spans.push(match base_style {
-                            Some(style) => Span::styled(segment, style),
-                            None => Span::from(segment),
-                        });
-                    }
-
-                    // Add highlighted match character
-                    let ch: String = chars[idx..idx + 1].iter().collect();
-                    let highlight_style = match base_style {
-                        Some(style) => style.bg(theme.colors.warning()),
-                        None => Style::new().bg(theme.colors.warning()),
-                    };
-                    spans.push(Span::styled(ch, highlight_style));
-                    last_idx = idx + 1;
-                }
-
-                // Add remaining non-matching segment
-                if last_idx < chars.len() {
-                    let segment: String = chars[last_idx..].iter().collect();
-                    spans.push(match base_style {
-                        Some(style) => Span::styled(segment, style),
-                        None => Span::from(segment),
-                    });
-                }
-
-                spans
+        for range in matched {
+            if range.start > at {
+                spans.push(span(chars[at..range.start].iter().collect(), base_style));
             }
-            FilterSpec::Regex(pattern) => {
-                // For regex, highlight the entire match
-                let Ok(re) = regex::Regex::new(pattern) else {
-                    return vec![match base_style {
-                        Some(style) => Span::styled(name.to_string(), style),
-                        None => Span::from(name.to_string()),
-                    }];
-                };
-
-                if let Some(m) = re.find(name) {
-                    let mut spans = Vec::new();
-
-                    // Before match
-                    if m.start() > 0 {
-                        spans.push(match base_style {
-                            Some(style) => Span::styled(name[..m.start()].to_string(), style),
-                            None => Span::from(name[..m.start()].to_string()),
-                        });
-                    }
-
-                    // Matched portion
-                    let highlight_style = match base_style {
-                        Some(style) => style.bg(theme.colors.warning()),
-                        None => Style::new().bg(theme.colors.warning()),
-                    };
-                    spans.push(Span::styled(m.as_str().to_string(), highlight_style));
-
-                    // After match
-                    if m.end() < name.len() {
-                        spans.push(match base_style {
-                            Some(style) => Span::styled(name[m.end()..].to_string(), style),
-                            None => Span::from(name[m.end()..].to_string()),
-                        });
-                    }
-
-                    spans
-                } else {
-                    vec![match base_style {
-                        Some(style) => Span::styled(name.to_string(), style),
-                        None => Span::from(name.to_string()),
-                    }]
-                }
-            }
+            spans.push(Span::styled(
+                chars[range.start..range.end].iter().collect::<String>(),
+                highlight_style,
+            ));
+            at = range.end;
         }
+
+        if at < chars.len() {
+            spans.push(span(chars[at..].iter().collect(), base_style));
+        }
+
+        spans
     }
 
     /// Message to show when the listing has nothing worth displaying.
     fn placeholder(&self) -> Option<&'static str> {
         let entries = self
-            .paths
-            .iter()
+            .visible_entries()
             .filter(|e| e.kind != EntryKind::Parent)
             .count();
         if entries > 0 {
@@ -608,8 +725,10 @@ impl Pane {
     }
 
     fn entry_rows(&self, theme: &Theme, columns: ColumnSet) -> Vec<Row<'static>> {
-        self.paths
-            .iter()
+        // Compiled once for the whole listing, not once per row.
+        let mut highlighter = Highlighter::new(self.filter.as_ref());
+
+        self.visible_entries()
             .map(|e| {
                 let marker = if e.selected { "●" } else { "" };
                 let size = match e.kind {
@@ -636,7 +755,12 @@ impl Pane {
                             name_style.unwrap_or_else(|| Style::new().fg(theme.colors.muted())),
                         ));
                     }
-                    spans.extend(self.highlight_name(&e.name, name_style, theme));
+                    spans.extend(Self::highlight_name(
+                        &mut highlighter,
+                        &e.name,
+                        name_style,
+                        theme,
+                    ));
                     if let Some(target) = &e.link_target {
                         spans.push(Span::styled(
                             format!(" -> {}", target.display()),
@@ -680,60 +804,49 @@ impl Pane {
         let Some(i) = self.state.selected() else {
             return;
         };
-        let Some(path) = self.paths.get_mut(i) else {
+        let Some(entry) = self.visible_entry_mut(i) else {
             return;
         };
 
         if !matches!(
-            path.kind,
+            entry.kind,
             EntryKind::File | EntryKind::Directory | EntryKind::Symlink
         ) {
             return;
         }
 
-        path.toggle_selected();
-
-        // Keep the full listing in sync — `paths` entries are clones.
-        let selected = path.selected;
-        let path_buf = path.path.clone();
-        if let Some(entry) = self.all_paths.iter_mut().find(|e| e.path == path_buf) {
-            entry.selected = selected;
-        }
+        entry.toggle_selected();
     }
 
-    /// All entries currently marked as selected (via `x`).
+    /// Entries marked as selected (via `x`) *and* currently on screen.
+    ///
+    /// Deliberately not every selected entry: an operation must not touch
+    /// something the active filter is hiding.
     pub fn selected_entries(&self) -> Vec<Entry> {
-        self.paths.iter().filter(|e| e.selected).cloned().collect()
+        self.visible_entries()
+            .filter(|e| e.selected)
+            .cloned()
+            .collect()
     }
 
+    /// Whether anything is selected, filtered out or not.
     pub fn has_selections(&self) -> bool {
-        self.all_paths.iter().any(|e| e.selected)
+        self.entries.iter().any(|e| e.selected)
     }
 
     /// Marks every selectable entry matching the wildcard pattern; returns
     /// how many entries were (newly) selected.
     pub fn select_matching(&mut self, pattern: &str) -> usize {
         let mut count = 0;
-        let paths: Vec<PathBuf> = self
-            .all_paths
-            .iter_mut()
-            .filter(|e| {
-                matches!(
-                    e.kind,
-                    EntryKind::File | EntryKind::Directory | EntryKind::Symlink
-                ) && wildcard_match(pattern, &e.name)
-            })
-            .map(|e| {
-                if !e.selected {
+        for entry in &mut self.entries {
+            let selectable = matches!(
+                entry.kind,
+                EntryKind::File | EntryKind::Directory | EntryKind::Symlink
+            );
+            if selectable && wildcard_match(pattern, &entry.name) {
+                if !entry.selected {
                     count += 1;
                 }
-                e.selected = true;
-                e.path.clone()
-            })
-            .collect();
-
-        for entry in &mut self.paths {
-            if paths.contains(&entry.path) {
                 entry.selected = true;
             }
         }
@@ -753,7 +866,7 @@ impl Pane {
         let mut budget = ENTRY_BUDGET;
 
         let dir_paths: Vec<PathBuf> = self
-            .all_paths
+            .entries
             .iter()
             .filter(|e| e.kind == EntryKind::Directory)
             .map(|e| e.path.clone())
@@ -772,10 +885,7 @@ impl Pane {
             } else {
                 format_size(est.bytes)
             };
-            if let Some(e) = self.all_paths.iter_mut().find(|e| e.path == path) {
-                e.dir_size = Some(text.clone());
-            }
-            if let Some(e) = self.paths.iter_mut().find(|e| e.path == path) {
+            if let Some(e) = self.entries.iter_mut().find(|e| e.path == path) {
                 e.dir_size = Some(text);
             }
             computed += 1;
@@ -784,10 +894,7 @@ impl Pane {
     }
 
     pub fn clear_selections(&mut self) {
-        for entry in &mut self.all_paths {
-            entry.selected = false;
-        }
-        for entry in &mut self.paths {
+        for entry in &mut self.entries {
             entry.selected = false;
         }
     }
@@ -799,16 +906,20 @@ impl Pane {
         let cursor_path = self.get_selected_entry().map(|e| e.path);
 
         let selected_paths: Vec<PathBuf> = self
-            .all_paths
+            .entries
             .iter()
             .filter(|p| p.selected)
             .map(|p| p.path.clone())
             .collect();
 
-        (self.all_paths, self.hidden_count) = read_entries(&self.path, config);
+        (self.entries, self.hidden_count) = read_entries(&self.path, config);
+        // Dropping any previous receiver here is what discards a stale answer:
+        // the old worker's send fails and its result is never applied to this
+        // listing.
+        self.pending_git = Some(git::PendingRepoInfo::spawn(Path::new(&self.path)));
 
         if !clear_selection {
-            for entry in &mut self.all_paths {
+            for entry in &mut self.entries {
                 if selected_paths.contains(&entry.path) {
                     entry.selected = true
                 }
@@ -823,14 +934,14 @@ impl Pane {
         if let Some(filter) = self.filter.clone() {
             let _ = self.set_filter(filter);
         } else {
-            self.paths = self.all_paths.clone();
+            self.show_all();
         }
 
         // Restore the cursor on the same entry when it still exists; after a
         // directory change the old path is gone and the cursor starts at the
         // top.
         let cursor_index = cursor_path
-            .and_then(|p| self.paths.iter().position(|e| e.path == p))
+            .and_then(|p| self.visible_entries().position(|e| e.path == p))
             .unwrap_or(0);
         self.state = TableState::default();
         self.state.select(Some(cursor_index));
@@ -854,7 +965,7 @@ impl Pane {
             return OpenAction::Nothing;
         };
 
-        let Some(entry) = self.paths.get(i) else {
+        let Some(entry) = self.visible_entry(i) else {
             return OpenAction::Nothing;
         };
 
@@ -877,7 +988,6 @@ impl Pane {
             },
             _ => OpenAction::Nothing,
         }
-        // OpenAction::Nothing
     }
 
     pub fn header_to_cell(
@@ -904,14 +1014,10 @@ impl Pane {
         cell
     }
 
-    pub fn render(
-        &mut self,
-        frame: &mut Frame,
-        area: Rect,
-        active: bool,
-        theme: &Theme,
-        _ui: &UiConfig,
-    ) {
+    /// Argument order matches [`Component::render`], with the extra `active`
+    /// flag last: the two used to be transposed, so `theme` and `area` could
+    /// be swapped between them without the compiler noticing.
+    pub fn render(&mut self, frame: &mut Frame, theme: &Theme, area: Rect, active: bool) {
         // Borders eat two cells; decide what fits in what is left.
         let columns = ColumnSet::for_width(area.width.saturating_sub(2));
         let rows = self.entry_rows(theme, columns);
@@ -1056,23 +1162,28 @@ fn sort_entries(entries: &mut [Entry], config: &Config) {
     });
 }
 
+/// Lists `dir` into sorted [`Entry`] values.
+///
+/// Deliberately does no git work: that is a subprocess and belongs on a worker
+/// thread ([`git::PendingRepoInfo`]), not in the middle of a reload the user is
+/// waiting on.
 fn read_entries(dir: &str, config: &Config) -> (Vec<Entry>, usize) {
     let mut hidden_count = 0;
 
     let mut entries: Vec<Entry> = match fs::read_dir(dir) {
+        // The DirEntry is carried through the filter rather than being
+        // reduced to a path: it already knows the name (no syscall) and can
+        // hand its own `lstat` to `Entry`.
         Ok(rd) => rd
             .filter_map(|e| e.ok())
-            .map(|e| e.path())
-            .filter(|p| {
-                let is_hidden = p
-                    .file_name()
-                    .is_some_and(|n| n.to_string_lossy().starts_with('.'));
+            .filter(|e| {
+                let is_hidden = e.file_name().to_string_lossy().starts_with('.');
                 if is_hidden {
                     hidden_count += 1;
                 }
                 config.show_hidden || !is_hidden
             })
-            .map(Entry::new)
+            .map(|e| Entry::from_dir_entry(&e))
             .collect(),
 
         Err(e) => {
@@ -1085,12 +1196,6 @@ fn read_entries(dir: &str, config: &Config) -> (Vec<Entry>, usize) {
     sort_entries(&mut entries, config);
 
     entries.insert(0, Entry::parent(dir));
-
-    if let Some(statuses) = git::status_map(Path::new(dir)) {
-        for entry in &mut entries {
-            entry.git_status = statuses.get(&entry.name).copied();
-        }
-    }
 
     (entries, hidden_count)
 }
@@ -1177,11 +1282,24 @@ impl Panes {
         self.pane_right.reload(config, clear_selection);
     }
 
-    pub fn next_index(
-        row_count: &usize,
-        current: Option<usize>,
-        direction: MoveDirection,
-    ) -> usize {
+    /// `true` while either pane is waiting on a background `git status`.
+    pub fn git_pending(&self) -> bool {
+        self.pane_left.git_pending() || self.pane_right.git_pending()
+    }
+
+    /// Applies whatever background `git status` results have arrived.
+    ///
+    /// Returns `true` if either pane changed, so the caller can re-point the
+    /// header at the active pane's new summary.
+    pub fn poll_git(&mut self) -> bool {
+        // Not `||`: short-circuiting would leave the right pane's result
+        // sitting in its channel until the next frame.
+        let left = self.pane_left.poll_git();
+        let right = self.pane_right.poll_git();
+        left || right
+    }
+
+    pub fn next_index(row_count: usize, current: Option<usize>, direction: MoveDirection) -> usize {
         let max = row_count.saturating_sub(1);
         match direction {
             MoveDirection::Down => match current {
@@ -1199,7 +1317,7 @@ impl Panes {
 
     pub fn goto_next(&mut self, direction: MoveDirection) {
         let pane = self.get_active_pane_mut();
-        let next = Self::next_index(&pane.paths.len(), pane.state.selected(), direction);
+        let next = Self::next_index(pane.visible_len(), pane.state.selected(), direction);
 
         pane.state.select(Some(next));
     }
@@ -1214,26 +1332,17 @@ impl Panes {
 }
 
 impl Component for Panes {
-    fn render(&mut self, frame: &mut Frame<'_>, theme: &Theme, ui: &UiConfig, area: Rect) {
+    fn render(&mut self, frame: &mut Frame<'_>, theme: &Theme, area: Rect) {
         let layout = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
             .split(area);
 
-        self.pane_left.render(
-            frame,
-            layout[0],
-            self.active_pane == ActivePane::Left,
-            theme,
-            ui,
-        );
-        self.pane_right.render(
-            frame,
-            layout[1],
-            self.active_pane == ActivePane::Right,
-            theme,
-            ui,
-        );
+        let active = self.active_pane;
+        self.pane_left
+            .render(frame, theme, layout[0], active == ActivePane::Left);
+        self.pane_right
+            .render(frame, theme, layout[1], active == ActivePane::Right);
     }
 }
 
@@ -1588,6 +1697,173 @@ mod tests {
             assert!(!entry.is_symlink);
             assert_eq!(entry.link_target, None);
         }
+
+        /// The listing path reuses the stat `read_dir` already did. That is
+        /// only a saving if it produces exactly what the plain path does.
+        #[cfg(unix)]
+        #[test]
+        fn a_reused_dir_entry_stat_gives_the_same_entry() {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(dir.path().join("file.txt"), "hello").unwrap();
+            std::fs::create_dir(dir.path().join("sub")).unwrap();
+            std::os::unix::fs::symlink(dir.path().join("file.txt"), dir.path().join("link.txt"))
+                .unwrap();
+            std::os::unix::fs::symlink(dir.path().join("gone"), dir.path().join("broken")).unwrap();
+
+            let mut checked = 0;
+            for raw in std::fs::read_dir(dir.path()).unwrap() {
+                let raw = raw.unwrap();
+                assert_eq!(
+                    Entry::from_dir_entry(&raw),
+                    Entry::new(raw.path()),
+                    "{:?} differs between the two constructors",
+                    raw.path()
+                );
+                checked += 1;
+            }
+            assert_eq!(checked, 4);
+        }
+    }
+
+    mod highlighter {
+        use super::*;
+
+        fn ranges(filter: Option<FilterSpec>, name: &str) -> Vec<Range<usize>> {
+            Highlighter::new(filter.as_ref()).matched_ranges(name)
+        }
+
+        #[test]
+        fn no_filter_highlights_nothing() {
+            assert!(ranges(None, "readme.md").is_empty());
+        }
+
+        #[test]
+        fn a_regex_marks_its_whole_match() {
+            let got = ranges(Some(FilterSpec::Regex("read".into())), "readme.md");
+            assert_eq!(got, vec![0..4]);
+        }
+
+        #[test]
+        fn a_regex_that_does_not_match_marks_nothing() {
+            assert!(ranges(Some(FilterSpec::Regex("zzz".into())), "readme.md").is_empty());
+        }
+
+        /// Ranges index into a `Vec<char>`, but the regex reports bytes.
+        #[test]
+        fn regex_ranges_are_character_offsets_not_byte_offsets() {
+            let got = ranges(Some(FilterSpec::Regex("b".into())), "äöü_b");
+            assert_eq!(got, vec![4..5], "three 2-byte chars precede the match");
+        }
+
+        #[test]
+        fn an_invalid_regex_highlights_nothing_instead_of_failing() {
+            assert!(ranges(Some(FilterSpec::Regex("[unclosed".into())), "a.txt").is_empty());
+        }
+
+        #[test]
+        fn a_fuzzy_match_marks_the_matched_characters() {
+            let got = ranges(Some(FilterSpec::Fuzzy("rdm".into())), "readme.md");
+            let marked: String = "readme.md"
+                .chars()
+                .enumerate()
+                .filter(|(i, _)| got.iter().any(|r| r.contains(i)))
+                .map(|(_, c)| c)
+                .collect();
+            assert_eq!(marked, "rdm");
+        }
+
+        /// Consecutive hits collapse into one range so they render as a single
+        /// span rather than one span per character.
+        #[test]
+        fn adjacent_fuzzy_matches_merge_into_one_range() {
+            let got = ranges(Some(FilterSpec::Fuzzy("read".into())), "readme.md");
+            assert_eq!(got, vec![0..4]);
+        }
+
+        #[test]
+        fn ranges_are_ordered_and_do_not_overlap() {
+            let got = ranges(Some(FilterSpec::Fuzzy("rme".into())), "readme.md");
+            for pair in got.windows(2) {
+                assert!(pair[0].end <= pair[1].start, "{got:?}");
+            }
+        }
+
+        /// The matcher is reused across rows, so state from one name must not
+        /// leak into the next.
+        #[test]
+        fn one_highlighter_handles_many_names_independently() {
+            let mut hl = Highlighter::new(Some(&FilterSpec::Fuzzy("md".into())));
+
+            let first = hl.matched_ranges("readme.md");
+            let miss = hl.matched_ranges("zzz");
+            let again = hl.matched_ranges("readme.md");
+
+            assert!(miss.is_empty());
+            assert_eq!(first, again, "a non-matching name must not corrupt state");
+        }
+    }
+
+    mod background_git {
+        use super::*;
+
+        /// Blocks until the pane's worker thread reports in, so the assertions
+        /// below are about the result and not about the timing.
+        fn settle(pane: &mut Pane) {
+            for _ in 0..600 {
+                if pane.poll_git() {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            panic!("the background git status never finished");
+        }
+
+        /// The listing must be usable before git has answered — that is the
+        /// entire point of moving it off the UI thread.
+        #[test]
+        fn a_pane_lists_entries_before_git_has_answered() {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::File::create(dir.path().join("a.rs")).unwrap();
+
+            let pane = Pane::new(&Config::default(), dir.path().to_str().unwrap());
+
+            assert!(pane.git_pending(), "git must be running in the background");
+            assert!(
+                pane.visible_entries().any(|e| e.name == "a.rs"),
+                "entries must be listed without waiting for git"
+            );
+            assert!(pane.git_summary().is_none(), "no summary until git answers");
+        }
+
+        #[test]
+        fn a_directory_outside_a_worktree_settles_with_no_summary() {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::File::create(dir.path().join("a.rs")).unwrap();
+            let mut pane = Pane::new(&Config::default(), dir.path().to_str().unwrap());
+
+            settle(&mut pane);
+
+            assert!(!pane.git_pending(), "the pane must stop waiting");
+            assert!(pane.git_summary().is_none());
+            assert!(pane.visible_entries().all(|e| e.git_status.is_none()));
+            assert!(!pane.poll_git(), "a settled pane has nothing left to apply");
+        }
+
+        /// A reload starts a fresh job; the previous one must not be applied
+        /// to the new listing.
+        #[test]
+        fn reloading_restarts_the_background_job() {
+            let dir = tempfile::tempdir().unwrap();
+            let config = Config::default();
+            let mut pane = Pane::new(&config, dir.path().to_str().unwrap());
+            settle(&mut pane);
+
+            pane.reload(&config, false);
+
+            assert!(pane.git_pending(), "reload must re-run git");
+            settle(&mut pane);
+            assert!(!pane.git_pending());
+        }
     }
 
     mod filter {
@@ -1608,7 +1884,7 @@ mod tests {
         }
 
         fn names(pane: &Pane) -> Vec<&str> {
-            pane.paths.iter().map(|e| e.name.as_str()).collect()
+            pane.visible_entries().map(|e| e.name.as_str()).collect()
         }
 
         #[test]
@@ -1618,7 +1894,7 @@ mod tests {
                 .unwrap();
 
             assert_eq!(names(&pane), vec!["..", "ab.rs"]);
-            assert_eq!(pane.paths[0].kind, EntryKind::Parent);
+            assert_eq!(pane.visible_entry(0).unwrap().kind, EntryKind::Parent);
             // First real entry is selected.
             assert_eq!(pane.state.selected(), Some(1));
         }
@@ -1628,7 +1904,7 @@ mod tests {
             let (_dir, mut pane) = test_pane();
             pane.set_filter(FilterSpec::Fuzzy(String::new())).unwrap();
 
-            assert_eq!(pane.paths.len(), 5);
+            assert_eq!(pane.visible_len(), 5);
         }
 
         #[test]
@@ -1646,7 +1922,7 @@ mod tests {
             let result = pane.set_filter(FilterSpec::Regex("(".to_string()));
 
             assert!(result.is_err());
-            assert_eq!(pane.paths.len(), 5);
+            assert_eq!(pane.visible_len(), 5);
             assert_eq!(pane.filter(), None);
         }
 
@@ -1655,10 +1931,10 @@ mod tests {
             let (_dir, mut pane) = test_pane();
             pane.set_filter(FilterSpec::Regex("^a".to_string()))
                 .unwrap();
-            assert_eq!(pane.paths.len(), 3);
+            assert_eq!(pane.visible_len(), 3);
 
             pane.clear_filter();
-            assert_eq!(pane.paths.len(), 5);
+            assert_eq!(pane.visible_len(), 5);
             assert_eq!(pane.filter(), None);
         }
 
@@ -1684,6 +1960,107 @@ mod tests {
                 pane.get_selected_entry().map(|e| e.name),
                 Some("b.txt".to_string())
             );
+        }
+    }
+
+    /// The listing used to be two vectors — every visible entry was a *clone*
+    /// of one in the full list — so each mutation had to be written twice, in
+    /// five places, each with its own hand-rolled strategy. These pin the
+    /// behaviour that used to depend on getting that right.
+    mod visible_and_full_listing_stay_consistent {
+        use super::*;
+
+        fn pane_with_files(names: &[&str]) -> (tempfile::TempDir, Pane) {
+            let dir = tempfile::tempdir().unwrap();
+            for name in names {
+                std::fs::File::create(dir.path().join(name)).unwrap();
+            }
+            let pane = Pane::new(&Config::default(), dir.path().to_str().unwrap());
+            (dir, pane)
+        }
+
+        fn row_of(pane: &Pane, name: &str) -> usize {
+            pane.visible_entries()
+                .position(|e| e.name == name)
+                .unwrap_or_else(|| panic!("{name} is not visible"))
+        }
+
+        #[test]
+        fn a_selection_survives_being_filtered_out_and_back() {
+            let (_dir, mut pane) = pane_with_files(&["keep.rs", "other.txt"]);
+
+            let row = row_of(&pane, "keep.rs");
+            pane.state.select(Some(row));
+            pane.toggle_select();
+            assert!(pane.has_selections());
+
+            // Filter it out of view, then bring it back.
+            pane.set_filter(FilterSpec::Fuzzy("other".into())).unwrap();
+            assert!(pane.has_selections(), "a hidden entry is still selected");
+
+            pane.clear_filter();
+            let row = row_of(&pane, "keep.rs");
+            assert!(
+                pane.visible_entry(row).unwrap().selected,
+                "the selection must come back with the entry"
+            );
+        }
+
+        #[test]
+        fn selected_entries_only_reports_what_is_on_screen() {
+            let (_dir, mut pane) = pane_with_files(&["keep.rs", "other.txt"]);
+
+            let row = row_of(&pane, "keep.rs");
+            pane.state.select(Some(row));
+            pane.toggle_select();
+
+            pane.set_filter(FilterSpec::Fuzzy("other".into())).unwrap();
+            assert!(
+                pane.selected_entries().is_empty(),
+                "an operation must not touch what the filter hides"
+            );
+            assert!(pane.has_selections(), "but it is still selected");
+        }
+
+        #[test]
+        fn select_matching_reaches_entries_the_filter_hides() {
+            let (_dir, mut pane) = pane_with_files(&["a.rs", "b.rs", "c.txt"]);
+            pane.set_filter(FilterSpec::Fuzzy("c.txt".into())).unwrap();
+
+            assert_eq!(pane.select_matching("*.rs"), 2);
+
+            pane.clear_filter();
+            let selected: Vec<&str> = pane
+                .visible_entries()
+                .filter(|e| e.selected)
+                .map(|e| e.name.as_str())
+                .collect();
+            assert_eq!(selected, vec!["a.rs", "b.rs"]);
+        }
+
+        #[test]
+        fn clearing_selections_clears_hidden_ones_too() {
+            let (_dir, mut pane) = pane_with_files(&["a.rs", "b.rs"]);
+            pane.select_matching("*");
+            assert!(pane.has_selections());
+
+            pane.set_filter(FilterSpec::Fuzzy("a".into())).unwrap();
+            pane.clear_selections();
+            pane.clear_filter();
+
+            assert!(!pane.has_selections(), "nothing may stay selected");
+        }
+
+        #[test]
+        fn a_filter_reorders_without_losing_entries() {
+            let (_dir, mut pane) = pane_with_files(&["a.rs", "b.rs", "c.rs"]);
+            let total = pane.entries.len();
+
+            pane.set_filter(FilterSpec::Regex("b".into())).unwrap();
+            assert!(pane.visible_len() < total);
+
+            pane.clear_filter();
+            assert_eq!(pane.visible_len(), total, "every entry comes back");
         }
     }
 
@@ -1995,40 +2372,93 @@ mod tests {
 
         #[test]
         fn down_wraps_from_last_to_first() {
-            assert_eq!(Panes::next_index(&3, Some(2), MoveDirection::Down), 0);
+            assert_eq!(Panes::next_index(3, Some(2), MoveDirection::Down), 0);
         }
 
         #[test]
         fn down_moves_to_next() {
-            assert_eq!(Panes::next_index(&3, Some(0), MoveDirection::Down), 1);
+            assert_eq!(Panes::next_index(3, Some(0), MoveDirection::Down), 1);
         }
 
         #[test]
         fn up_wraps_from_first_to_last() {
-            assert_eq!(Panes::next_index(&3, Some(0), MoveDirection::Up), 2);
+            assert_eq!(Panes::next_index(3, Some(0), MoveDirection::Up), 2);
         }
 
         #[test]
         fn up_moves_to_previous() {
-            assert_eq!(Panes::next_index(&3, Some(2), MoveDirection::Up), 1);
+            assert_eq!(Panes::next_index(3, Some(2), MoveDirection::Up), 1);
         }
 
         #[test]
         fn single_item_list_stays_at_zero() {
-            assert_eq!(Panes::next_index(&1, Some(0), MoveDirection::Down), 0);
-            assert_eq!(Panes::next_index(&1, Some(0), MoveDirection::Up), 0);
+            assert_eq!(Panes::next_index(1, Some(0), MoveDirection::Down), 0);
+            assert_eq!(Panes::next_index(1, Some(0), MoveDirection::Up), 0);
         }
 
         #[test]
         fn empty_list_returns_zero() {
-            assert_eq!(Panes::next_index(&0, None, MoveDirection::Down), 0);
-            assert_eq!(Panes::next_index(&0, None, MoveDirection::Up), 0);
+            assert_eq!(Panes::next_index(0, None, MoveDirection::Down), 0);
+            assert_eq!(Panes::next_index(0, None, MoveDirection::Up), 0);
         }
 
         #[test]
         fn none_selected_returns_zero() {
-            assert_eq!(Panes::next_index(&5, None, MoveDirection::Down), 0);
-            assert_eq!(Panes::next_index(&5, None, MoveDirection::Up), 0);
+            assert_eq!(Panes::next_index(5, None, MoveDirection::Down), 0);
+            assert_eq!(Panes::next_index(5, None, MoveDirection::Up), 0);
+        }
+    }
+
+    mod sort_rotation {
+        use super::*;
+
+        #[test]
+        fn next_and_prev_walk_the_whole_cycle() {
+            let order = [
+                SortType::Flagged,
+                SortType::Name,
+                SortType::Size,
+                SortType::Time,
+            ];
+
+            let mut sort = SortType::Flagged;
+            for expected in [
+                SortType::Name,
+                SortType::Size,
+                SortType::Time,
+                SortType::Flagged,
+            ] {
+                sort = sort.next();
+                assert_eq!(sort, expected);
+            }
+
+            // Walking back must retrace the same cycle, not a different one.
+            for expected in order.iter().rev() {
+                sort = sort.prev();
+                assert_eq!(sort, *expected);
+            }
+        }
+
+        #[test]
+        fn prev_is_the_inverse_of_next() {
+            for sort in [
+                SortType::Flagged,
+                SortType::Name,
+                SortType::Size,
+                SortType::Time,
+            ] {
+                assert_eq!(sort.next().prev(), sort);
+                assert_eq!(sort.prev().next(), sort);
+            }
+        }
+
+        #[test]
+        fn reversing_an_order_twice_restores_it() {
+            assert_eq!(SortOrder::Ascending.reversed(), SortOrder::Descending);
+            assert_eq!(
+                SortOrder::Ascending.reversed().reversed(),
+                SortOrder::Ascending
+            );
         }
     }
 

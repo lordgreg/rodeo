@@ -13,7 +13,7 @@ use ratatui::{
 use regex::Regex;
 use std::path::PathBuf;
 
-use crate::ui::{component::Component, textinput::TextInput, theme::Theme, uiconfig::UiConfig};
+use crate::ui::{component::Component, textinput::TextInput, theme::Theme};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum RenameError {
@@ -210,7 +210,7 @@ fn apply_number_format(pat: &str, n: usize, ext: &str) -> String {
 }
 
 impl Component for BulkRename {
-    fn render(&mut self, frame: &mut Frame<'_>, theme: &Theme, _ui: &UiConfig, area: Rect) {
+    fn render(&mut self, frame: &mut Frame<'_>, theme: &Theme, area: Rect) {
         // Centered popup: 80 % wide, 80 % tall.
         let popup = Rect {
             x: area.width / 10,
@@ -328,5 +328,159 @@ fn truncate(s: &str, max: usize) -> String {
             "{}…",
             s.chars().take(max.saturating_sub(1)).collect::<String>()
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rename(names: &[&str], pattern: &str) -> BulkRename {
+        let mut br = BulkRename::new(
+            names
+                .iter()
+                .map(|n| PathBuf::from("/tmp").join(n))
+                .collect(),
+        );
+        br.pattern = TextInput::new(pattern);
+        br.update_preview();
+        br
+    }
+
+    fn previews(br: &BulkRename) -> Vec<&str> {
+        br.previews.iter().map(String::as_str).collect()
+    }
+
+    #[test]
+    fn substitution_replaces_the_first_match_only() {
+        let br = rename(&["a_a_1.txt", "a_b_2.txt"], "s/a/X/");
+        assert_eq!(previews(&br), vec!["X_a_1.txt", "X_b_2.txt"]);
+        assert!(br.errors.is_empty());
+    }
+
+    #[test]
+    fn the_g_flag_replaces_every_match() {
+        let br = rename(&["a_a_1.txt"], "s/a/X/g");
+        assert_eq!(previews(&br), vec!["X_X_1.txt"]);
+    }
+
+    #[test]
+    fn substitution_can_use_capture_groups() {
+        let br = rename(&["img_1.png", "img_2.png"], r"s/img_(\d)/shot_$1/");
+        assert_eq!(previews(&br), vec!["shot_1.png", "shot_2.png"]);
+    }
+
+    #[test]
+    fn numbering_pads_to_the_requested_width_and_keeps_the_extension() {
+        let br = rename(&["a.txt", "b.txt", "c.txt"], "photo_%03d");
+        assert_eq!(
+            previews(&br),
+            vec!["photo_001.txt", "photo_002.txt", "photo_003.txt"]
+        );
+    }
+
+    #[test]
+    fn numbering_without_padding_counts_from_one() {
+        let br = rename(&["a.md", "b.md"], "n%d");
+        assert_eq!(previews(&br), vec!["n1.md", "n2.md"]);
+    }
+
+    /// The pattern is applied to every entry, so a constant result collides.
+    #[test]
+    fn a_pattern_that_maps_two_names_onto_one_is_rejected() {
+        let br = rename(&["a.txt", "b.txt"], "s/[ab]/same/");
+        assert!(
+            br.errors
+                .iter()
+                .any(|e| matches!(e, RenameError::Collision(_))),
+            "{:?}",
+            br.errors
+        );
+        assert!(!br.is_valid(), "a colliding rename must not be applicable");
+    }
+
+    #[test]
+    fn a_pattern_that_empties_a_name_is_rejected() {
+        let br = rename(&["a.txt"], "s/a.txt//");
+        assert!(
+            br.errors
+                .iter()
+                .any(|e| matches!(e, RenameError::EmptyName(_))),
+            "{:?}",
+            br.errors
+        );
+        assert!(!br.is_valid());
+    }
+
+    #[test]
+    fn an_invalid_regex_is_reported_and_leaves_the_names_alone() {
+        let br = rename(&["a.txt"], "s/[unclosed/x/");
+        assert!(
+            br.errors
+                .iter()
+                .any(|e| matches!(e, RenameError::BadPattern(_))),
+            "{:?}",
+            br.errors
+        );
+        assert_eq!(previews(&br), vec!["a.txt"], "originals must be preserved");
+        assert!(!br.is_valid());
+    }
+
+    #[test]
+    fn unknown_pattern_syntax_is_reported() {
+        let br = rename(&["a.txt"], "just some text");
+        assert!(matches!(
+            br.errors.first(),
+            Some(RenameError::BadPattern(_))
+        ));
+        assert!(!br.is_valid());
+    }
+
+    #[test]
+    fn an_empty_pattern_changes_nothing_and_is_not_applicable() {
+        let br = rename(&["a.txt", "b.txt"], "");
+        assert_eq!(previews(&br), vec!["a.txt", "b.txt"]);
+        assert!(br.errors.is_empty());
+        assert!(!br.is_valid(), "nothing to do is not a valid rename");
+    }
+
+    /// A pattern that matches nothing leaves every name as it was, which is
+    /// also not worth applying.
+    #[test]
+    fn a_pattern_that_matches_nothing_is_not_applicable() {
+        let br = rename(&["a.txt"], "s/zzz/x/");
+        assert_eq!(previews(&br), vec!["a.txt"]);
+        assert!(br.errors.is_empty());
+        assert!(!br.is_valid());
+    }
+
+    #[test]
+    fn rename_pairs_skip_unchanged_names_and_keep_the_directory() {
+        // Only `b.txt` matches, so only it should be renamed.
+        let br = rename(&["a.txt", "b.txt"], "s/b/c/");
+        let pairs = br.rename_pairs();
+
+        assert_eq!(pairs.len(), 1, "{pairs:?}");
+        assert_eq!(pairs[0].0, PathBuf::from("/tmp/b.txt"));
+        assert_eq!(pairs[0].1, PathBuf::from("/tmp/c.txt"));
+    }
+
+    #[test]
+    fn rename_pairs_stay_in_the_original_directory() {
+        let mut br = BulkRename::new(vec![PathBuf::from("/one/deep/x.txt")]);
+        br.pattern = TextInput::new("s/x/y/");
+        br.update_preview();
+
+        assert_eq!(
+            br.rename_pairs()[0].1,
+            PathBuf::from("/one/deep/y.txt"),
+            "a rename must never move a file"
+        );
+    }
+
+    #[test]
+    fn multibyte_names_survive_a_rename() {
+        let br = rename(&["日本語.txt", "café.txt"], "s/\\.txt/.md/");
+        assert_eq!(previews(&br), vec!["日本語.md", "café.md"]);
     }
 }

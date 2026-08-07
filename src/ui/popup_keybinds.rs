@@ -14,7 +14,6 @@ use crate::ui::{
     component::{Component, centered_popup},
     keymap::Action,
     theme::Theme,
-    uiconfig::UiConfig,
 };
 
 /// One row of the keybinding table.
@@ -129,7 +128,7 @@ const KEYBINDS: &[Keybind] = &[
         "Restore / delete permanently / select",
         &[],
     ),
-    bind("Esc", "Close / clear / quit", &[]),
+    bind("Esc", "Close / clear filter / clear selection", &[]),
     bind("q", "Quit", &[Action::Quit]),
 ];
 
@@ -219,7 +218,7 @@ fn all_lines(theme: &Theme) -> Vec<Line<'static>> {
 }
 
 impl Component for PopupKeybinds {
-    fn render(&mut self, frame: &mut Frame<'_>, theme: &Theme, _ui: &UiConfig, area: Rect) {
+    fn render(&mut self, frame: &mut Frame<'_>, theme: &Theme, area: Rect) {
         let lines = all_lines(theme);
         let line_width = lines.iter().map(|l| l.width()).max().unwrap_or(20) as u16;
 

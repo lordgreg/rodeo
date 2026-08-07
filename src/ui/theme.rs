@@ -4,6 +4,7 @@
 //! Theme files are TOML and are looked up along an XDG search path; a copy of
 //! the default theme is compiled in so rodeo always starts.
 
+use std::fmt;
 use std::fs;
 use std::io;
 use std::io::Error;
@@ -15,11 +16,11 @@ use log::info;
 use ratatui::style::Color;
 use serde::{Deserialize, Serialize};
 use syntect::highlighting::{
-    Color as SynColor, FontStyle, ScopeSelectors, StyleModifier, Theme as SynTheme, ThemeItem,
-    ThemeSettings,
+    Color as SynColor, ScopeSelectors, StyleModifier, Theme as SynTheme, ThemeItem, ThemeSettings,
 };
 
 use crate::config::CONFIG_DIR;
+use crate::ui::syntax::{PaletteSlot, SYNTAX_RULES};
 
 pub const DEFAULT_THEME_FILENAME: &str = "default.toml";
 pub const DEFAULT_THEME_NAME: &str = "default";
@@ -62,92 +63,98 @@ fn find_theme_file(name: &str) -> Option<PathBuf> {
         .find(|path| path.is_file())
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
-/// The palette. Values are `#rrggbb` strings in the theme file and are
-/// converted to terminal colours on access.
-pub struct Colors {
-    background: String,
-    foreground: String,
-    primary: String,
-    secondary: String,
-    success: String,
-    warning: String,
-    error: String,
-    info: String,
-    muted: String,
-    border: String,
-    surface: String,
-    highlight: String,
-    accent1: String,
-    accent2: String,
-    accent3: String,
+/// Declares the palette once: the struct field, its serde name and its getter
+/// all come from this list.
+///
+/// The field list, the getters, the `Role` enum and the role→colour match used
+/// to be four parallel lists kept in step by hand. They had already drifted —
+/// `accent2` and `accent3` had no getters, so no widget could reach them even
+/// though every bundled theme defines them.
+macro_rules! palette {
+    ($($name:ident),* $(,)?) => {
+        #[derive(Serialize, Deserialize, Debug, Clone)]
+        /// The palette. Values are `#rrggbb` (or `#rgb`) strings in the theme
+        /// file and are parsed into terminal colours when the theme is loaded.
+        pub struct Colors {
+            $($name: HexColor,)*
+        }
+
+        impl Colors {
+            $(
+                pub fn $name(&self) -> Color {
+                    self.$name.color()
+                }
+            )*
+        }
+    };
 }
 
-trait ColorExt {
-    fn hex_to_color(hex: &str) -> Color;
-}
+palette!(
+    background, foreground, primary, secondary, success, warning, error, info, muted, border,
+    surface, highlight, accent1, accent2, accent3,
+);
 
-impl ColorExt for Color {
-    fn hex_to_color(hex: &str) -> Color {
-        let hex = hex.trim_start_matches('#');
-        let r = u8::from_str_radix(&hex[0..2], 16).unwrap_or(0);
-        let g = u8::from_str_radix(&hex[2..4], 16).unwrap_or(0);
-        let b = u8::from_str_radix(&hex[4..6], 16).unwrap_or(0);
-        Color::Rgb(r, g, b)
+/// A colour written as `#rrggbb` or `#rgb` in a theme file.
+///
+/// Parsing happens once, during deserialization, so a malformed value is
+/// reported with the offending field named and the theme is rejected. Reading a
+/// colour afterwards cannot fail, which keeps parsing off the render path — the
+/// getters below used to re-parse a string on every access, every frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HexColor(Color);
+
+impl HexColor {
+    pub fn color(self) -> Color {
+        self.0
     }
 }
 
-impl Colors {
-    pub fn background(&self) -> Color {
-        Color::hex_to_color(&self.background)
-    }
+/// Parses `#rrggbb`, `#rgb`, or the same without the leading `#`.
+///
+/// Works on `char`s rather than byte slices: the previous implementation
+/// indexed `&hex[0..2]` directly and panicked on any value shorter than six
+/// characters (`#fff` is the obvious one) or on a multi-byte character landing
+/// across a slice boundary — inside `terminal.draw`, leaving the terminal raw.
+fn parse_hex(hex: &str) -> Option<Color> {
+    let body = hex.strip_prefix('#').unwrap_or(hex);
+    let digits = body
+        .chars()
+        .map(|c| c.to_digit(16).map(|d| d as u8))
+        .collect::<Option<Vec<u8>>>()?;
 
-    pub fn foreground(&self) -> Color {
-        Color::hex_to_color(&self.foreground)
+    match digits[..] {
+        // Shorthand: each digit is doubled, so `#abc` is `#aabbcc`.
+        [r, g, b] => Some(Color::Rgb(r * 0x11, g * 0x11, b * 0x11)),
+        [r1, r0, g1, g0, b1, b0] => {
+            Some(Color::Rgb(r1 * 0x10 + r0, g1 * 0x10 + g0, b1 * 0x10 + b0))
+        }
+        _ => None,
     }
+}
 
-    pub fn primary(&self) -> Color {
-        Color::hex_to_color(&self.primary)
+impl fmt::Display for HexColor {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.0 {
+            Color::Rgb(r, g, b) => write!(f, "#{r:02x}{g:02x}{b:02x}"),
+            other => write!(f, "{other}"),
+        }
     }
+}
 
-    pub fn secondary(&self) -> Color {
-        Color::hex_to_color(&self.secondary)
+impl Serialize for HexColor {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(self)
     }
+}
 
-    pub fn success(&self) -> Color {
-        Color::hex_to_color(&self.success)
-    }
-
-    pub fn warning(&self) -> Color {
-        Color::hex_to_color(&self.warning)
-    }
-
-    pub fn error(&self) -> Color {
-        Color::hex_to_color(&self.error)
-    }
-
-    pub fn info(&self) -> Color {
-        Color::hex_to_color(&self.info)
-    }
-
-    pub fn muted(&self) -> Color {
-        Color::hex_to_color(&self.muted)
-    }
-
-    pub fn border(&self) -> Color {
-        Color::hex_to_color(&self.border)
-    }
-
-    pub fn surface(&self) -> Color {
-        Color::hex_to_color(&self.surface)
-    }
-
-    pub fn highlight(&self) -> Color {
-        Color::hex_to_color(&self.highlight)
-    }
-
-    pub fn accent1(&self) -> Color {
-        Color::hex_to_color(&self.accent1)
+impl<'de> Deserialize<'de> for HexColor {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = String::deserialize(deserializer)?;
+        parse_hex(&raw).map(HexColor).ok_or_else(|| {
+            serde::de::Error::custom(format!(
+                "invalid colour '{raw}': expected '#rrggbb' or '#rgb'"
+            ))
+        })
     }
 }
 
@@ -159,165 +166,6 @@ pub struct Theme {
     pub colors: Colors,
 }
 
-/// A slot in the palette, used to describe syntax colours without repeating
-/// hex strings.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Role {
-    Foreground,
-    Background,
-    Muted,
-    Primary,
-    Secondary,
-    Success,
-    Warning,
-    Error,
-    Info,
-    Highlight,
-    Accent1,
-    Accent2,
-    Accent3,
-}
-
-/// Scope → palette mapping for syntax highlighting.
-///
-/// One colour per *role* (keyword, type, function, string, number, …) so a
-/// file reads consistently. syntect scores selectors by specificity, so a more
-/// specific rule wins regardless of the order here.
-///
-/// Scope names were read out of the bundled Sublime grammars rather than
-/// guessed — guessing is what left type names and macros uncoloured before
-/// (Rust emits `entity.name.struct`, not `entity.name.type.struct`, and
-/// `support.macro`, not `support.function.macro`).
-///
-/// Note on `storage.type`: these grammars use it both for declaration keywords
-/// (Rust `let`/`fn`, Python `class`/`def`) and for primitive type names
-/// (`u64`, `str`) — `let` and `u64` carry the *identical* scope. It is
-/// therefore mapped to the keyword colour, since declaration keywords are far
-/// more common; real type names arrive as `entity.name.*` / `support.type` and
-/// get the type colour.
-const SYNTAX_RULES: &[(&str, Role, FontStyle)] = &[
-    // Fallback for identifiers; anything unmatched uses settings.foreground.
-    (
-        "source, text, variable",
-        Role::Foreground,
-        FontStyle::empty(),
-    ),
-    // Comments.
-    (
-        "comment, punctuation.definition.comment",
-        Role::Muted,
-        FontStyle::ITALIC,
-    ),
-    // Punctuation and separators stay quiet, uniformly.
-    (
-        "punctuation, punctuation.separator, punctuation.terminator, \
-         punctuation.accessor, punctuation.section, punctuation.definition, \
-         meta.brace",
-        Role::Muted,
-        FontStyle::empty(),
-    ),
-    // Keywords: `use`, `pub`, `let`, `fn`, `struct`, `impl`, `class`, `def`.
-    (
-        "keyword, keyword.other, keyword.declaration, storage, \
-         storage.modifier, storage.type",
-        Role::Primary,
-        FontStyle::empty(),
-    ),
-    (
-        "keyword.control, keyword.control.flow, keyword.control.conditional, \
-         keyword.control.import, keyword.control.exception",
-        Role::Primary,
-        FontStyle::BOLD,
-    ),
-    // Operators.
-    (
-        "keyword.operator, punctuation.definition.generic",
-        Role::Secondary,
-        FontStyle::empty(),
-    ),
-    // Type names — distinct from the keywords that introduce them.
-    (
-        "entity.name.type, entity.name.class, entity.name.struct, \
-         entity.name.enum, entity.name.trait, entity.name.interface, \
-         entity.name.impl, entity.name.union, entity.name.namespace, \
-         support.type, support.class, entity.other.inherited-class",
-        Role::Accent2,
-        FontStyle::empty(),
-    ),
-    // Functions and macros: definitions and calls share a colour.
-    (
-        "entity.name.function, variable.function, support.function, \
-         support.macro, entity.name.macro",
-        Role::Info,
-        FontStyle::empty(),
-    ),
-    // Strings.
-    (
-        "string, string.quoted, string.regexp, markup.raw, markup.inserted",
-        Role::Success,
-        FontStyle::empty(),
-    ),
-    // Interpolation inside strings must not look like string content.
-    (
-        "constant.character.escape, punctuation.definition.template-expression, \
-         meta.interpolation, string.interpolated",
-        Role::Warning,
-        FontStyle::empty(),
-    ),
-    // Numbers, booleans, null, self/this.
-    (
-        "constant, constant.numeric, constant.language, constant.other, \
-         variable.language, support.constant",
-        Role::Accent1,
-        FontStyle::empty(),
-    ),
-    // Parameters and attributes.
-    (
-        "variable.parameter, entity.other.attribute-name, \
-         entity.name.label, meta.annotation, meta.attribute",
-        Role::Accent3,
-        FontStyle::empty(),
-    ),
-    // Preprocessor / attributes-as-metadata.
-    (
-        "meta.preprocessor, keyword.other.preprocessor",
-        Role::Warning,
-        FontStyle::empty(),
-    ),
-    // Markup tags (HTML/XML/JSX) — previously coloured as operators.
-    (
-        "entity.name.tag, punctuation.definition.tag",
-        Role::Primary,
-        FontStyle::empty(),
-    ),
-    // Anything the grammar flags as broken.
-    (
-        "invalid, invalid.illegal, markup.deleted",
-        Role::Error,
-        FontStyle::empty(),
-    ),
-    ("invalid.deprecated", Role::Warning, FontStyle::empty()),
-    // Markdown and friends.
-    (
-        "markup.heading, entity.name.section",
-        Role::Highlight,
-        FontStyle::BOLD,
-    ),
-    ("markup.list, markup.quote", Role::Muted, FontStyle::empty()),
-    (
-        "markup.underline.link, markup.link",
-        Role::Info,
-        FontStyle::UNDERLINE,
-    ),
-    ("markup.italic", Role::Foreground, FontStyle::ITALIC),
-    ("markup.bold", Role::Foreground, FontStyle::BOLD),
-    (
-        "markup.changed, meta.diff",
-        Role::Warning,
-        FontStyle::empty(),
-    ),
-];
-
 impl Theme {
     /// Builds a syntect theme from this palette.
     ///
@@ -327,21 +175,21 @@ impl Theme {
     /// what the bundled Sublime grammars actually emit.
     pub fn to_syntect_theme(&self) -> SynTheme {
         let settings = ThemeSettings {
-            foreground: Some(self.syn(Role::Foreground)),
-            background: Some(self.syn(Role::Background)),
+            foreground: Some(self.syn(Colors::foreground)),
+            background: Some(self.syn(Colors::background)),
             ..ThemeSettings::default()
         };
 
         let scopes = SYNTAX_RULES
             .iter()
-            .filter_map(|(selector, role, font)| {
+            .filter_map(|(selector, slot, font)| {
                 let scope = ScopeSelectors::from_str(selector)
                     .map_err(|e| log::warn!("invalid scope selector '{selector}': {e}"))
                     .ok()?;
                 Some(ThemeItem {
                     scope,
                     style: StyleModifier {
-                        foreground: Some(self.syn(*role)),
+                        foreground: Some(self.syn(*slot)),
                         background: None,
                         font_style: Some(*font),
                     },
@@ -358,24 +206,8 @@ impl Theme {
     }
 
     /// Palette lookup in syntect's colour type.
-    fn syn(&self, role: Role) -> SynColor {
-        let hex = match role {
-            Role::Foreground => &self.colors.foreground,
-            Role::Background => &self.colors.background,
-            Role::Muted => &self.colors.muted,
-            Role::Primary => &self.colors.primary,
-            Role::Secondary => &self.colors.secondary,
-            Role::Success => &self.colors.success,
-            Role::Warning => &self.colors.warning,
-            Role::Error => &self.colors.error,
-            Role::Info => &self.colors.info,
-            Role::Highlight => &self.colors.highlight,
-            Role::Accent1 => &self.colors.accent1,
-            Role::Accent2 => &self.colors.accent2,
-            Role::Accent3 => &self.colors.accent3,
-        };
-
-        match Color::hex_to_color(hex) {
+    fn syn(&self, slot: PaletteSlot) -> SynColor {
+        match slot(&self.colors) {
             Color::Rgb(r, g, b) => SynColor { r, g, b, a: 0xFF },
             _ => SynColor {
                 r: 0,
@@ -484,6 +316,122 @@ impl Theme {
 mod tests {
     use super::*;
 
+    /// A theme file with every palette key set to `color`, so a single value
+    /// can be put under test without repeating the whole palette.
+    fn theme_toml(color: &str) -> String {
+        let keys = [
+            "background",
+            "foreground",
+            "primary",
+            "secondary",
+            "success",
+            "warning",
+            "error",
+            "info",
+            "muted",
+            "border",
+            "surface",
+            "highlight",
+            "accent1",
+            "accent2",
+            "accent3",
+        ];
+        let mut out = String::from("name = \"t\"\ndescription = \"d\"\n[colors]\n");
+        for key in keys {
+            out.push_str(&format!("{key} = \"{color}\"\n"));
+        }
+        out
+    }
+
+    #[test]
+    fn every_palette_colour_has_a_getter() {
+        let t = Theme::builtin().unwrap();
+        // accent2/accent3 had no getters at all: defined in every bundled
+        // theme, reachable from no widget.
+        for (name, got) in [
+            ("background", t.colors.background()),
+            ("foreground", t.colors.foreground()),
+            ("primary", t.colors.primary()),
+            ("secondary", t.colors.secondary()),
+            ("success", t.colors.success()),
+            ("warning", t.colors.warning()),
+            ("error", t.colors.error()),
+            ("info", t.colors.info()),
+            ("muted", t.colors.muted()),
+            ("border", t.colors.border()),
+            ("surface", t.colors.surface()),
+            ("highlight", t.colors.highlight()),
+            ("accent1", t.colors.accent1()),
+            ("accent2", t.colors.accent2()),
+            ("accent3", t.colors.accent3()),
+        ] {
+            assert!(matches!(got, Color::Rgb(_, _, _)), "{name} did not resolve");
+        }
+    }
+
+    #[test]
+    fn parses_six_digit_hex() {
+        assert_eq!(parse_hex("#1a2b3c"), Some(Color::Rgb(0x1a, 0x2b, 0x3c)));
+        assert_eq!(parse_hex("1a2b3c"), Some(Color::Rgb(0x1a, 0x2b, 0x3c)));
+        assert_eq!(parse_hex("#FFFFFF"), Some(Color::Rgb(255, 255, 255)));
+    }
+
+    #[test]
+    fn parses_three_digit_shorthand() {
+        // Each digit is doubled: #abc is #aabbcc.
+        assert_eq!(parse_hex("#abc"), Some(Color::Rgb(0xaa, 0xbb, 0xcc)));
+        assert_eq!(parse_hex("#fff"), Some(Color::Rgb(255, 255, 255)));
+        assert_eq!(parse_hex("#000"), Some(Color::Rgb(0, 0, 0)));
+    }
+
+    #[test]
+    fn rejects_malformed_hex_instead_of_panicking() {
+        // Every one of these used to panic on a raw byte slice inside
+        // terminal.draw, which left the terminal in raw mode.
+        for bad in [
+            "", "#", "#f", "#ff", "#ffff", "#fffff", "#fffffff", "#gggggg", "#12345z", "café",
+            "#ää", "#ééé", "#aaaéa",
+        ] {
+            assert_eq!(parse_hex(bad), None, "expected {bad:?} to be rejected");
+        }
+    }
+
+    #[test]
+    fn a_theme_with_a_bad_colour_is_rejected_at_load() {
+        // Exactly one key is broken, so the error must point at that key.
+        let bad = theme_toml("#1a2b3c").replace("highlight = \"#1a2b3c\"", "highlight = \"#zzz\"");
+
+        let err = Theme::from_str(&bad).expect_err("bad colour must be rejected");
+        assert_eq!(err.kind(), ErrorKind::InvalidData);
+
+        // The message must name the offending key and quote the bad value, so
+        // the theme file can actually be fixed.
+        let msg = err.to_string();
+        assert!(msg.contains("highlight"), "{msg}");
+        assert!(msg.contains("#zzz"), "{msg}");
+    }
+
+    #[test]
+    fn a_theme_missing_a_colour_is_rejected_at_load() {
+        let missing = theme_toml("#1a2b3c").replace("border = \"#1a2b3c\"\n", "");
+        let err = Theme::from_str(&missing).expect_err("incomplete palette must be rejected");
+        assert!(err.to_string().contains("border"), "{err}");
+    }
+
+    #[test]
+    fn a_theme_using_shorthand_colours_loads() {
+        let theme = Theme::from_str(&theme_toml("#fff")).expect("shorthand must be accepted");
+        assert_eq!(theme.colors.background(), Color::Rgb(255, 255, 255));
+    }
+
+    #[test]
+    fn hex_colours_round_trip_through_serde() {
+        let theme = Theme::from_str(&theme_toml("#1a2b3c")).expect("valid theme");
+        let text = toml::to_string(&theme).expect("theme must serialize");
+        let again = Theme::from_str(&text).expect("re-parse");
+        assert_eq!(again.colors.background(), theme.colors.background());
+    }
+
     #[test]
     fn theme_dirs_are_ordered_user_system_local() {
         let dirs = build_theme_dirs(
@@ -540,7 +488,7 @@ mod tests {
     }
 
     /// Colour syntect resolves for a scope stack, as an `#rrggbb` string.
-    fn color_for(theme: &Theme, scope: &str) -> String {
+    fn color_for(theme: &Theme, scope: &str) -> Color {
         use syntect::highlighting::{HighlightState, Highlighter, RangedHighlightIterator};
         use syntect::parsing::ScopeStack;
 
@@ -555,10 +503,7 @@ mod tests {
         let text = "x";
         let mut iter = RangedHighlightIterator::new(&mut state, &ops, text, &highlighter);
         let (style, _, _) = iter.next().expect("one region");
-        format!(
-            "#{:02x}{:02x}{:02x}",
-            style.foreground.r, style.foreground.g, style.foreground.b
-        )
+        Color::Rgb(style.foreground.r, style.foreground.g, style.foreground.b)
     }
 
     fn test_theme() -> Theme {
@@ -583,7 +528,7 @@ mod tests {
     #[test]
     fn keywords_share_one_colour() {
         let theme = test_theme();
-        let primary = theme.colors.primary.clone();
+        let primary = theme.colors.primary.color();
         // Rust `use`, `pub`, `let`/`fn`/`struct` (all storage.type*), Python `def`.
         for scope in [
             "keyword.other.rust",
@@ -608,7 +553,7 @@ mod tests {
         ] {
             assert_eq!(
                 color_for(&theme, scope),
-                theme.colors.accent2,
+                theme.colors.accent2.color(),
                 "scope {scope}"
             );
         }
@@ -623,7 +568,11 @@ mod tests {
             "support.macro.rust",
             "variable.function.python",
         ] {
-            assert_eq!(color_for(&theme, scope), theme.colors.info, "scope {scope}");
+            assert_eq!(
+                color_for(&theme, scope),
+                theme.colors.info.color(),
+                "scope {scope}"
+            );
         }
     }
 
@@ -632,19 +581,19 @@ mod tests {
         let theme = test_theme();
         assert_eq!(
             color_for(&theme, "comment.line.double-slash.rust"),
-            theme.colors.muted
+            theme.colors.muted.color()
         );
         assert_eq!(
             color_for(&theme, "string.quoted.double.rust"),
-            theme.colors.success
+            theme.colors.success.color()
         );
         assert_eq!(
             color_for(&theme, "constant.numeric.integer.decimal.rust"),
-            theme.colors.accent1
+            theme.colors.accent1.color()
         );
         assert_eq!(
             color_for(&theme, "variable.parameter.rust"),
-            theme.colors.accent3
+            theme.colors.accent3.color()
         );
     }
 
@@ -654,24 +603,18 @@ mod tests {
         // Regression: entity.name.tag was lumped in with keyword.operator.
         assert_eq!(
             color_for(&theme, "entity.name.tag.block.any.html"),
-            theme.colors.primary
+            theme.colors.primary.color()
         );
         assert_eq!(
             color_for(&theme, "entity.other.attribute-name.class.html"),
-            theme.colors.accent3
+            theme.colors.accent3.color()
         );
     }
 
     #[test]
-    fn hex_to_color_parses_valid_hex() {
-        let color = Color::hex_to_color("#ff5733");
-        assert_eq!(color, Color::Rgb(255, 87, 51));
-    }
-
-    #[test]
-    fn hex_to_color_handles_no_hash() {
-        let color = Color::hex_to_color("89b4fa");
-        assert_eq!(color, Color::Rgb(137, 180, 250));
+    fn parses_hex_with_and_without_a_leading_hash() {
+        assert_eq!(parse_hex("#ff5733"), Some(Color::Rgb(255, 87, 51)));
+        assert_eq!(parse_hex("89b4fa"), Some(Color::Rgb(137, 180, 250)));
     }
 
     #[test]
@@ -701,9 +644,4 @@ success = "#a6e3a1"
         assert_eq!(theme.colors.background(), Color::Rgb(30, 30, 46));
         assert_eq!(theme.colors.primary(), Color::Rgb(137, 180, 250));
     }
-
-    // Note: load_theme and get_theme_list tests are skipped because:
-    // 1. They read from the filesystem (themes/ directory)
-    // 2. load_from_file calls process::exit on error (can't test easily)
-    // 3. The themes directory may not exist in test environment
 }

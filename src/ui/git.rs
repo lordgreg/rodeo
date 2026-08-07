@@ -3,11 +3,16 @@
 //! Shells out to `git status --porcelain=v1 -z` once per pane reload and maps
 //! the result onto the names in that directory; directories aggregate the most
 //! severe status found beneath them.
+//!
+//! The same run also yields a [`RepoSummary`] for the header, so the branch and
+//! the change counts cost no extra subprocesses.
 
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
     process::Command,
+    sync::mpsc,
+    thread,
 };
 
 use ratatui::style::Color;
@@ -84,12 +89,82 @@ impl GitStatus {
     }
 }
 
-/// Maps the *name* of every direct child of `pane_dir` to its git status.
+/// Repository-wide totals plus the current branch, for the header bar.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RepoSummary {
+    /// Current branch, or `HEAD` when detached. Empty if git did not say.
+    pub branch: String,
+    /// Tracked paths that differ from HEAD (staged, unstaged, or both).
+    pub modified: usize,
+    /// Untracked paths. Ignored paths are deliberately not counted.
+    pub untracked: usize,
+}
+
+/// What one `git status` run tells us about a directory.
+///
+/// Both views come from a single invocation. The header used to run its own
+/// `git status` (plus two more `git` calls) alongside the one each pane
+/// already ran, so navigating a directory cost seven `git` processes on the
+/// UI thread; it now costs two per pane and none for the header.
+#[derive(Debug, Clone, Default)]
+pub struct RepoInfo {
+    /// Status of each direct child of the directory queried, by file name.
+    pub entries: HashMap<String, GitStatus>,
+    /// Counts across the whole repository.
+    pub summary: RepoSummary,
+}
+
+/// A [`repo_info`] call running on a worker thread.
+///
+/// `git status` is a subprocess walking a whole worktree: on a large or
+/// cold-cache repository it takes long enough to be felt, and it used to run
+/// inline in the pane reload, so every navigation froze the UI for as long as
+/// git took. The listing is now drawn immediately without a status column and
+/// the column fills in when the answer arrives, which is the one thing a
+/// background thread has to buy to be worth having.
+#[derive(Debug)]
+pub struct PendingRepoInfo {
+    rx: mpsc::Receiver<Option<RepoInfo>>,
+}
+
+impl PendingRepoInfo {
+    /// Starts the `git` calls and returns without waiting for them.
+    pub fn spawn(dir: &Path) -> Self {
+        let (tx, rx) = mpsc::channel();
+        let dir = dir.to_path_buf();
+
+        thread::spawn(move || {
+            // A send failure means the pane reloaded again and dropped the
+            // receiver, so this answer is simply no longer wanted.
+            let _ = tx.send(repo_info(&dir));
+        });
+
+        Self { rx }
+    }
+
+    /// The result if the worker has produced one. Never blocks.
+    ///
+    /// The outer `Option` is "has it finished"; the inner one is
+    /// [`repo_info`]'s own "is this a worktree at all".
+    pub fn take(&self) -> Option<Option<RepoInfo>> {
+        match self.rx.try_recv() {
+            Ok(info) => Some(info),
+            Err(mpsc::TryRecvError::Empty) => None,
+            // Disconnected without a value means the worker panicked. Report
+            // "not a repository" so the pane stops waiting for ever.
+            Err(mpsc::TryRecvError::Disconnected) => Some(None),
+        }
+    }
+}
+
+/// Git status for `pane_dir`: per-child statuses and a repository summary.
 ///
 /// Files are matched directly; directories aggregate the most severe status of
 /// any status-bearing path beneath them. Returns `None` outside a git worktree.
-pub fn status_map(pane_dir: &Path) -> Option<HashMap<String, GitStatus>> {
-    let root = repo_root(pane_dir)?;
+///
+/// Blocking, and called from a worker thread — see [`PendingRepoInfo`].
+pub fn repo_info(pane_dir: &Path) -> Option<RepoInfo> {
+    let (root, branch) = repo_head(pane_dir)?;
     let output = Command::new("git")
         .args([
             "-C",
@@ -107,19 +182,66 @@ pub fn status_map(pane_dir: &Path) -> Option<HashMap<String, GitStatus>> {
     }
 
     let statuses = parse_porcelain_z(&output.stdout, Path::new(&root));
-    Some(aggregate(pane_dir, statuses))
+    let summary = summarize(&statuses, branch);
+    Some(RepoInfo {
+        entries: aggregate(pane_dir, statuses),
+        summary,
+    })
 }
 
-fn repo_root(dir: &Path) -> Option<String> {
+/// The repository root and the current branch, in one `git` call.
+///
+/// `rev-parse` takes both questions at once and answers them on one line each,
+/// which is why this is not two spawns.
+fn repo_head(dir: &Path) -> Option<(String, String)> {
     let output = Command::new("git")
-        .args(["-C", dir.to_str()?, "rev-parse", "--show-toplevel"])
+        .args([
+            "-C",
+            dir.to_str()?,
+            "rev-parse",
+            "--show-toplevel",
+            "--abbrev-ref",
+            "HEAD",
+        ])
         .output()
         .ok()?;
     if !output.status.success() {
         return None;
     }
-    let root = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if root.is_empty() { None } else { Some(root) }
+
+    let text = String::from_utf8_lossy(&output.stdout);
+    let mut lines = text.lines();
+    let root = lines.next().unwrap_or_default().trim().to_string();
+    // Detached HEAD reports the literal `HEAD`; an unborn branch reports
+    // nothing. Neither is worth failing over — the status is still useful.
+    let branch = lines.next().unwrap_or_default().trim().to_string();
+
+    if root.is_empty() {
+        None
+    } else {
+        Some((root, branch))
+    }
+}
+
+/// Repository-wide counts for the header.
+///
+/// Ignored paths are excluded so the number means "work in progress" rather
+/// than "files git can see".
+fn summarize(statuses: &[(PathBuf, GitStatus)], branch: String) -> RepoSummary {
+    let mut summary = RepoSummary {
+        branch,
+        ..Default::default()
+    };
+
+    for (_, status) in statuses {
+        match status.kind {
+            GitEntryStatus::Untracked => summary.untracked += 1,
+            GitEntryStatus::Ignored => {}
+            _ => summary.modified += 1,
+        }
+    }
+
+    summary
 }
 
 /// Parses `git status --porcelain=v1 -z` output into (absolute path, status)
@@ -203,6 +325,97 @@ mod tests {
             kind,
             code: [' ', ' '],
         }
+    }
+
+    /// Builds a throwaway repository, or returns `None` when `git` is not
+    /// installed so the suite still runs on a machine without it.
+    fn scratch_repo() -> Option<tempfile::TempDir> {
+        let dir = tempfile::tempdir().ok()?;
+        let git = |args: &[&str]| {
+            Command::new("git")
+                .args(["-C", dir.path().to_str()?])
+                .args(args)
+                .output()
+                .ok()
+                .filter(|o| o.status.success())
+        };
+
+        git(&["init", "--initial-branch=trunk"])?;
+        git(&["config", "user.email", "t@example.com"])?;
+        git(&["config", "user.name", "t"])?;
+        std::fs::write(dir.path().join("tracked.txt"), "hello").ok()?;
+        git(&["add", "tracked.txt"])?;
+        git(&["commit", "-m", "init"])?;
+
+        Some(dir)
+    }
+
+    /// `repo_head` reads the root and the branch from one `rev-parse` call and
+    /// relies on their output order, so it is worth checking against real git.
+    #[test]
+    fn repo_info_reads_branch_and_statuses_from_a_real_repository() {
+        let Some(dir) = scratch_repo() else {
+            return; // No usable git on this machine.
+        };
+
+        std::fs::write(dir.path().join("tracked.txt"), "changed").expect("write");
+        std::fs::write(dir.path().join("fresh.txt"), "new").expect("write");
+
+        let info = repo_info(dir.path()).expect("inside a worktree");
+
+        assert_eq!(info.summary.branch, "trunk");
+        assert_eq!(info.summary.modified, 1);
+        assert_eq!(info.summary.untracked, 1);
+        assert_eq!(
+            info.entries.get("tracked.txt").map(|s| s.kind),
+            Some(GitEntryStatus::Modified)
+        );
+        assert_eq!(
+            info.entries.get("fresh.txt").map(|s| s.kind),
+            Some(GitEntryStatus::Untracked)
+        );
+    }
+
+    #[test]
+    fn repo_info_is_none_outside_a_worktree() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        assert!(repo_info(dir.path()).is_none());
+    }
+
+    #[test]
+    fn summary_counts_tracked_changes_apart_from_untracked() {
+        let out = b" M src/main.rs\0?? new.txt\0?? other.txt\0A  staged.rs\0 D gone.rs\0";
+        let summary = summarize(&parse_porcelain_z(out, &root()), "feature/x".to_string());
+
+        assert_eq!(summary.branch, "feature/x");
+        // Modified + Added + Deleted are all "work in progress".
+        assert_eq!(summary.modified, 3);
+        assert_eq!(summary.untracked, 2);
+    }
+
+    /// The pane listing needs ignored paths (they render muted), but counting
+    /// them in the header would report every file under `target/` as work.
+    #[test]
+    fn summary_ignores_ignored_paths() {
+        let out = b"!! target\0!! node_modules\0 M real.rs\0";
+        let summary = summarize(&parse_porcelain_z(out, &root()), String::new());
+
+        assert_eq!(summary.modified, 1);
+        assert_eq!(summary.untracked, 0);
+    }
+
+    #[test]
+    fn a_clean_repository_summarises_to_zero() {
+        let summary = summarize(&parse_porcelain_z(b"", &root()), "main".to_string());
+
+        assert_eq!(
+            summary,
+            RepoSummary {
+                branch: "main".to_string(),
+                modified: 0,
+                untracked: 0,
+            }
+        );
     }
 
     #[test]

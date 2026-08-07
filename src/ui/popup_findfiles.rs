@@ -24,7 +24,7 @@ use crate::{
     fs::filter::SearchFilter,
     ui::{
         component::Component,
-        filepreview::{Preview, build_dir_preview, build_preview, render_preview},
+        filepreview::{PreviewPane, build_dir_preview, build_preview},
         search::{FilterSpec, Query},
         textinput::TextInput,
         theme::Theme,
@@ -37,8 +37,9 @@ use crate::{
 pub const MIN_WIDTH_FOR_PREVIEW: u16 = 80;
 /// Marker in front of the query, standing in for the input box's old border.
 pub const PROMPT: &str = "❯ ";
-/// Share of the popup width given to the result list.
-const LIST_PERCENT: u16 = 45;
+/// Share of the popup width given to the result list. Shared with
+/// find-in-files so the two popups keep the same proportions.
+pub const LIST_PERCENT: u16 = 45;
 /// Most paths collected from the tree. A walk of a home directory can produce
 /// millions; past this many the finder stops and says the list is partial,
 /// rather than spending seconds building a list nobody can read.
@@ -81,10 +82,8 @@ pub struct FileFinder {
     truncated: bool,
     /// What the walk skipped, shown in the footer.
     filter_label: Option<String>,
-    syn_theme: Option<Arc<highlighting::Theme>>,
-    preview: Option<Preview>,
-    preview_for: Option<PathBuf>,
-    preview_scroll: i32,
+    /// Cached preview of the highlighted entry, with its scroll position.
+    preview: PreviewPane<PathBuf>,
 }
 
 impl FileFinder {
@@ -99,10 +98,7 @@ impl FileFinder {
             list_state: ListState::default(),
             truncated,
             filter_label: Some(filter.describe()),
-            syn_theme: Some(syn_theme),
-            preview: None,
-            preview_for: None,
-            preview_scroll: 0,
+            preview: PreviewPane::new(syn_theme),
         };
         finder.refilter();
         finder
@@ -151,7 +147,7 @@ impl FileFinder {
         };
         if i > 0 {
             self.list_state.select(Some(i - 1));
-            self.preview_scroll = 0;
+            self.preview.reset_scroll();
         }
     }
 
@@ -161,37 +157,35 @@ impl FileFinder {
         };
         if i + 1 < self.results.len() {
             self.list_state.select(Some(i + 1));
-            self.preview_scroll = 0;
+            self.preview.reset_scroll();
         }
     }
 
     pub fn scroll_preview(&mut self, delta: i32) {
-        self.preview_scroll = self.preview_scroll.saturating_add(delta);
+        self.preview.scroll_by(delta);
     }
 
     fn invalidate_preview(&mut self) {
-        self.preview = None;
-        self.preview_for = None;
-        self.preview_scroll = 0;
+        self.preview.invalidate();
     }
 
-    fn ensure_preview(&mut self) {
-        let Some(entry) = self.selected().cloned() else {
-            self.preview = None;
-            self.preview_for = None;
-            return;
-        };
-        if self.preview_for.as_ref() == Some(&entry.path) {
-            return;
-        }
-        self.preview = Some(if entry.is_dir {
-            build_dir_preview(&entry.path)
-        } else {
-            let theme = self.syn_theme.clone().unwrap_or_default();
-            build_preview(&entry.path, 1, &theme)
-        });
-        self.preview_for = Some(entry.path);
-        self.preview_scroll = 0;
+    /// Builds (or reuses) the preview for the current selection.
+    ///
+    /// Called before the frame, never during it: building reads a file — or
+    /// lists a directory — from disk, which has no business happening inside
+    /// a draw.
+    pub(crate) fn prepare(&mut self) {
+        let selected = self.selected().cloned();
+        let is_dir = selected.as_ref().is_some_and(|e| e.is_dir);
+
+        self.preview
+            .ensure(selected.map(|e| e.path), |path, syntax| {
+                if is_dir {
+                    build_dir_preview(path)
+                } else {
+                    build_preview(path, 1, syntax)
+                }
+            });
     }
 
     fn render_preview(&mut self, frame: &mut Frame<'_>, theme: &Theme, area: Rect) {
@@ -199,19 +193,9 @@ impl FileFinder {
             Some(entry) => entry.display(),
             None => "Preview".to_string(),
         };
-        self.ensure_preview();
-        let mut scroll = self.preview_scroll;
-        render_preview(
-            frame,
-            theme,
-            area,
-            &title,
-            self.preview.as_ref(),
-            // No anchor: a file finder preview starts at the top of the file.
-            None,
-            &mut scroll,
-        );
-        self.preview_scroll = scroll;
+
+        // No anchor: a file finder preview starts at the top of the file.
+        self.preview.render(frame, theme, area, &title, None);
     }
 }
 
@@ -296,13 +280,7 @@ fn query_mode(query: &str) -> &'static str {
 }
 
 impl Component for FileFinder {
-    fn render(
-        &mut self,
-        frame: &mut Frame<'_>,
-        theme: &Theme,
-        _ui: &crate::ui::uiconfig::UiConfig,
-        area: Rect,
-    ) {
+    fn render(&mut self, frame: &mut Frame<'_>, theme: &Theme, area: Rect) {
         let title = format!(
             " Find Files — {} of {}{} ",
             self.results.len(),

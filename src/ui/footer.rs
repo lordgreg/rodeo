@@ -16,7 +16,6 @@ use crate::ui::{
     keymap::{Action, Keymap},
     panes::PaneStats,
     theme::Theme,
-    uiconfig::UiConfig,
 };
 
 /// How long a status message stays visible.
@@ -49,37 +48,31 @@ const HINTS: &[(Action, &str)] = &[
     (Action::Quit, "Quit"),
 ];
 
-/// Turns a config-style chord (`ctrl+h`, `space`, `f5`) into something worth
-/// putting on a status bar.
-fn pretty_key(chord: &str) -> String {
-    let (prefix, key) = match chord.strip_prefix("ctrl+") {
-        Some(rest) => ("^", rest),
-        None => ("", chord),
-    };
+/// What the bar advertises while entries are selected. Same contract as
+/// [`HINTS`]: the keys come from the keymap, never from a literal.
+const SELECTION_HINTS: &[(Action, &str)] = &[
+    (Action::Copy, "Copy"),
+    (Action::Move, "Move"),
+    (Action::Delete, "Delete"),
+];
 
-    let key = match key {
-        "space" => "Space".to_string(),
-        "tab" => "Tab".to_string(),
-        "enter" => "Enter".to_string(),
-        "backspace" => "Bksp".to_string(),
-        "delete" => "Del".to_string(),
-        // Function keys are written `f5` in a config but `F5` on a keyboard.
-        other
-            if other.starts_with('f')
-                && other.len() > 1
-                && other[1..].bytes().all(|b| b.is_ascii_digit()) =>
-        {
-            other.to_uppercase()
-        }
-        other => other.to_string(),
-    };
-
-    format!("{prefix}{key}")
+/// Resolves `(action, label)` pairs against the keymap, dropping actions the
+/// user has unbound.
+fn resolve_hints(hints: &[(Action, &str)], keymap: &Keymap) -> Vec<String> {
+    hints
+        .iter()
+        .filter_map(|(action, label)| {
+            let key = keymap.display_key(*action)?;
+            Some(format!("{key} {label}"))
+        })
+        .collect()
 }
 
 #[derive(Debug, Default)]
 pub struct Footer {
     pub keymaps: Vec<String>,
+    /// Hints shown instead of [`Self::keymaps`] while entries are selected.
+    selection_keymaps: Vec<String>,
     stats: Option<PaneStats>,
     clipboard: Option<(usize, bool)>,
     status: Option<StatusMsg>,
@@ -89,13 +82,8 @@ impl Footer {
     /// Rebuilds the hint bar from the active bindings. Called at startup and
     /// again after `:so`, so the bar follows the config.
     pub fn update_hints(&mut self, keymap: &Keymap) {
-        self.keymaps = HINTS
-            .iter()
-            .filter_map(|(action, label)| {
-                let key = keymap.display_key(*action)?;
-                Some(format!("{} {label}", pretty_key(&key)))
-            })
-            .collect();
+        self.keymaps = resolve_hints(HINTS, keymap);
+        self.selection_keymaps = resolve_hints(SELECTION_HINTS, keymap);
     }
 
     pub fn set_stats(&mut self, stats: PaneStats) {
@@ -128,20 +116,22 @@ impl Footer {
     /// selected, the full key list otherwise.
     fn visible_keymaps(&self) -> Vec<String> {
         match &self.stats {
-            Some(s) if s.selected > 0 => vec![
-                format!("●{} selected", s.selected),
-                "F5 Copy".to_string(),
-                "F6 Move".to_string(),
-                "F8 Delete".to_string(),
-                "Esc Unselect".to_string(),
-            ],
+            Some(s) if s.selected > 0 => {
+                let mut hints = vec![format!("●{} selected", s.selected)];
+                hints.extend(self.selection_keymaps.iter().cloned());
+                // Esc is not a bindable action — it is handled directly in
+                // `App::handle_esc` — so it is the one label here that cannot
+                // come from the keymap.
+                hints.push("Esc Unselect".to_string());
+                hints
+            }
             _ => self.keymaps.clone(),
         }
     }
 }
 
 impl Component for Footer {
-    fn render(&mut self, frame: &mut Frame<'_>, theme: &Theme, _ui: &UiConfig, area: Rect) {
+    fn render(&mut self, frame: &mut Frame<'_>, theme: &Theme, area: Rect) {
         let bg_block = Block::default().style(Style::default().bg(theme.colors.surface()));
         let inner_area = bg_block.inner(area);
         frame.render_widget(bg_block, area);
@@ -271,6 +261,55 @@ mod tests {
 
         assert!(hints.contains(&"F5 Copy".to_string()), "{hints:?}");
         assert!(!hints.iter().any(|h| h.starts_with("Y ")), "{hints:?}");
+    }
+
+    /// The bar used to derive its labels by string-parsing the config form and
+    /// only knew how to strip `ctrl+`, so these rendered as the literal text
+    /// `alt+y` and `shift+f5`.
+    #[test]
+    fn hints_keep_modifiers_other_than_ctrl() {
+        let hints = hints_with(&[("alt+y", "copy"), ("shift+f5", "move")]);
+
+        assert!(hints.contains(&"Alt+y Copy".to_string()), "{hints:?}");
+        assert!(hints.contains(&"Shift+F5 Move".to_string()), "{hints:?}");
+    }
+
+    fn footer_with_selection(bindings: &[(&str, &str)], selected: usize) -> Vec<String> {
+        let config = Config {
+            keybindings: bindings
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+            ..Default::default()
+        };
+        let mut footer = Footer::default();
+        footer.update_hints(&build_keymap(&config));
+        footer.set_stats(PaneStats {
+            selected,
+            ..Default::default()
+        });
+        footer.visible_keymaps()
+    }
+
+    /// The selection bar hardcoded `F5 Copy` / `F6 Move` / `F8 Delete`, which
+    /// is exactly the lie `hints_follow_a_rebound_key` forbids one function
+    /// away.
+    #[test]
+    fn selection_hints_follow_the_keymap() {
+        let hints = footer_with_selection(&[], 3);
+
+        assert!(hints.contains(&"●3 selected".to_string()), "{hints:?}");
+        // The defaults bind copy/move/delete to letters, not to F-keys.
+        assert!(!hints.iter().any(|h| h.starts_with("F5 ")), "{hints:?}");
+        assert!(hints.iter().any(|h| h.ends_with(" Copy")), "{hints:?}");
+        assert!(hints.contains(&"Esc Unselect".to_string()), "{hints:?}");
+    }
+
+    #[test]
+    fn selection_hints_follow_a_rebound_key() {
+        let hints = footer_with_selection(&[("f5", "copy")], 1);
+
+        assert!(hints.contains(&"F5 Copy".to_string()), "{hints:?}");
     }
 
     /// An action the user unbound has nothing to advertise.

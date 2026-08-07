@@ -163,7 +163,7 @@ actually bound — rebind something and the bar says so.
 | `Ctrl+h` / `Ctrl+l` | Toggle hidden files / refresh |
 | `:` | Command palette |
 | `?` | Help (and the version, on the bottom border) |
-| `Esc` | Close, clear filter, clear selection, then quit |
+| `Esc` | Close popup, clear filter, then clear selection |
 | `q` | Quit |
 
 ### Midnight Commander keys

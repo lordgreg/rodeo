@@ -38,9 +38,9 @@ pub mod popup_keybinds;
 pub mod popup_preview;
 pub mod popup_trash;
 pub mod search;
+pub mod syntax;
 pub mod textinput;
 pub mod theme;
-pub mod uiconfig;
 
 use component::Component;
 use dialog::Dialog;
@@ -54,7 +54,6 @@ use popup_preview::PopupPreview;
 use popup_trash::TrashView;
 use search::Search;
 use textinput::TextInput;
-use uiconfig::UiConfig;
 
 /// A file waiting to be opened in `$EDITOR`, optionally at a line.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -135,27 +134,79 @@ pub struct Progress {
     pub is_cut: bool,
 }
 
+/// The modal layer drawn over the panes.
+///
+/// Exactly one can be open at a time, which is why this is an enum. It used to
+/// be six `Option` fields plus two booleans in `UiConfig`, and "is something
+/// modal open?" was answered by two hand-written lists — `dispatch_key`'s
+/// guard chain and `has_overlay` — that had already drifted apart: one covered
+/// the input bar but not transfers, the other the reverse.
+#[derive(Debug)]
+pub enum Overlay {
+    Preview(PopupPreview),
+    Dialog(Dialog),
+    FindInFiles(FindInFiles),
+    FindFiles(FileFinder),
+    BulkRename(BulkRename),
+    Trash(TrashView),
+    Keybinds,
+}
+
+/// Which overlay is open, without borrowing it.
+///
+/// Lets `dispatch_key` pick a handler in one `match` and still hand `&mut self`
+/// to it. Kept exhaustive by the compiler through [`Overlay::kind`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OverlayKind {
+    Preview,
+    Dialog,
+    FindInFiles,
+    FindFiles,
+    BulkRename,
+    Trash,
+    Keybinds,
+}
+
+impl Overlay {
+    pub fn kind(&self) -> OverlayKind {
+        match self {
+            Self::Preview(_) => OverlayKind::Preview,
+            Self::Dialog(_) => OverlayKind::Dialog,
+            Self::FindInFiles(_) => OverlayKind::FindInFiles,
+            Self::FindFiles(_) => OverlayKind::FindFiles,
+            Self::BulkRename(_) => OverlayKind::BulkRename,
+            Self::Trash(_) => OverlayKind::Trash,
+            Self::Keybinds => OverlayKind::Keybinds,
+        }
+    }
+}
+
+/// What the bar along the bottom is editing.
+///
+/// Deliberately *not* an [`Overlay`]: the panes stay visible and keep
+/// responding to Up/Down underneath, and the bar can sit below an open popup —
+/// `:` still opens the command line while the preview is up.
+#[derive(Debug)]
+pub enum InputMode {
+    Filter(Search),
+    Command(TextInput),
+}
+
 #[derive(Debug)]
 /// The whole application: widgets, state and everything a frame needs.
 pub struct App {
     exit: bool,
     theme: Theme,
-    ui_config: UiConfig,
     header: Header,
     footer: Footer,
     panes: Panes,
     config: Config,
-    preview: Option<PopupPreview>,
-    dialog: Option<Dialog>,
-    search: Option<Search>,
-    command: Option<TextInput>,
+    /// The modal layer, if any. See [`Overlay`].
+    pub(crate) overlay: Option<Overlay>,
+    /// What the bottom bar is editing, if anything. See [`InputMode`].
+    pub(crate) input_mode: Option<InputMode>,
     /// Live completion for the command line, recomputed as it is edited.
     completion: completion::Completion,
-    find_in_files: Option<FindInFiles>,
-    /// The file finder (`/`), open over the panes while it searches by name.
-    find_files: Option<FileFinder>,
-    bulk_rename: Option<BulkRename>,
-    trash_view: Option<TrashView>,
     clipboard: Vec<PathBuf>,
     clipboard_cut: bool,
     pending_d: bool,
@@ -211,21 +262,14 @@ impl App {
         let mut app = Self {
             exit: false,
             theme,
-            ui_config: UiConfig::new(),
             header,
             footer: Footer::default(),
             panes,
             keymap,
             config,
-            preview: None,
-            dialog: None,
-            search: None,
-            command: None,
+            overlay: None,
+            input_mode: None,
             completion: completion::Completion::default(),
-            find_in_files: None,
-            find_files: None,
-            bulk_rename: None,
-            trash_view: None,
             clipboard: Vec::new(),
             clipboard_cut: false,
             pending_d: false,
@@ -241,6 +285,10 @@ impl App {
         };
 
         app.footer.update_hints(&app.keymap);
+        // Points the header at the starting directory. The branch and counts
+        // are still being fetched on a worker thread and land a frame or two
+        // later, through `poll_git` in the event loop.
+        app.sync_header();
         app.report_keymap_warnings();
         app
     }
@@ -265,115 +313,162 @@ impl App {
             .collect::<Vec<_>>()
             .join("\n");
 
-        self.dialog = Some(Dialog::message(
+        self.overlay = Some(Overlay::Dialog(Dialog::message(
             "Keybindings",
             format!("{detail}\n\nEdit [keybindings] in config.toml, then :so to reload."),
-        ));
+        )));
     }
 
+    /// The event loop.
+    ///
+    /// Note what is *not* here: terminal setup and teardown. `ratatui::run` in
+    /// `main` owns those and hands this an already-configured terminal, so
+    /// there is no `init`/`shutdown` pair to split out. What is left is one
+    /// turn of rodeo's life, and each turn is these five steps — which used to
+    /// be a hundred lines of inline detail, and are now readable in one
+    /// screen.
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> std::io::Result<()> {
         while !self.exit {
-            terminal.draw(|frame| self.render(frame))?;
-
-            // Drain all pending filesystem events; arm the debounce timer.
-            // Access (read/open) events are ignored: rodeo itself reads files
-            // while building a preview, and reloading on those would fight the
-            // cursor.
-            while let Ok(Ok(event)) = self.fs_notify_rx.try_recv() {
-                if event.kind.is_access() {
-                    continue;
-                }
-                self.fs_debounce = Some(Instant::now());
-            }
-
-            // After 150 ms of FS silence, reload both panes and re-sync watches.
-            if self
-                .fs_debounce
-                .is_some_and(|t| t.elapsed() >= Duration::from_millis(150))
-            {
-                self.fs_debounce = None;
-                // Keep flagged entries: an external change must not wipe the
-                // user's selection.
-                self.panes.reload(&self.config, false);
-                self.header
-                    .update(self.panes.get_active_pane().path.to_string());
-                self.refresh_fs_watches();
-            }
-
-            let preview_loading = self.preview.as_ref().is_some_and(|p| p.is_loading());
-            let needs_tick =
-                self.progress.is_some() || preview_loading || self.fs_debounce.is_some();
-
-            if needs_tick {
-                // While a transfer runs, a preview is loading, or a debounce
-                // is pending, poll with a short timeout so animation stays
-                // smooth and Esc remains responsive.
-                if crossterm::event::poll(Duration::from_millis(50))? {
-                    self.handle_input()?;
-                }
-                self.pump_progress();
-            } else {
-                self.handle_input()?;
-            }
-
-            // After each input event, sync watched directories to current panes.
+            self.draw_frame(terminal)?;
+            self.absorb_filesystem_events();
+            self.wait_for_input()?;
+            // Navigation may have changed which directories matter.
             self.refresh_fs_watches();
+            self.run_pending_editor(terminal)?;
+            self.run_pending_shell_command(terminal)?;
+        }
+        Ok(())
+    }
 
-            if let Some(target) = self.pending_editor_file.take() {
-                let path = target.path.clone();
-                let mtime_before = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+    /// Settles all state the frame depends on, then paints exactly one frame.
+    fn draw_frame(&mut self, terminal: &mut DefaultTerminal) -> std::io::Result<()> {
+        // Everything the frame reads is settled before the frame starts.
+        self.prepare_frame();
+        // A background `git status` may have finished since the last frame;
+        // fold it in before painting rather than after.
+        if self.panes.poll_git() {
+            self.sync_header();
+        }
+        terminal.draw(|frame| self.render(frame))?;
+        Ok(())
+    }
 
-                let editor = self.config.editor.clone();
-                let args = target.args(&editor);
-                suspended(terminal, || {
-                    let _ = Command::new(&editor).args(&args).status();
-                })?;
-                self.after_external_program();
-
-                let mtime_after = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
-                if mtime_after != mtime_before {
-                    self.ok_status(format!("Modified: {}", path.display()));
-                }
+    /// Takes in what changed on disk while rodeo was busy elsewhere.
+    ///
+    /// Events are debounced rather than acted on directly: a single `cargo
+    /// build` produces thousands, and reloading on each would be a reload per
+    /// file written.
+    fn absorb_filesystem_events(&mut self) {
+        // Access (read/open) events are ignored: rodeo itself reads files
+        // while building a preview, and reloading on those would fight the
+        // cursor.
+        while let Ok(Ok(event)) = self.fs_notify_rx.try_recv() {
+            if event.kind.is_access() {
+                continue;
             }
+            self.fs_debounce = Some(Instant::now());
+        }
 
-            // A captured command cannot be trusted to have left the screen
-            // alone: programs that want a terminal open /dev/tty and draw on it
-            // regardless of the pipes they were given, and rodeo's diffing
-            // renderer would leave whatever they drew on screen.
-            if std::mem::take(&mut self.pending_redraw) {
-                restore_terminal_state(terminal);
+        // After 150 ms of filesystem silence, reload both panes.
+        if self
+            .fs_debounce
+            .is_some_and(|t| t.elapsed() >= Duration::from_millis(150))
+        {
+            self.fs_debounce = None;
+            // Keep flagged entries: an external change must not wipe the
+            // user's selection.
+            self.panes.reload(&self.config, false);
+            self.sync_header();
+            self.refresh_fs_watches();
+        }
+    }
+
+    /// Waits for the user, blocking only when nothing else needs attention.
+    ///
+    /// Anything with a deadline — a running transfer, a loading preview, a
+    /// pending debounce, a background `git status` — forces a short poll
+    /// instead, so those finish on their own rather than on the next keypress.
+    fn wait_for_input(&mut self) -> std::io::Result<()> {
+        let needs_tick = self.progress.is_some()
+            || self.preview().is_some_and(|p| p.is_loading())
+            || self.fs_debounce.is_some()
+            || self.panes.git_pending();
+
+        if !needs_tick {
+            return self.handle_input();
+        }
+
+        if crossterm::event::poll(Duration::from_millis(50))? {
+            self.handle_input()?;
+        }
+        self.pump_progress();
+        Ok(())
+    }
+
+    /// Hands the terminal to `$EDITOR` if something asked for it, and reports
+    /// whether the file came back changed.
+    fn run_pending_editor(&mut self, terminal: &mut DefaultTerminal) -> std::io::Result<()> {
+        let Some(target) = self.pending_editor_file.take() else {
+            return Ok(());
+        };
+
+        let path = target.path.clone();
+        let mtime_before = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+
+        let editor = self.config.editor.clone();
+        let args = target.args(&editor);
+        suspended(terminal, || {
+            let _ = Command::new(&editor).args(&args).status();
+        })?;
+        self.after_external_program();
+
+        let mtime_after = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+        if mtime_after != mtime_before {
+            self.ok_status(format!("Modified: {}", path.display()));
+        }
+        Ok(())
+    }
+
+    /// Runs a `:term` command with the screen to itself, and reports how it
+    /// went.
+    ///
+    /// The repaint comes first: a *captured* command (`:!`) cannot be trusted
+    /// to have left the screen alone, because programs that want a terminal
+    /// open `/dev/tty` and draw on it regardless of the pipes they were given,
+    /// and rodeo's diffing renderer would leave whatever they drew on screen.
+    fn run_pending_shell_command(&mut self, terminal: &mut DefaultTerminal) -> std::io::Result<()> {
+        if std::mem::take(&mut self.pending_redraw) {
+            restore_terminal_state(terminal);
+        }
+
+        let Some(command) = self.pending_terminal_command.take() else {
+            return Ok(());
+        };
+
+        let status = suspended(terminal, || {
+            let status = Command::new("sh").args(["-c", &command]).status();
+
+            // The child owned the screen; pause so its output can be read
+            // before rodeo paints over it again.
+            match &status {
+                Ok(status) if status.success() => print!("\n[:term finished] "),
+                Ok(status) => print!("\n[:term exited {}] ", exit_label(status)),
+                Err(e) => print!("\n[:term failed: {e}] "),
             }
+            print!("press Enter to return to rodeo");
+            let _ = std::io::Write::flush(&mut std::io::stdout());
+            let _ = std::io::BufRead::read_line(&mut std::io::stdin().lock(), &mut String::new());
 
-            if let Some(command) = self.pending_terminal_command.take() {
-                let status = suspended(terminal, || {
-                    let status = Command::new("sh").args(["-c", &command]).status();
+            status
+        })?;
+        self.after_external_program();
 
-                    // The child owned the screen; pause so its output can be
-                    // read before rodeo paints over it again.
-                    match &status {
-                        Ok(status) if status.success() => print!("\n[:term finished] "),
-                        Ok(status) => print!("\n[:term exited {}] ", exit_label(status)),
-                        Err(e) => print!("\n[:term failed: {e}] "),
-                    }
-                    print!("press Enter to return to rodeo");
-                    let _ = std::io::Write::flush(&mut std::io::stdout());
-                    let _ = std::io::BufRead::read_line(
-                        &mut std::io::stdin().lock(),
-                        &mut String::new(),
-                    );
-
-                    status
-                })?;
-                self.after_external_program();
-
-                match status {
-                    Ok(status) if !status.success() => {
-                        self.err_status(format!(":term — exit {}", exit_label(&status)));
-                    }
-                    Err(e) => self.err_status(format!("Cannot run: {e}")),
-                    _ => {}
-                }
+        match status {
+            Ok(status) if !status.success() => {
+                self.err_status(format!(":term — exit {}", exit_label(&status)));
             }
+            Err(e) => self.err_status(format!("Cannot run: {e}")),
+            _ => {}
         }
         Ok(())
     }
@@ -444,20 +539,198 @@ impl App {
     /// have changed anything on disk.
     fn after_external_program(&mut self) {
         self.panes.reload(&self.config, false);
-        self.header
-            .update(self.panes.get_active_pane().path.to_string());
+        self.sync_header();
+    }
+
+    /// Points the header at the active pane. The git summary comes from the
+    /// listing's own `git status` run, so this costs no subprocesses.
+    pub(crate) fn sync_header(&mut self) {
+        let pane = self.panes.get_active_pane();
+        let path = pane.path.to_string();
+        let git = pane.git_summary().cloned();
+        self.header.update(path, git);
     }
 
     /// `true` while something modal covers the panes.
+    ///
+    /// A transfer counts: it blocks further operations until it finishes.
     fn has_overlay(&self) -> bool {
-        self.ui_config.active_keybind_popup
-            || self.ui_config.active_preview_popup
-            || self.bulk_rename.is_some()
-            || self.trash_view.is_some()
-            || self.find_in_files.is_some()
-            || self.find_files.is_some()
-            || self.dialog.is_some()
-            || self.progress.is_some()
+        self.overlay.is_some() || self.progress.is_some()
+    }
+
+    /// Brings every piece of state the frame will read up to date, before the
+    /// frame starts.
+    ///
+    /// The draw is meant to be data-in, paint-out. Three overlays used to
+    /// break that: the preview popup decided a file's type and spawned its
+    /// loader from inside `render`, and both search popups read the selected
+    /// file from disk to build their preview pane — a `terminal.draw` closure
+    /// that opened files and rewrote widget state. All of that happens here
+    /// now.
+    ///
+    /// Public because it is half of the frame contract: every caller that
+    /// draws — the run loop, and the render tests — must call this first.
+    pub fn prepare_frame(&mut self) {
+        self.sync_preview_to_selection();
+
+        match &mut self.overlay {
+            Some(Overlay::Preview(preview)) => preview.prepare(),
+            Some(Overlay::FindFiles(finder)) => finder.prepare(),
+            Some(Overlay::FindInFiles(finder)) => finder.prepare(),
+            _ => {}
+        }
+    }
+
+    /// Keeps an entry-bound preview pointed at the highlighted entry.
+    ///
+    /// Free-text previews (`:!` output) are not bound to an entry and stay as
+    /// they are until closed. This used to live inside `render`, where a draw
+    /// could re-read a file from disk and swap out a widget.
+    pub(crate) fn sync_preview_to_selection(&mut self) {
+        let Some(Overlay::Preview(preview)) = &self.overlay else {
+            return;
+        };
+        let Some(shown) = preview.selected() else {
+            return;
+        };
+
+        // Compare by path only: a reload rebuilds Entry values (sizes, flags)
+        // and a full equality check would rebuild — and re-read — the preview
+        // on every frame.
+        let shown_path = shown.path.clone();
+        let current = self.panes.get_active_pane().get_selected_entry();
+        if current.as_ref().map(|e| &e.path) == Some(&shown_path) {
+            return;
+        }
+
+        // Nothing highlighted (the last entry was just deleted) closes the
+        // preview rather than leaving a dimmed, empty screen.
+        self.overlay =
+            current.map(|e| Overlay::Preview(PopupPreview::new(Some(e), self.syn_theme.clone())));
+    }
+
+    /// Which overlay is open, if any.
+    pub(crate) fn overlay_kind(&self) -> Option<OverlayKind> {
+        self.overlay.as_ref().map(Overlay::kind)
+    }
+
+    pub(crate) fn preview(&self) -> Option<&PopupPreview> {
+        match &self.overlay {
+            Some(Overlay::Preview(p)) => Some(p),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn preview_mut(&mut self) -> Option<&mut PopupPreview> {
+        match &mut self.overlay {
+            Some(Overlay::Preview(p)) => Some(p),
+            _ => None,
+        }
+    }
+
+    /// Only the tests inspect this one; production code matches on
+    /// `self.overlay` directly.
+    #[cfg(test)]
+    pub(crate) fn dialog(&self) -> Option<&Dialog> {
+        match &self.overlay {
+            Some(Overlay::Dialog(d)) => Some(d),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn find_in_files(&self) -> Option<&FindInFiles> {
+        match &self.overlay {
+            Some(Overlay::FindInFiles(f)) => Some(f),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn find_in_files_mut(&mut self) -> Option<&mut FindInFiles> {
+        match &mut self.overlay {
+            Some(Overlay::FindInFiles(f)) => Some(f),
+            _ => None,
+        }
+    }
+
+    /// Only the tests inspect this one; production code matches on
+    /// `self.overlay` directly.
+    #[cfg(test)]
+    pub(crate) fn find_files(&self) -> Option<&FileFinder> {
+        match &self.overlay {
+            Some(Overlay::FindFiles(f)) => Some(f),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn find_files_mut(&mut self) -> Option<&mut FileFinder> {
+        match &mut self.overlay {
+            Some(Overlay::FindFiles(f)) => Some(f),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn bulk_rename(&self) -> Option<&BulkRename> {
+        match &self.overlay {
+            Some(Overlay::BulkRename(b)) => Some(b),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn bulk_rename_mut(&mut self) -> Option<&mut BulkRename> {
+        match &mut self.overlay {
+            Some(Overlay::BulkRename(b)) => Some(b),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn trash_view(&self) -> Option<&TrashView> {
+        match &self.overlay {
+            Some(Overlay::Trash(t)) => Some(t),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn trash_view_mut(&mut self) -> Option<&mut TrashView> {
+        match &mut self.overlay {
+            Some(Overlay::Trash(t)) => Some(t),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn keybinds_open(&self) -> bool {
+        self.overlay_kind() == Some(OverlayKind::Keybinds)
+    }
+
+    pub(crate) fn preview_open(&self) -> bool {
+        self.overlay_kind() == Some(OverlayKind::Preview)
+    }
+
+    pub(crate) fn search(&self) -> Option<&Search> {
+        match &self.input_mode {
+            Some(InputMode::Filter(s)) => Some(s),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn search_mut(&mut self) -> Option<&mut Search> {
+        match &mut self.input_mode {
+            Some(InputMode::Filter(s)) => Some(s),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn command(&self) -> Option<&TextInput> {
+        match &self.input_mode {
+            Some(InputMode::Command(c)) => Some(c),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn command_mut(&mut self) -> Option<&mut TextInput> {
+        match &mut self.input_mode {
+            Some(InputMode::Command(c)) => Some(c),
+            _ => None,
+        }
     }
 
     /// Draws one full frame. Public to the crate so integration tests can
@@ -470,7 +743,7 @@ impl App {
         // The input bar is visible while editing a filter/command or while a
         // filter is active on the active pane.
         let filter_active = self.panes.get_active_pane().filter().is_some();
-        let show_input_bar = self.search.is_some() || self.command.is_some() || filter_active;
+        let show_input_bar = self.input_mode.is_some() || filter_active;
 
         let outer_layout = if show_input_bar {
             Layout::default()
@@ -497,17 +770,11 @@ impl App {
         } else {
             Some((self.clipboard.len(), self.clipboard_cut))
         });
-        self.header
-            .render(frame, &self.theme, &self.ui_config, outer_layout[0]);
-        self.panes
-            .render(frame, &self.theme, &self.ui_config, outer_layout[1]);
+        self.header.render(frame, &self.theme, outer_layout[0]);
+        self.panes.render(frame, &self.theme, outer_layout[1]);
         let footer_idx = outer_layout.len() - 1;
-        self.footer.render(
-            frame,
-            &self.theme,
-            &self.ui_config,
-            outer_layout[footer_idx],
-        );
+        self.footer
+            .render(frame, &self.theme, outer_layout[footer_idx]);
 
         if show_input_bar {
             self.render_input_bar(frame, outer_layout[2]);
@@ -522,59 +789,32 @@ impl App {
             dim_area(frame, frame.area());
         }
 
-        if self.ui_config.active_keybind_popup {
-            PopupKeybinds::new().render(frame, &self.theme, &self.ui_config, frame.area());
-        }
-
-        if self.ui_config.active_preview_popup {
-            // Entry-bound previews follow the selection; free text previews
-            // (e.g., `:!` output) stay until closed.
-            if let Some(shown) = self.preview.as_ref().and_then(|p| p.selected()) {
-                // Compare by path only: a reload rebuilds Entry values (sizes,
-                // flags) and a full equality check would rebuild — and re-read
-                // — the preview on every frame.
-                let shown_path = shown.path.clone();
-                let current = self.panes.get_active_pane().get_selected_entry();
-                if current.as_ref().map(|e| &e.path) != Some(&shown_path) {
-                    self.preview =
-                        current.map(|e| PopupPreview::new(Some(e), self.syn_theme.clone()));
-                }
-            }
-            if let Some(preview) = self.preview.as_mut() {
-                preview.render(frame, &self.theme, &self.ui_config, frame.area());
-            }
-        }
-
-        // Bulk rename popup renders on top of preview.
-        if let Some(br) = self.bulk_rename.as_mut() {
-            br.render(frame, &self.theme, &self.ui_config, frame.area());
-        }
-
-        // Trash view renders on top of everything except dialogs.
-        if let Some(tv) = self.trash_view.as_mut() {
-            tv.render(frame, &self.theme, &self.ui_config, frame.area());
-        }
-
-        // The two search popups render on top of the preview, centred at 80%
-        // of the screen. Only one of them can be open at a time.
+        // Only one overlay can be open, so there is no layering to get right.
+        let area = frame.area();
+        // The search popups are centred at 80% of the screen; the rest size
+        // themselves and treat `area` as the whole screen.
         let search_popup_area = ratatui::layout::Rect {
-            x: frame.area().width / 10,
-            y: frame.area().height / 10,
-            width: frame.area().width * 4 / 5,
-            height: frame.area().height * 4 / 5,
+            x: area.width / 10,
+            y: area.height / 10,
+            width: area.width * 4 / 5,
+            height: area.height * 4 / 5,
         };
-        if let Some(find) = self.find_in_files.as_mut() {
-            frame.render_widget(Clear, search_popup_area);
-            find.render(frame, &self.theme, &self.ui_config, search_popup_area);
-        }
-        if let Some(finder) = self.find_files.as_mut() {
-            frame.render_widget(Clear, search_popup_area);
-            finder.render(frame, &self.theme, &self.ui_config, search_popup_area);
-        }
 
-        // Dialogs render on top of everything.
-        if let Some(dialog) = self.dialog.as_mut() {
-            dialog.render(frame, &self.theme, &self.ui_config, frame.area());
+        match &mut self.overlay {
+            Some(Overlay::Keybinds) => PopupKeybinds::new().render(frame, &self.theme, area),
+            Some(Overlay::Preview(preview)) => preview.render(frame, &self.theme, area),
+            Some(Overlay::BulkRename(br)) => br.render(frame, &self.theme, area),
+            Some(Overlay::Trash(tv)) => tv.render(frame, &self.theme, area),
+            Some(Overlay::FindInFiles(find)) => {
+                frame.render_widget(Clear, search_popup_area);
+                find.render(frame, &self.theme, search_popup_area);
+            }
+            Some(Overlay::FindFiles(finder)) => {
+                frame.render_widget(Clear, search_popup_area);
+                finder.render(frame, &self.theme, search_popup_area);
+            }
+            Some(Overlay::Dialog(dialog)) => dialog.render(frame, &self.theme, area),
+            None => {}
         }
 
         // The progress gauge renders above everything (a transfer blocks
@@ -616,7 +856,7 @@ impl App {
             widgets::Paragraph,
         };
 
-        if self.command.is_none() || !self.completion.is_active() {
+        if self.command().is_none() || !self.completion.is_active() {
             return;
         }
 
@@ -706,14 +946,14 @@ impl App {
         use ratatui::widgets::Paragraph;
 
         let (text, style, cursor_offset): (String, Style, Option<u16>) =
-            if let Some(input) = &self.command {
+            if let Some(input) = self.command() {
                 (
                     format!(":{}", input.value),
                     Style::new().fg(self.theme.colors.foreground()),
                     Some(1 + input.cursor as u16),
                 )
             } else {
-                match &self.search {
+                match self.search() {
                     // One filter bar for both kinds of query: the prefix says
                     // how what has been typed is being read.
                     Some(s) => {

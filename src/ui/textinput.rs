@@ -1,6 +1,23 @@
 //! A single-line text field with a cursor, shared by dialogs, the command bar
 //! and the search bars.
 
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+/// What a key press did to a [`TextInput`].
+///
+/// Callers need the distinction: work derived from the *text* (a filter, a
+/// rename preview, a completion menu) only has to be redone on [`Self::Changed`],
+/// while moving the cursor leaves it valid.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextEdit {
+    /// The text changed, so anything derived from it is stale.
+    Changed,
+    /// Only the cursor moved; the text is unchanged.
+    CursorMoved,
+    /// The key means nothing to a text field — the caller should handle it.
+    Ignored,
+}
+
 /// A single-line text field with a movable cursor.
 ///
 /// The cursor is stored as a *character* index (not byte index) so multi-byte
@@ -50,11 +67,104 @@ impl TextInput {
             self.cursor += 1;
         }
     }
+
+    /// Applies one key press, reporting what it did.
+    ///
+    /// Every caller used to write this match out itself — six copies of the
+    /// same four arms across `input.rs` and `dialog.rs` — which is how
+    /// `Backspace` ended up subtly different in each of them. Keys this field
+    /// has no meaning for come back as [`TextEdit::Ignored`] so the caller can
+    /// deal with them.
+    pub fn handle_key(&mut self, key: &KeyEvent) -> TextEdit {
+        match key.code {
+            KeyCode::Backspace => {
+                self.backspace();
+                TextEdit::Changed
+            }
+            KeyCode::Left => {
+                self.left();
+                TextEdit::CursorMoved
+            }
+            KeyCode::Right => {
+                self.right();
+                TextEdit::CursorMoved
+            }
+            // Ctrl/Alt combos are never literal text. Shift is, for capitals.
+            KeyCode::Char(c)
+                if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT =>
+            {
+                self.insert(c);
+                TextEdit::Changed
+            }
+            _ => TextEdit::Ignored,
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn handle_key_reports_text_changes() {
+        let mut input = TextInput::default();
+
+        assert_eq!(
+            input.handle_key(&key(KeyCode::Char('a'))),
+            TextEdit::Changed
+        );
+        assert_eq!(
+            input.handle_key(&key(KeyCode::Backspace)),
+            TextEdit::Changed
+        );
+        assert_eq!(input.value, "");
+    }
+
+    #[test]
+    fn handle_key_separates_cursor_moves_from_edits() {
+        // Callers rebuild filters and previews only on Changed, so a cursor
+        // move must not be reported as one.
+        let mut input = TextInput::new("ab");
+
+        assert_eq!(input.handle_key(&key(KeyCode::Left)), TextEdit::CursorMoved);
+        assert_eq!(
+            input.handle_key(&key(KeyCode::Right)),
+            TextEdit::CursorMoved
+        );
+        assert_eq!(input.value, "ab");
+    }
+
+    #[test]
+    fn handle_key_accepts_shifted_characters() {
+        let mut input = TextInput::default();
+        let shift_a = KeyEvent::new(KeyCode::Char('A'), KeyModifiers::SHIFT);
+
+        assert_eq!(input.handle_key(&shift_a), TextEdit::Changed);
+        assert_eq!(input.value, "A");
+    }
+
+    #[test]
+    fn handle_key_ignores_control_combos_and_unknown_keys() {
+        // These belong to the popup around the field — Ctrl+n moves a list
+        // selection, it must never be typed into the box.
+        let mut input = TextInput::default();
+
+        for event in [
+            KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL),
+            KeyEvent::new(KeyCode::Char('d'), KeyModifiers::ALT),
+            key(KeyCode::Up),
+            key(KeyCode::Enter),
+            key(KeyCode::Esc),
+        ] {
+            assert_eq!(input.handle_key(&event), TextEdit::Ignored, "{event:?}");
+        }
+
+        assert_eq!(input.value, "");
+    }
 
     #[test]
     fn new_places_cursor_at_end() {

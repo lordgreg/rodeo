@@ -32,9 +32,6 @@ on:
         default: false
         type: boolean
 
-permissions:
-  contents: write
-
 jobs:
   release:
     runs-on: codeberg-medium

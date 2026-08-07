@@ -224,6 +224,35 @@ impl Chord {
         });
         out
     }
+
+    /// How the chord is shown to the user, e.g. `^f`, `Alt+j`, `Space`, `F5`.
+    ///
+    /// Deliberately lives beside [`Self::describe`], the config-file form. The
+    /// footer used to derive this by string-parsing `describe`'s output, which
+    /// meant two mapping tables in two files: it only ever stripped `ctrl+`, so
+    /// a binding on `alt+j` was advertised as the literal text `alt+j`.
+    pub fn label(&self) -> String {
+        let mut out = String::new();
+        if self.modifiers.contains(KeyModifiers::CONTROL) {
+            out.push('^');
+        }
+        if self.modifiers.contains(KeyModifiers::ALT) {
+            out.push_str("Alt+");
+        }
+        if self.modifiers.contains(KeyModifiers::SHIFT) {
+            out.push_str("Shift+");
+        }
+        out.push_str(&match self.code {
+            KeyCode::Char(' ') => "Space".to_string(),
+            KeyCode::Char(c) => c.to_string(),
+            KeyCode::F(n) => format!("F{n}"),
+            KeyCode::Backspace => "Bksp".to_string(),
+            KeyCode::Delete => "Del".to_string(),
+            // `Debug` already yields `Tab`, `Enter`, `Esc`, `Left`, `PageUp`…
+            other => format!("{other:?}"),
+        });
+        out
+    }
 }
 
 /// Parses `ctrl+f`, `shift+right`, `space`, `f5`, `G`, `+` …
@@ -302,15 +331,15 @@ impl Keymap {
             .map(|(_, binding)| binding)
     }
 
-    /// The key to advertise for an action in the footer hint bar: the most
-    /// recently bound one, so a key added in the config wins over the default
-    /// it sits beside. `None` when the action is unbound.
+    /// The key to advertise for an action in the footer hint bar, ready to
+    /// display: the most recently bound one, so a key added in the config wins
+    /// over the default it sits beside. `None` when the action is unbound.
     pub fn display_key(&self, action: Action) -> Option<String> {
         self.bindings
             .iter()
             .rev()
             .find(|(_, binding)| *binding == Binding::Action(action))
-            .map(|(chord, _)| chord.describe())
+            .map(|(chord, _)| chord.label())
     }
 
     /// Keys bound to an action, for the help popup.
