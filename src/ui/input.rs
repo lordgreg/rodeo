@@ -1228,7 +1228,7 @@ impl App {
 
         match cmd {
             "q" | "quit" => self.exit = true,
-            "w" | "write" => match Config::save_config(&self.config, None) {
+            "w" | "write" => match Config::save_config(&self.config, &self.config_path) {
                 Ok(()) => self.ok_status("Configuration saved".to_string()),
                 Err(e) => self.err_status(format!("Cannot save config: {e}")),
             },
@@ -1276,7 +1276,9 @@ impl App {
     /// `:source` — reload the config file at runtime and apply it (theme
     /// included when it changed).
     fn reload_config(&mut self) {
-        match Config::load_config(None) {
+        // Cloned so the match does not hold a borrow of `self` across the arms.
+        let path = self.config_path.clone();
+        match Config::load_config_at(&path) {
             Ok(config) => {
                 let theme_name = config.theme.clone();
                 let theme_changed = theme_name != self.config.theme;
@@ -2145,6 +2147,76 @@ mod tests {
         // Ctrl+g used to be hardcoded; it now comes from the same table.
         app.dispatch_key(&key(KeyCode::Char('g'), KeyModifiers::CONTROL));
         assert!(app.find_in_files().is_some());
+    }
+
+    /// `--config` has to hold for the whole session: `:w` and `:so` used to
+    /// resolve the default location afresh, so a session started on one file
+    /// saved to and reloaded from another.
+    mod the_config_in_force {
+        use super::*;
+
+        #[test]
+        fn write_saves_to_the_config_that_was_loaded() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("rodeo.toml");
+            let mut app = test_app(dir.path());
+            app.config_path = path.clone();
+
+            app.run_command("w");
+
+            assert!(path.exists(), "`:w` wrote somewhere else");
+            assert_eq!(app.footer.status_text(), Some("Configuration saved"));
+        }
+
+        #[test]
+        fn source_reloads_the_config_that_was_loaded() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("rodeo.toml");
+            let mut app = test_app(dir.path());
+            app.config_path = path.clone();
+
+            assert!(!app.config.show_hidden);
+            std::fs::write(&path, "show_hidden = true").unwrap();
+            app.run_command("so");
+
+            assert!(app.config.show_hidden, "`:so` read a different file");
+        }
+
+        /// `:so` rebuilds the keymap, which is the point of it.
+        #[test]
+        fn source_picks_up_a_rebound_key_from_that_file() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("rodeo.toml");
+            let mut app = test_app(dir.path());
+            app.config_path = path.clone();
+
+            std::fs::write(&path, "[keybindings]\n\"Z\" = \"help\"\n").unwrap();
+            app.run_command("so");
+
+            press(&mut app, 'Z');
+            assert!(app.keybinds_open());
+        }
+
+        /// A round trip through the same path: what `:w` writes, `:so` reads.
+        #[test]
+        fn what_write_saves_source_reads_back() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("rodeo.toml");
+            let mut app = test_app(dir.path());
+            app.config_path = path.clone();
+
+            app.config.show_hidden = true;
+            app.run_command("w");
+
+            app.config.show_hidden = false;
+            app.run_command("so");
+
+            assert!(app.config.show_hidden);
+        }
+    }
+
+    fn press(app: &mut App, c: char) {
+        app.dispatch_key(&key(KeyCode::Char(c), KeyModifiers::NONE));
     }
 
     /// Bookmarks: `b` toggles the entry under the cursor, `B` lists them, and

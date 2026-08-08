@@ -93,7 +93,9 @@ from.
 
 ## Configuration
 
-`~/.config/rodeo/config.toml`, created with defaults on first run.
+`~/.config/rodeo/config.toml`, created with defaults on first run. `--config
+<FILE>` uses that file instead, for the whole session: `:w` writes it, `:so`
+re-reads it, and it is created with defaults if it is not there yet.
 
 ```toml
 theme = "catppuccin-macchiato"      # name in the themes directory, or a path to a .toml

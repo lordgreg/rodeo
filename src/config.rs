@@ -175,13 +175,13 @@ impl Config {
         }
     }
 
-    pub fn load_config_from_file(filename: &str) -> io::Result<Config> {
-        let config_str = match std::fs::read_to_string(filename) {
+    pub fn load_config_from_file(path: &Path) -> io::Result<Config> {
+        let config_str = match std::fs::read_to_string(path) {
             Ok(s) => s,
             Err(_) => {
                 // rodeo used YAML before 0.2. Point the user at their old file
                 // instead of silently starting with defaults.
-                let legacy = Path::new(filename).with_extension("yaml");
+                let legacy = path.with_extension("yaml");
                 if legacy.exists() {
                     let msg = format!(
                         "rodeo now reads {CONFIG_FILENAME}; your old {} is ignored. \
@@ -192,14 +192,16 @@ impl Config {
                     eprintln!("warning: {msg}");
                 }
 
-                let default_config_path = Self::get_config_path(None);
+                // The file that was asked for, not the default location:
+                // `--config ./new.toml` used to create the *user's* config and
+                // leave `./new.toml` missing.
                 warn!(
-                    "Config file not found, creating default config at {:?}",
-                    default_config_path.to_str()
+                    "Config file not found, creating default config at {}",
+                    path.display()
                 );
 
                 let config = Config::default();
-                Self::save_config(&config, default_config_path.to_str())?;
+                Self::save_config(&config, path)?;
                 return Ok(config);
             }
         };
@@ -227,12 +229,18 @@ impl Config {
         }
     }
 
-    pub fn save_config(config: &Config, filename: Option<&str>) -> io::Result<()> {
+    /// Writes the configuration to `path`.
+    ///
+    /// Takes the path rather than an `Option` that falls back to the default
+    /// location. That fallback was the bug behind `:w`: the caller already knew
+    /// which file had been read, passed `None` anyway, and a session started
+    /// with `--config ./rodeo.toml` wrote its settings to the user's real
+    /// `config.toml` instead.
+    pub fn save_config(config: &Config, path: &Path) -> io::Result<()> {
         let config_str = toml::to_string_pretty(config)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
-        let config_path = Self::get_config_path(filename);
-        let parent_dir = config_path.parent().ok_or_else(|| {
+        let parent_dir = path.parent().ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::NotFound,
                 "config path has no parent directory",
@@ -240,20 +248,15 @@ impl Config {
         })?;
 
         std::fs::create_dir_all(parent_dir)?;
-        std::fs::write(&config_path, config_str)?;
+        std::fs::write(path, config_str)?;
 
-        info!("Config saved to {:?}", &config_path.to_str());
+        info!("Config saved to {}", path.display());
         Ok(())
     }
 
-    pub fn load_config(filename: Option<&str>) -> io::Result<Config> {
-        let config_path = Self::get_config_path(filename);
-        let path = config_path.to_str().ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::NotFound,
-                "cannot get config path.".to_string(),
-            )
-        })?;
+    /// Reads the configuration at `path`, repairing start directories that no
+    /// longer exist. Writes a default file when there is nothing there.
+    pub fn load_config_at(path: &Path) -> io::Result<Config> {
         let mut config = Self::load_config_from_file(path)?;
         config.repair_initial_dirs();
         Ok(config)
@@ -389,6 +392,96 @@ help = "H"
         assert!(!config.filter_hidden);
         assert_eq!(config.filter_entries, vec!["target", "*.lock"]);
         assert_eq!(config.keybindings.get("quit"), Some(&"Q".to_string()));
+    }
+
+    /// `--config` has to hold for the whole session. These pin the three
+    /// places that used to resolve the default location afresh and so wrote to,
+    /// or read from, the user's real `config.toml` instead.
+    mod the_file_that_was_asked_for {
+        use super::*;
+
+        fn temp() -> tempfile::TempDir {
+            tempfile::tempdir().expect("temp dir")
+        }
+
+        #[test]
+        fn saving_writes_to_the_path_it_is_given() {
+            let dir = temp();
+            let path = dir.path().join("rodeo.toml");
+
+            let config = Config {
+                theme: "nord".to_string(),
+                ..Default::default()
+            };
+            Config::save_config(&config, &path).unwrap();
+
+            assert!(path.exists());
+            assert!(std::fs::read_to_string(&path).unwrap().contains("nord"));
+        }
+
+        #[test]
+        fn saving_creates_the_directory_it_needs() {
+            let dir = temp();
+            let path = dir.path().join("nested/deeper/config.toml");
+
+            Config::save_config(&Config::default(), &path).unwrap();
+
+            assert!(path.exists());
+        }
+
+        /// `--config ./new.toml` used to create the *user's* config file and
+        /// leave `./new.toml` missing.
+        #[test]
+        fn a_config_that_is_not_there_is_created_where_it_was_asked_for() {
+            let dir = temp();
+            let path = dir.path().join("rodeo.toml");
+
+            let config = Config::load_config_at(&path).unwrap();
+
+            assert!(path.exists(), "the default was written to the wrong file");
+            assert_eq!(config.theme, Config::default().theme);
+            // And nowhere else in the directory.
+            let written: Vec<_> = std::fs::read_dir(dir.path())
+                .unwrap()
+                .map(|e| e.unwrap().file_name())
+                .collect();
+            assert_eq!(written, ["rodeo.toml"]);
+        }
+
+        #[test]
+        fn a_config_is_read_back_from_the_path_it_was_written_to() {
+            let dir = temp();
+            let path = dir.path().join("rodeo.toml");
+
+            let config = Config {
+                theme: "nord".to_string(),
+                show_hidden: true,
+                ..Default::default()
+            };
+            Config::save_config(&config, &path).unwrap();
+
+            let read = Config::load_config_at(&path).unwrap();
+
+            assert_eq!(read.theme, "nord");
+            assert!(read.show_hidden);
+        }
+
+        #[test]
+        fn an_explicit_config_path_is_used_verbatim() {
+            assert_eq!(
+                Config::get_config_path(Some("./rodeo.toml")),
+                PathBuf::from("./rodeo.toml")
+            );
+        }
+
+        #[test]
+        fn a_malformed_config_is_an_error_rather_than_silent_defaults() {
+            let dir = temp();
+            let path = dir.path().join("rodeo.toml");
+            std::fs::write(&path, "theme = = broken").unwrap();
+
+            assert!(Config::load_config_at(&path).is_err());
+        }
     }
 
     #[test]

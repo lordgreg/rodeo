@@ -1,5 +1,18 @@
 # Unreleased
 
+## Fixed
+
+* `--config` now holds for the whole session. `:w` wrote to
+  `~/.config/rodeo/config.toml` whatever file had been loaded, so a session
+  started with `--config ./rodeo.toml` silently overwrote the user's real
+  configuration; `:so` read that same wrong file back; and a `--config`
+  pointing at a file that did not exist yet created the default in the user's
+  configuration directory and left the named one missing. All three resolved
+  the default location afresh instead of using the path the session was
+  started with. `Config::save_config` takes the path to write rather than an
+  `Option` that falls back to the default, so the fallback can no longer be
+  reached by accident.
+
 ## Changed
 
 * **Bulk rename moved from `B` to `R`.** `b` and `B` are now bookmarks, which

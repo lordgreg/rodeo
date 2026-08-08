@@ -248,11 +248,15 @@ pub struct App {
     /// `--config` keeps its bookmarks beside it, and so tests can point at a
     /// temporary directory instead of the user's real one.
     bookmarks_path: PathBuf,
+    /// The file the configuration was read from, and the one `:w` writes and
+    /// `:so` re-reads. Both used to resolve the default location afresh and so
+    /// ignored `--config`.
+    pub(crate) config_path: PathBuf,
 }
 
 impl App {
-    /// `config_path` is the file `config` was read from: bookmarks are stored
-    /// beside it.
+    /// `config_path` is the file `config` was read from: `:w` writes it, `:so`
+    /// re-reads it, and bookmarks are stored beside it.
     pub fn new(theme: Theme, config: Config, config_path: &Path) -> Self {
         let panes = Panes::new(&config);
         let bookmarks_path = Bookmarks::beside(config_path);
@@ -302,6 +306,7 @@ impl App {
             syn_theme,
             bookmarks,
             bookmarks_path,
+            config_path: config_path.to_path_buf(),
         };
 
         app.footer.update_hints(&app.keymap);
