@@ -38,6 +38,7 @@ pub mod popup_bulkrename;
 pub mod popup_findfiles;
 pub mod popup_findinfiles;
 pub mod popup_keybinds;
+pub mod popup_permissions;
 pub mod popup_preview;
 pub mod popup_trash;
 pub mod search;
@@ -54,6 +55,7 @@ use popup_bulkrename::BulkRename;
 use popup_findfiles::FileFinder;
 use popup_findinfiles::FindInFiles;
 use popup_keybinds::PopupKeybinds;
+use popup_permissions::PermissionsEditor;
 use popup_preview::PopupPreview;
 use popup_trash::TrashView;
 use search::{FilterSpec, Search};
@@ -148,13 +150,17 @@ pub struct Progress {
 /// the input bar but not transfers, the other the reverse.
 #[derive(Debug)]
 pub enum Overlay {
-    Preview(PopupPreview),
+    // Boxed: `PopupPreview` is by far the largest variant (it can hold a
+    // decoded image), and an `Option<Overlay>` field pays that size on every
+    // frame regardless of which overlay — or none — is open.
+    Preview(Box<PopupPreview>),
     Dialog(Dialog),
     FindInFiles(FindInFiles),
     FindFiles(FileFinder),
     BulkRename(BulkRename),
     Trash(TrashView),
     Bookmarks(BookmarksView),
+    Permissions(PermissionsEditor),
     Keybinds,
 }
 
@@ -171,6 +177,7 @@ pub enum OverlayKind {
     BulkRename,
     Trash,
     Bookmarks,
+    Permissions,
     Keybinds,
 }
 
@@ -184,6 +191,7 @@ impl Overlay {
             Self::BulkRename(_) => OverlayKind::BulkRename,
             Self::Trash(_) => OverlayKind::Trash,
             Self::Bookmarks(_) => OverlayKind::Bookmarks,
+            Self::Permissions(_) => OverlayKind::Permissions,
             Self::Keybinds => OverlayKind::Keybinds,
         }
     }
@@ -630,8 +638,9 @@ impl App {
 
         // Nothing highlighted (the last entry was just deleted) closes the
         // preview rather than leaving a dimmed, empty screen.
-        self.overlay =
-            current.map(|e| Overlay::Preview(PopupPreview::new(Some(e), self.syn_theme.clone())));
+        self.overlay = current.map(|e| {
+            Overlay::Preview(Box::new(PopupPreview::new(Some(e), self.syn_theme.clone())))
+        });
     }
 
     /// Which overlay is open, if any.
@@ -704,6 +713,23 @@ impl App {
     pub(crate) fn bulk_rename_mut(&mut self) -> Option<&mut BulkRename> {
         match &mut self.overlay {
             Some(Overlay::BulkRename(b)) => Some(b),
+            _ => None,
+        }
+    }
+
+    /// Only the tests inspect this one; production code applies through
+    /// `permissions_editor_mut`.
+    #[cfg(test)]
+    pub(crate) fn permissions_editor(&self) -> Option<&PermissionsEditor> {
+        match &self.overlay {
+            Some(Overlay::Permissions(p)) => Some(p),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn permissions_editor_mut(&mut self) -> Option<&mut PermissionsEditor> {
+        match &mut self.overlay {
+            Some(Overlay::Permissions(p)) => Some(p),
             _ => None,
         }
     }
@@ -863,6 +889,7 @@ impl App {
             Some(Overlay::BulkRename(br)) => br.render(frame, &self.theme, area),
             Some(Overlay::Trash(tv)) => tv.render(frame, &self.theme, area),
             Some(Overlay::Bookmarks(bv)) => bv.render(frame, &self.theme, area),
+            Some(Overlay::Permissions(pe)) => pe.render(frame, &self.theme, area),
             Some(Overlay::FindInFiles(find)) => {
                 frame.render_widget(Clear, search_popup_area);
                 find.render(frame, &self.theme, search_popup_area);

@@ -25,26 +25,24 @@ runtime dependencies or a scripting layer.
    copy/move/delete/rename operations with `u` to reverse. Delete already
    routes through `trash`, so this is mostly bookkeeping plus reversing
    copy/move/rename.
-4. **Permission/ownership editor + symlink creation.** A small popup (like
-   `popup_bulkrename.rs`) for chmod (octal + rwx toggles) and chown, plus a
-   "create symlink" command. No new deps — `libc` is already pulled in.
-5. **Duplicate-file / hash finder.** Background-thread scan (same spawn
+4. **Duplicate-file / hash finder.** Background-thread scan (same spawn
    pattern as git status / `notify`) that hashes files under a pane and
    flags content duplicates, not just name matches.
-6. **Per-extension user actions.** Config-driven "open with," e.g. an
+5. **Per-extension user actions.** Config-driven "open with," e.g. an
    `[actions]` table mapping globs to shell commands (`*.pdf = "zathura %f"`).
    Reuses the `%f` expansion already implemented for `:!`/`:term`.
-7. **Directory tree panel.** A collapsible tree view as an alternative to the
+6. **Directory tree panel.** A collapsible tree view as an alternative to the
    flat listing for one pane, for faster jumps in deep trees.
-8. **Act on find-files / find-in-files results.** Multi-select hits in the
+7. **Act on find-files / find-in-files results.** Multi-select hits in the
    Telescope-style popups and batch-delete/copy/move them through the
    existing `fs/ops.rs` worker, instead of only navigate/open-in-`$EDITOR`.
-9. **Remote panel via SSH tooling.** Shell out to `ssh`/`sftp`/`rsync` (same
+8. **Remote panel via SSH tooling.** Shell out to `ssh`/`sftp`/`rsync` (same
    philosophy as shelling to `git` rather than linking `libgit2`) to browse
    and transfer to a remote host. Highest effort of the list; only worth it
    if remote workflows matter to users.
 
-*Archive VFS was #1 here — done, see Completed below.*
+*Archive VFS and the permissions/ownership editor were #1 and #4 here —
+done, see Completed below.*
 
 ---
 
@@ -71,6 +69,26 @@ runtime dependencies or a scripting layer.
   is-a-directory hierarchy to walk — sharing one function would have forced
   an awkward shape onto one side or the other. Nested archives and opening
   a file from inside one are explicitly out of scope.
+- **Permission/ownership editor + symlink creation.** `C` opens a popup with
+  an octal field kept in sync with a 3×3 rwx toggle grid (arrows/hjkl move,
+  Space flips a bit, typing a digit 0–7 sets a whole owner/group/other row at
+  once) plus owner/group fields that take a name or a numeric id; it applies
+  to every selected target at once, seeded from the first when it opens, and
+  refuses to close on an unresolvable name rather than silently doing
+  nothing. `L` — mnemonic "Link", shifted like `Y`/`M` since it names the
+  other pane — symlinks the selection there, pointing at each source's
+  absolute path (`std::path::absolute`, which does not resolve symlinks the
+  way `canonicalize` would, so linking to a link stays a link to a link).
+  chmod is pure `std`; chown is a new `libc::chown` FFI call (the first
+  besides `header.rs`'s `statvfs`) — both follow a symlink to its target,
+  matching plain `chmod`/`chown` in a shell, which is also why `Entry`'s new
+  raw mode/uid/gid fields are read from the *target*'s stat for a symlink,
+  unlike the link's-own-stat the `permissions`/`owner` display columns
+  already used. `fs/passwd.rs` is `panes.rs`'s old `/etc/passwd` uid→name
+  lookup pulled out and extended with the reverse direction and `/etc/group`,
+  so the popup can resolve what someone types either way. Both actions are
+  refused inside an archive pane, alongside the rest of the write-blocked
+  set.
 
 ### 0.2.0 — the seven priority items
 

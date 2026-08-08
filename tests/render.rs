@@ -127,6 +127,19 @@ fn renders_every_overlay() {
         draw(&mut app, 120, 30);
     }
 
+    // Closes the Create dialog the loop above left open, then covers the
+    // permissions/ownership popup the same way.
+    for key in [
+        crossterm::event::KeyCode::Esc,
+        crossterm::event::KeyCode::Char('C'),
+    ] {
+        app.dispatch_key(&crossterm::event::KeyEvent::new(
+            key,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        draw(&mut app, 120, 30);
+    }
+
     app.dispatch_key(&crossterm::event::KeyEvent::new(
         crossterm::event::KeyCode::Esc,
         crossterm::event::KeyModifiers::NONE,

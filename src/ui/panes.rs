@@ -200,6 +200,12 @@ pub struct Entry {
     pub permissions: String,
     /// Owning user name (falling back to the numeric uid).
     pub owner: String,
+    /// Raw Unix permission bits (e.g. `0o755`), the link's own — same source
+    /// as `permissions` — for the permissions/ownership popup to seed from.
+    /// `0` for entries with no real filesystem backing (`..`, archive rows).
+    pub raw_mode: u32,
+    pub raw_uid: u32,
+    pub raw_gid: u32,
 }
 
 impl Entry {
@@ -290,6 +296,14 @@ impl Entry {
             })
             .unwrap_or_else(|| ("-".to_string(), "-".to_string(), 0, SystemTime::UNIX_EPOCH));
 
+        // Raw mode/uid/gid come from `stat`, the same metadata `size` and
+        // `modified` already use — the *target*'s, for a symlink — because
+        // this is what the permissions popup seeds its fields from, and
+        // chmod/chown there follow a symlink to its target. `permissions`/
+        // `owner` above are the link's own for display, deliberately: two
+        // different, both correct, readings of the same stat call.
+        let (raw_mode, raw_uid, raw_gid) = raw_ids(stat);
+
         Self {
             kind,
             path,
@@ -305,6 +319,9 @@ impl Entry {
             dir_size: None,
             permissions,
             owner,
+            raw_mode,
+            raw_uid,
+            raw_gid,
         }
     }
 
@@ -329,6 +346,9 @@ impl Entry {
             dir_size: None,
             permissions: "-".to_string(),
             owner: "-".to_string(),
+            raw_mode: 0,
+            raw_uid: 0,
+            raw_gid: 0,
         }
     }
 
@@ -366,6 +386,9 @@ impl Entry {
             dir_size: None,
             permissions: "-".to_string(),
             owner: "-".to_string(),
+            raw_mode: 0,
+            raw_uid: 0,
+            raw_gid: 0,
         }
     }
 
@@ -388,6 +411,9 @@ impl Entry {
             dir_size: None,
             permissions: "-".to_string(),
             owner: "-".to_string(),
+            raw_mode: 0,
+            raw_uid: 0,
+            raw_gid: 0,
         }
     }
 }
@@ -1593,6 +1619,22 @@ impl Component for Panes {
     }
 }
 
+/// Raw `(mode, uid, gid)` for the permissions/ownership popup to seed from.
+/// `(0, 0, 0)` when there is no metadata, or on a platform without them.
+fn raw_ids(meta: Option<&std::fs::Metadata>) -> (u32, u32, u32) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        meta.map(|m| (m.mode(), m.uid(), m.gid()))
+            .unwrap_or_default()
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = meta;
+        (0, 0, 0)
+    }
+}
+
 /// Unix mode as `rwxr-xr-x`. Empty on platforms without unix permissions.
 fn format_permissions(meta: &std::fs::Metadata) -> String {
     #[cfg(unix)]
@@ -1632,45 +1674,13 @@ fn owner_of(meta: &std::fs::Metadata) -> String {
         use std::os::unix::fs::MetadataExt;
 
         let uid = meta.uid();
-        user_name(uid).unwrap_or_else(|| uid.to_string())
+        crate::fs::passwd::user_name(uid).unwrap_or_else(|| uid.to_string())
     }
     #[cfg(not(unix))]
     {
         let _ = meta;
         "-".to_string()
     }
-}
-
-/// uid → user name from `/etc/passwd`, read once.
-///
-/// Deliberately dependency-free: this is a cosmetic column, not worth a crate.
-/// Users that only exist in a directory service (LDAP/SSSD) are not in
-/// `/etc/passwd`, so callers fall back to the numeric uid.
-#[cfg(unix)]
-fn user_name(uid: u32) -> Option<String> {
-    use std::sync::OnceLock;
-
-    static USERS: OnceLock<std::collections::HashMap<u32, String>> = OnceLock::new();
-
-    let users = USERS.get_or_init(|| {
-        let mut map = std::collections::HashMap::new();
-        let Ok(passwd) = std::fs::read_to_string("/etc/passwd") else {
-            return map;
-        };
-        for line in passwd.lines() {
-            let mut fields = line.split(':');
-            let (Some(name), Some(_), Some(uid)) = (fields.next(), fields.next(), fields.next())
-            else {
-                continue;
-            };
-            if let Ok(uid) = uid.parse::<u32>() {
-                map.entry(uid).or_insert_with(|| name.to_string());
-            }
-        }
-        map
-    });
-
-    users.get(&uid).cloned()
 }
 
 /// The two porcelain characters, coloured so staged and unstaged changes are
@@ -1943,6 +1953,42 @@ mod tests {
 
             assert!(!entry.is_symlink);
             assert_eq!(entry.link_target, None);
+        }
+
+        #[cfg(unix)]
+        #[test]
+        fn raw_mode_and_ids_match_a_real_stat() {
+            use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+            let tmp = tempfile::NamedTempFile::new().unwrap();
+            std::fs::set_permissions(tmp.path(), std::fs::Permissions::from_mode(0o640)).unwrap();
+            let meta = std::fs::metadata(tmp.path()).unwrap();
+
+            let entry = Entry::new(tmp.path().to_path_buf());
+
+            assert_eq!(entry.raw_mode & 0o777, 0o640);
+            assert_eq!(entry.raw_uid, meta.uid());
+            assert_eq!(entry.raw_gid, meta.gid());
+        }
+
+        /// The permissions popup edits what chmod/chown actually follow to,
+        /// so a symlink's raw fields describe its *target*, not the link's
+        /// own (meaningless on Linux, where every symlink shows `777`).
+        #[cfg(unix)]
+        #[test]
+        fn a_symlinks_raw_mode_is_its_targets_not_its_own() {
+            use std::os::unix::fs::PermissionsExt;
+
+            let dir = tempfile::tempdir().unwrap();
+            let file = dir.path().join("real.txt");
+            std::fs::File::create(&file).unwrap();
+            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
+            let link = dir.path().join("link.txt");
+            std::os::unix::fs::symlink(&file, &link).unwrap();
+
+            let entry = Entry::new(link);
+
+            assert_eq!(entry.raw_mode & 0o777, 0o600);
         }
 
         /// The listing path reuses the stat `read_dir` already did. That is
@@ -2855,6 +2901,9 @@ mod tests {
                 dir_size: None,
                 permissions: "rw-r--r--".to_string(),
                 owner: "tester".to_string(),
+                raw_mode: 0,
+                raw_uid: 0,
+                raw_gid: 0,
             }
         }
 

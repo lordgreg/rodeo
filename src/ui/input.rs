@@ -19,6 +19,7 @@ use super::{
     popup_bulkrename::BulkRename,
     popup_findfiles::FileFinder,
     popup_findinfiles::FindInFiles,
+    popup_permissions::{Field, PermissionsEditor},
     popup_preview::PopupPreview,
     popup_trash::TrashView,
     search::{FilterSpec, Search},
@@ -133,6 +134,7 @@ impl App {
             Some(OverlayKind::BulkRename) => self.handle_bulk_rename_key(key_event),
             Some(OverlayKind::Trash) => self.handle_trash_key(key_event),
             Some(OverlayKind::Bookmarks) => self.handle_bookmarks_key(key_event),
+            Some(OverlayKind::Permissions) => self.handle_permissions_key(key_event),
             // These two leave the panes usable underneath, so a key they do
             // not claim falls through to the normal bindings.
             Some(OverlayKind::Preview | OverlayKind::Keybinds) => {
@@ -675,6 +677,92 @@ impl App {
         }
     }
 
+    fn handle_permissions_key(&mut self, key: &KeyEvent) {
+        match key.code {
+            KeyCode::Esc => self.overlay = None,
+            KeyCode::Enter => self.apply_permissions(),
+            KeyCode::Tab => {
+                if let Some(pe) = self.permissions_editor_mut() {
+                    pe.next_field();
+                }
+            }
+            KeyCode::BackTab => {
+                if let Some(pe) = self.permissions_editor_mut() {
+                    pe.prev_field();
+                }
+            }
+            _ => {
+                let Some(pe) = self.permissions_editor_mut() else {
+                    return;
+                };
+                match pe.focus {
+                    // The grid owns Left/Right/Up/Down/Space/digits/Backspace
+                    // here — there is no text cursor to move, only the
+                    // highlighted cell.
+                    Field::Mode => match key.code {
+                        KeyCode::Left | KeyCode::Char('h') => pe.move_cursor(0, -1),
+                        KeyCode::Right | KeyCode::Char('l') => pe.move_cursor(0, 1),
+                        KeyCode::Up | KeyCode::Char('k') => pe.move_cursor(-1, 0),
+                        KeyCode::Down | KeyCode::Char('j') => pe.move_cursor(1, 0),
+                        KeyCode::Char(' ') => pe.toggle_bit(),
+                        KeyCode::Backspace => pe.backspace_mode(),
+                        KeyCode::Char(c @ '0'..='7') => pe.type_digit(c as u8 - b'0'),
+                        _ => {}
+                    },
+                    Field::Owner => {
+                        pe.owner.handle_key(key);
+                    }
+                    Field::Group => {
+                        pe.group.handle_key(key);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Applies the permissions popup: chmod, then chown (only the fields
+    /// that were not left blank), across every target. Stops and reports
+    /// rather than closing when a name does not resolve, so a typo can be
+    /// fixed instead of silently doing nothing.
+    fn apply_permissions(&mut self) {
+        let Some(pe) = self.permissions_editor_mut() else {
+            return;
+        };
+
+        let mode = pe.resolved_mode();
+        let (owner, group) = match (pe.resolved_owner(), pe.resolved_group()) {
+            (Ok(owner), Ok(group)) => (owner, group),
+            (Err(e), _) | (_, Err(e)) => {
+                pe.error = Some(e);
+                return;
+            }
+        };
+        let targets = pe.targets.clone();
+
+        self.overlay = None;
+        let mut errors = 0usize;
+        for target in &targets {
+            if let Err(e) = ops::chmod_entry(target, mode) {
+                log::error!("chmod {}: {e}", target.display());
+                errors += 1;
+                continue;
+            }
+            if (owner.is_some() || group.is_some())
+                && let Err(e) = ops::chown_entry(target, owner, group)
+            {
+                log::error!("chown {}: {e}", target.display());
+                errors += 1;
+            }
+        }
+
+        self.panes.reload(&self.config, false);
+        if errors == 0 {
+            self.ok_status(format!("{} file(s) updated", targets.len()));
+        } else {
+            self.err_status(format!("{errors} update(s) failed"));
+        }
+    }
+
     fn start_find_in_files(&mut self, pattern: String) {
         if self.find_in_files().is_none() {
             return;
@@ -769,7 +857,7 @@ impl App {
 
     /// Puts a preview on screen, replacing whatever overlay was there.
     fn open_preview(&mut self, preview: PopupPreview) {
-        self.overlay = Some(Overlay::Preview(preview));
+        self.overlay = Some(Overlay::Preview(Box::new(preview)));
     }
 
     /// Swaps the active theme and rebuilds everything derived from it.
@@ -847,6 +935,9 @@ impl App {
                 DialogResult::Confirmed,
             ) => {
                 self.run_archive_extract(archive_path, kind, names, dest_dir, total);
+            }
+            (DialogAction::CreateSymlink { pairs }, DialogResult::Confirmed) => {
+                self.create_symlinks(pairs);
             }
             _ => {}
         }
@@ -1154,6 +1245,73 @@ impl App {
             cancel,
             is_cut,
         });
+    }
+
+    /// Symlinks the active pane's selection (or highlighted entry) into the
+    /// other pane, each link pointing at the source's absolute path — same
+    /// target/other-pane shape as `Copy`/`Move`, but nothing is read or
+    /// written at the source, only a link created at the destination.
+    fn start_create_symlink(&mut self) {
+        if self.archive_write_blocked() || self.archive_paste_target_blocked() {
+            return;
+        }
+
+        let sources = self.op_targets();
+        if sources.is_empty() {
+            return;
+        }
+
+        let dest_dir = PathBuf::from(&self.panes.get_inactive_pane().path);
+        let pairs: Vec<(PathBuf, PathBuf)> = sources
+            .iter()
+            .map(|src| {
+                // Absolute, but not otherwise resolved: `std::path::absolute`
+                // only prepends the current directory when `src` is relative,
+                // it does not follow symlinks the way `canonicalize` would —
+                // linking to a symlink must not silently link to its target
+                // instead.
+                let target = std::path::absolute(src).unwrap_or_else(|_| src.clone());
+                (target, dest_dir.join(ops::file_name_of(src)))
+            })
+            .collect();
+
+        let conflicts = pairs.iter().filter(|(_, link)| link.exists()).count();
+        if conflicts > 0 {
+            self.open_dialog(Dialog::confirm(
+                "Overwrite?",
+                format!("{conflicts} item(s) exist in the other pane. Overwrite?"),
+                DialogAction::CreateSymlink { pairs },
+            ));
+        } else {
+            self.create_symlinks(pairs);
+        }
+    }
+
+    fn create_symlinks(&mut self, pairs: Vec<(PathBuf, PathBuf)>) {
+        let mut errors = 0usize;
+        for (target, link) in &pairs {
+            // `symlink` refuses to overwrite, unlike `fs::copy`/`rename` —
+            // the conflicting name was already confirmed, so clear it first.
+            // A real directory is left alone rather than deleted out from
+            // under the user; `create_symlink` then fails on it naturally,
+            // reported below same as any other error.
+            if let Ok(meta) = std::fs::symlink_metadata(link)
+                && !meta.is_dir()
+            {
+                let _ = std::fs::remove_file(link);
+            }
+            if let Err(e) = ops::create_symlink(target, link) {
+                log::error!("symlink {} -> {}: {e}", link.display(), target.display());
+                errors += 1;
+            }
+        }
+
+        self.panes.reload(&self.config, false);
+        if errors == 0 {
+            self.ok_status(format!("{} symlink(s) created", pairs.len()));
+        } else {
+            self.err_status(format!("{errors} symlink(s) failed"));
+        }
     }
 
     /// Extracts the archive pane's targets (selection, or the highlighted
@@ -1689,6 +1847,8 @@ impl App {
             Action::SortReverse => self.set_sort_order(self.config.sort_order.reversed()),
             Action::BookmarkToggle => self.toggle_bookmark(),
             Action::Bookmarks => self.open_bookmarks(),
+            Action::Permissions => self.start_permissions_editor(),
+            Action::CreateSymlink => self.start_create_symlink(),
         }
     }
 
@@ -1756,6 +1916,42 @@ impl App {
         } else {
             self.overlay = Some(Overlay::BulkRename(BulkRename::new(targets)));
         }
+    }
+
+    /// Opens the permissions/ownership popup on the selection, or the
+    /// highlighted entry when nothing is selected — same shape as
+    /// `op_targets`, but keeping the `Entry` around rather than just its
+    /// path, since the popup seeds its fields from the first target's raw
+    /// mode/uid/gid.
+    fn start_permissions_editor(&mut self) {
+        if self.archive_write_blocked() {
+            return;
+        }
+
+        let pane = self.panes.get_active_pane();
+        let selected = pane.selected_entries();
+        let entries = if !selected.is_empty() {
+            selected
+        } else if let Some(entry) = pane.get_selected_entry()
+            && matches!(
+                entry.kind,
+                EntryKind::File | EntryKind::Directory | EntryKind::Symlink
+            )
+        {
+            vec![entry]
+        } else {
+            Vec::new()
+        };
+
+        let Some(first) = entries.first() else {
+            return;
+        };
+        let (mode, uid, gid) = (first.raw_mode, first.raw_uid, first.raw_gid);
+        let targets = entries.into_iter().map(|e| e.path).collect();
+
+        self.overlay = Some(Overlay::Permissions(PermissionsEditor::new(
+            targets, mode, uid, gid,
+        )));
     }
 
     fn toggle_pane(&mut self) {
@@ -3262,6 +3458,8 @@ mod tests {
                 (KeyCode::Char('r'), KeyModifiers::NONE), // Rename
                 (KeyCode::Char('M'), KeyModifiers::NONE), // Move
                 (KeyCode::Char('S'), KeyModifiers::NONE), // DirSizes
+                (KeyCode::Char('C'), KeyModifiers::NONE), // Permissions
+                (KeyCode::Char('L'), KeyModifiers::NONE), // CreateSymlink
             ] {
                 app.dispatch_key(&key(code, modifiers));
                 assert!(
@@ -3354,6 +3552,203 @@ mod tests {
                     .status_text()
                     .unwrap_or_default()
                     .contains("Read-only")
+            );
+        }
+    }
+
+    /// `C` (chmod/chown) and `L` (create symlink).
+    mod permissions_and_symlinks {
+        use super::*;
+
+        #[cfg(unix)]
+        fn test_app_two_dirs(left: &Path, right: &Path) -> App {
+            let config = Config {
+                initial_directory_left: left.to_string_lossy().to_string(),
+                initial_directory_right: right.to_string_lossy().to_string(),
+                ..Default::default()
+            };
+            let theme = Theme::load_theme(None).expect("default theme in themes/");
+            App::new(theme, config, &left.join("config.toml"))
+        }
+
+        #[cfg(unix)]
+        #[test]
+        fn c_opens_the_popup_seeded_from_the_highlighted_entry() {
+            use std::os::unix::fs::PermissionsExt;
+
+            let dir = dir_with_contents();
+            std::fs::set_permissions(
+                dir.path().join("top.txt"),
+                std::fs::Permissions::from_mode(0o640),
+            )
+            .unwrap();
+            let mut app = test_app(dir.path());
+            app.panes
+                .get_active_pane_mut()
+                .select_by_path(&dir.path().join("top.txt"));
+
+            app.dispatch_key(&key(KeyCode::Char('C'), KeyModifiers::NONE));
+
+            let pe = app.permissions_editor().expect("popup open");
+            assert_eq!(pe.mode.value, "640");
+            assert_eq!(pe.targets, vec![dir.path().join("top.txt")]);
+        }
+
+        #[cfg(unix)]
+        #[test]
+        fn toggling_a_bit_and_applying_changes_the_real_mode() {
+            use std::os::unix::fs::PermissionsExt;
+
+            let dir = dir_with_contents();
+            std::fs::set_permissions(
+                dir.path().join("top.txt"),
+                std::fs::Permissions::from_mode(0o644),
+            )
+            .unwrap();
+            let mut app = test_app(dir.path());
+            app.panes
+                .get_active_pane_mut()
+                .select_by_path(&dir.path().join("top.txt"));
+            app.dispatch_key(&key(KeyCode::Char('C'), KeyModifiers::NONE));
+
+            // Grid starts on (owner, r); move to (other, w) and toggle it on.
+            app.dispatch_key(&key(KeyCode::Down, KeyModifiers::NONE));
+            app.dispatch_key(&key(KeyCode::Down, KeyModifiers::NONE));
+            app.dispatch_key(&key(KeyCode::Right, KeyModifiers::NONE));
+            app.dispatch_key(&key(KeyCode::Char(' '), KeyModifiers::NONE));
+            app.dispatch_key(&key(KeyCode::Enter, KeyModifiers::NONE));
+
+            assert!(app.overlay.is_none(), "the popup closes on a clean apply");
+            let mode = std::fs::metadata(dir.path().join("top.txt"))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o646);
+            assert!(app.footer.status_text().unwrap_or_default().contains("1"));
+        }
+
+        #[cfg(unix)]
+        #[test]
+        fn typing_octal_digits_sets_a_whole_row_at_a_time() {
+            let dir = dir_with_contents();
+            let mut app = test_app(dir.path());
+            app.panes
+                .get_active_pane_mut()
+                .select_by_path(&dir.path().join("top.txt"));
+            app.dispatch_key(&key(KeyCode::Char('C'), KeyModifiers::NONE));
+
+            for c in ['7', '0', '0'] {
+                app.dispatch_key(&key(KeyCode::Char(c), KeyModifiers::NONE));
+            }
+
+            assert_eq!(
+                app.permissions_editor().unwrap().mode.value,
+                "700".to_string()
+            );
+        }
+
+        #[cfg(unix)]
+        #[test]
+        fn an_unresolvable_owner_blocks_apply_and_keeps_the_popup_open() {
+            let dir = dir_with_contents();
+            let mut app = test_app(dir.path());
+            app.panes
+                .get_active_pane_mut()
+                .select_by_path(&dir.path().join("top.txt"));
+            app.dispatch_key(&key(KeyCode::Char('C'), KeyModifiers::NONE));
+
+            // Tab to the owner field and replace it with a name that cannot
+            // resolve to a uid.
+            app.dispatch_key(&key(KeyCode::Tab, KeyModifiers::NONE));
+            if let Some(pe) = app.permissions_editor_mut() {
+                pe.owner = TextInput::new("definitely-not-a-real-user");
+            }
+            app.dispatch_key(&key(KeyCode::Enter, KeyModifiers::NONE));
+
+            assert!(app.overlay.is_some(), "a bad name must not close the popup");
+            assert!(
+                app.permissions_editor().unwrap().error.is_some(),
+                "the popup should carry the error for the user to see"
+            );
+        }
+
+        #[cfg(unix)]
+        #[test]
+        fn esc_cancels_without_touching_the_file() {
+            use std::os::unix::fs::PermissionsExt;
+
+            let dir = dir_with_contents();
+            std::fs::set_permissions(
+                dir.path().join("top.txt"),
+                std::fs::Permissions::from_mode(0o644),
+            )
+            .unwrap();
+            let mut app = test_app(dir.path());
+            app.panes
+                .get_active_pane_mut()
+                .select_by_path(&dir.path().join("top.txt"));
+            app.dispatch_key(&key(KeyCode::Char('C'), KeyModifiers::NONE));
+            app.dispatch_key(&key(KeyCode::Char(' '), KeyModifiers::NONE)); // toggle owner-read off
+            app.dispatch_key(&key(KeyCode::Esc, KeyModifiers::NONE));
+
+            assert!(app.overlay.is_none());
+            let mode = std::fs::metadata(dir.path().join("top.txt"))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o644, "cancelling must not touch the file");
+        }
+
+        #[cfg(unix)]
+        #[test]
+        fn l_creates_a_symlink_in_the_other_pane_pointing_at_the_source() {
+            let left = tempfile::tempdir().unwrap();
+            let right = tempfile::tempdir().unwrap();
+            std::fs::write(left.path().join("a.txt"), "hi").unwrap();
+            let mut app = test_app_two_dirs(left.path(), right.path());
+            app.panes
+                .get_active_pane_mut()
+                .select_by_path(&left.path().join("a.txt"));
+
+            app.dispatch_key(&key(KeyCode::Char('L'), KeyModifiers::NONE));
+
+            let link = right.path().join("a.txt");
+            assert_eq!(
+                std::fs::read_link(&link).unwrap(),
+                left.path().join("a.txt")
+            );
+            assert_eq!(std::fs::read_to_string(&link).unwrap(), "hi");
+        }
+
+        #[cfg(unix)]
+        #[test]
+        fn l_on_a_name_that_exists_asks_before_overwriting() {
+            let left = tempfile::tempdir().unwrap();
+            let right = tempfile::tempdir().unwrap();
+            std::fs::write(left.path().join("a.txt"), "hi").unwrap();
+            std::fs::write(right.path().join("a.txt"), "already here").unwrap();
+            let mut app = test_app_two_dirs(left.path(), right.path());
+            app.panes
+                .get_active_pane_mut()
+                .select_by_path(&left.path().join("a.txt"));
+
+            app.dispatch_key(&key(KeyCode::Char('L'), KeyModifiers::NONE));
+
+            assert_eq!(app.overlay_kind(), Some(OverlayKind::Dialog));
+            assert_eq!(
+                std::fs::read_to_string(right.path().join("a.txt")).unwrap(),
+                "already here",
+                "must not overwrite before confirmation"
+            );
+
+            app.dispatch_key(&key(KeyCode::Enter, KeyModifiers::NONE));
+
+            assert!(
+                std::fs::symlink_metadata(right.path().join("a.txt"))
+                    .unwrap()
+                    .file_type()
+                    .is_symlink(),
+                "confirming replaces the file with the link"
             );
         }
     }

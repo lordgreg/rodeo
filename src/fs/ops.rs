@@ -80,6 +80,72 @@ pub fn move_entry(src: &Path, dest_dir: &Path) -> io::Result<()> {
     delete_entry(src)
 }
 
+/// Sets `path`'s Unix permission bits (e.g. `0o755`). Pure `std`: follows a
+/// symlink to its target, the same as a plain `chmod path` in a shell (there
+/// is no `lchmod` on Linux, so a symlink's own mode cannot be changed there
+/// regardless).
+#[cfg(unix)]
+pub fn chmod_entry(path: &Path, mode: u32) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(mode))
+}
+
+#[cfg(not(unix))]
+pub fn chmod_entry(_path: &Path, _mode: u32) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "changing permissions is not supported on this platform",
+    ))
+}
+
+/// Changes `path`'s owning user and/or group. `None` leaves that half
+/// unchanged. Follows a symlink to its target, matching plain `chown path`.
+///
+/// `libc` is already in the dependency tree (`ui::header::free_space` uses
+/// it for `statvfs`) — `std` has no owner-change API at all, so this is the
+/// only way to chown without shelling out.
+#[cfg(unix)]
+pub fn chown_entry(path: &Path, uid: Option<u32>, gid: Option<u32>) -> io::Result<()> {
+    use std::ffi::CString;
+
+    let c_path = CString::new(path.as_os_str().as_encoded_bytes())
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+    // `-1` (as uid_t/gid_t) tells chown(2) to leave that id unchanged.
+    let uid = uid.map(|u| u as libc::uid_t).unwrap_or(u32::MAX);
+    let gid = gid.map(|g| g as libc::gid_t).unwrap_or(u32::MAX);
+
+    // SAFETY: c_path is a valid NUL-terminated string for the duration of the
+    // call, and the return code is checked before treating the call as having
+    // succeeded.
+    if unsafe { libc::chown(c_path.as_ptr(), uid, gid) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+pub fn chown_entry(_path: &Path, _uid: Option<u32>, _gid: Option<u32>) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "changing ownership is not supported on this platform",
+    ))
+}
+
+/// Creates a symlink at `link` pointing at `target`. `target` is used
+/// verbatim (relative or absolute) — same as `ln -s`.
+#[cfg(unix)]
+pub fn create_symlink(target: &Path, link: &Path) -> io::Result<()> {
+    std::os::unix::fs::symlink(target, link)
+}
+
+#[cfg(not(unix))]
+pub fn create_symlink(_target: &Path, _link: &Path) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "symlinks are not supported on this platform",
+    ))
+}
+
 /// Total size in bytes of all paths (directories walked recursively).
 /// Symlinks are *not* followed (matches `du` behavior and, crucially,
 /// makes symlink cycles impossible). Unreadable entries count as zero.
@@ -278,6 +344,90 @@ fn entry_size_capped(
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[cfg(unix)]
+    mod permissions_and_ownership {
+        use super::*;
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+        #[test]
+        fn chmod_sets_the_requested_mode() {
+            let dir = tempfile::tempdir().unwrap();
+            let file = dir.path().join("a.txt");
+            fs::File::create(&file).unwrap();
+
+            chmod_entry(&file, 0o640).unwrap();
+
+            let mode = fs::metadata(&file).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o640);
+        }
+
+        #[test]
+        fn chmod_follows_a_symlink_to_its_target() {
+            let dir = tempfile::tempdir().unwrap();
+            let file = dir.path().join("a.txt");
+            let link = dir.path().join("link");
+            fs::File::create(&file).unwrap();
+            std::os::unix::fs::symlink(&file, &link).unwrap();
+
+            chmod_entry(&link, 0o600).unwrap();
+
+            let mode = fs::metadata(&file).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+
+        #[test]
+        fn chown_leaves_the_group_alone_when_not_given() {
+            let dir = tempfile::tempdir().unwrap();
+            let file = dir.path().join("a.txt");
+            fs::File::create(&file).unwrap();
+            let before = fs::metadata(&file).unwrap().gid();
+
+            // Owning uid is the current user either way — this only proves
+            // the call succeeds and the gid this process cannot touch stays
+            // put, without requiring root.
+            let uid = fs::metadata(&file).unwrap().uid();
+            chown_entry(&file, Some(uid), None).unwrap();
+
+            assert_eq!(fs::metadata(&file).unwrap().gid(), before);
+        }
+
+        #[test]
+        fn chown_rejects_a_path_that_does_not_exist() {
+            let dir = tempfile::tempdir().unwrap();
+            let missing = dir.path().join("nope.txt");
+
+            assert!(chown_entry(&missing, Some(0), None).is_err());
+        }
+    }
+
+    #[cfg(unix)]
+    mod symlink_creation {
+        use super::*;
+
+        #[test]
+        fn create_symlink_points_at_the_target() {
+            let dir = tempfile::tempdir().unwrap();
+            let target = dir.path().join("a.txt");
+            let link = dir.path().join("link");
+            fs::File::create(&target).unwrap();
+
+            create_symlink(&target, &link).unwrap();
+
+            assert_eq!(fs::read_link(&link).unwrap(), target);
+        }
+
+        #[test]
+        fn create_symlink_fails_when_the_link_name_is_taken() {
+            let dir = tempfile::tempdir().unwrap();
+            let target = dir.path().join("a.txt");
+            let link = dir.path().join("link");
+            fs::File::create(&target).unwrap();
+            fs::File::create(&link).unwrap();
+
+            assert!(create_symlink(&target, &link).is_err());
+        }
+    }
 
     #[test]
     fn copy_dir_recursive_copies_nested_tree() {

@@ -3,3 +3,4 @@
 pub mod archive;
 pub mod filter;
 pub mod ops;
+pub mod passwd;

@@ -69,6 +69,12 @@ const KEYBINDS: &[Keybind] = &[
     ),
     bind("Y", "Copy to other pane", &[Action::Copy]),
     bind("M", "Move to other pane", &[Action::Move]),
+    bind("L", "Symlink to other pane", &[Action::CreateSymlink]),
+    bind(
+        "C",
+        "Permissions/ownership (chmod/chown)",
+        &[Action::Permissions],
+    ),
     bind(
         "dd / Del",
         "Move to trash",

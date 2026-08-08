@@ -10,9 +10,11 @@ terminal.
 - **Dual-pane navigation** with per-pane sorting, filtering and hidden-file
   toggling; the active pane is highlighted and the inactive one dimmed.
 - **File operations** — copy, move, rename, mkdir, touch, delete to trash
-  (with a permanent-delete fallback), on the selection or the highlighted
-  entry. Large transfers run in the background with a progress gauge and can
-  be cancelled.
+  (with a permanent-delete fallback), symlink creation (`L`, pointing at the
+  source from the other pane), and a permissions/ownership popup (`C`: chmod
+  as octal digits or an rwx toggle grid, plus chown by name or numeric
+  id) — on the selection or the highlighted entry. Large transfers run in the
+  background with a progress gauge and can be cancelled.
 - **Preview** (`Space` or `F3`) — syntax highlighting via syntect, images, archive
   listings (zip/tar/tar.gz), PDF text, directory sizes, and hex dumps with
   metadata for binaries. Slow content loads on a worker thread behind a
@@ -173,8 +175,10 @@ actually bound — rebind something and the bar says so.
 | `x` / `*` / `Ctrl+a` | Toggle selection / select by wildcard / select all |
 | `y` / `p` / `P` | Yank / paste copy / paste move |
 | `Y` / `M` | Copy / move to the other pane (one-key `y`+`Tab`+`p`) |
+| `L` | Symlink the selection into the other pane |
 | `r` | Rename |
 | `R` | Bulk rename (2+ selected) |
+| `C` | Permissions/ownership (chmod/chown) |
 | `b` / `B` | Bookmark the entry (or the pane's directory on `..`) / list bookmarks |
 | `a` | Create file, or directory with a `/` suffix |
 | `dd`, `Del` | Move to trash |

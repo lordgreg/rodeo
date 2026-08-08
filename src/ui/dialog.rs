@@ -74,6 +74,11 @@ pub enum DialogAction {
         dest_dir: PathBuf,
         total: u64,
     },
+    /// `(target, link)` pairs, same shape as `Copy`/`Move`'s batch: one
+    /// confirm approves overwriting every conflicting name at once.
+    CreateSymlink {
+        pairs: Vec<(PathBuf, PathBuf)>,
+    },
     None,
 }
 

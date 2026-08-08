@@ -59,6 +59,8 @@ pub enum Action {
     BulkRename,
     BookmarkToggle,
     Bookmarks,
+    Permissions,
+    CreateSymlink,
 }
 
 impl Action {
@@ -102,6 +104,8 @@ impl Action {
             Self::SortReverse => "sort_reverse",
             Self::BookmarkToggle => "bookmark",
             Self::Bookmarks => "bookmarks",
+            Self::Permissions => "permissions",
+            Self::CreateSymlink => "symlink",
         }
     }
 
@@ -144,6 +148,8 @@ impl Action {
         Self::BulkRename,
         Self::BookmarkToggle,
         Self::Bookmarks,
+        Self::Permissions,
+        Self::CreateSymlink,
     ];
 
     pub fn from_name(name: &str) -> Option<Self> {
@@ -427,6 +433,10 @@ pub fn default_keymap() -> Keymap {
         (shift(Right), SortNext),
         (shift(Left), SortPrev),
         (plain(Char('O')), SortReverse),
+        (plain(Char('C')), Permissions),
+        // Mnemonic "Link", and shifted like `Y`/`M`: it names the other pane,
+        // which is where the link is created.
+        (plain(Char('L')), CreateSymlink),
     ];
 
     Keymap {
