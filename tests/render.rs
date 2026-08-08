@@ -15,7 +15,12 @@ fn app_in(dir: &std::path::Path) -> App {
         initial_directory_right: dir.to_string_lossy().to_string(),
         ..Default::default()
     };
-    App::new(Theme::builtin().expect("built-in theme"), config)
+    // Config path inside the temp dir, so bookmarks never reach the real one.
+    App::new(
+        Theme::builtin().expect("built-in theme"),
+        config,
+        &dir.join("config.toml"),
+    )
 }
 
 /// One frame, driven exactly as the run loop drives it: prepare, then paint.
@@ -98,7 +103,11 @@ fn renders_with_icons_enabled() {
         show_hidden: true,
         ..Default::default()
     };
-    let mut app = App::new(Theme::builtin().unwrap(), config);
+    let mut app = App::new(
+        Theme::builtin().unwrap(),
+        config,
+        &dir.path().join("config.toml"),
+    );
 
     draw(&mut app, 120, 30);
 }
@@ -123,6 +132,44 @@ fn renders_every_overlay() {
         crossterm::event::KeyModifiers::NONE,
     ));
     draw(&mut app, 120, 30);
+}
+
+/// The bookmarks popup draws a dead entry differently from a live one, so
+/// both paths are painted here.
+#[test]
+fn the_bookmarks_popup_names_the_entries_that_are_gone() {
+    let dir = populated_dir();
+    let mut app = app_in(dir.path());
+
+    // An empty list has its own placeholder; render that first.
+    app.dispatch_key(&crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Char('B'),
+        crossterm::event::KeyModifiers::NONE,
+    ));
+    let buffer = draw(&mut app, 120, 30);
+    let text: String = buffer.content().iter().map(|c| c.symbol()).collect();
+    assert!(text.contains("No bookmarks yet"), "{text}");
+
+    // Then one live and one dead bookmark, seeded through the file the app
+    // reads on start-up.
+    let mut bookmarks = rodeo::bookmarks::Bookmarks::default();
+    bookmarks.add(dir.path().to_path_buf());
+    bookmarks.add(dir.path().join("long-gone"));
+    bookmarks
+        .save(&dir.path().join("bookmarks.toml"))
+        .expect("write bookmarks");
+
+    let mut app = app_in(dir.path());
+    app.dispatch_key(&crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Char('B'),
+        crossterm::event::KeyModifiers::NONE,
+    ));
+
+    let buffer = draw(&mut app, 120, 30);
+    let text: String = buffer.content().iter().map(|c| c.symbol()).collect();
+    assert!(text.contains("long-gone"), "{text}");
+    assert!(text.contains("(missing)"), "{text}");
+    assert!(text.contains("1 missing"), "{text}");
 }
 
 /// Find-in-files shows the hit list and, next to it, the file around the

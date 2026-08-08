@@ -1,3 +1,33 @@
+# Unreleased
+
+## Changed
+
+* **Bulk rename moved from `B` to `R`.** `b` and `B` are now bookmarks, which
+  only works as a pair. `[keybindings] "B" = "bulk_rename"` in `config.toml`
+  restores the old key.
+
+## Added
+
+* **Bookmarks.** `b` bookmarks the entry under the cursor — or every marked
+  entry at once, like copy and move do, or the pane's own directory when the
+  cursor is on `..`. `B` (or `:bookmarks`) lists them: `Enter` and `1`–`9`
+  jump, `d` removes, `P` drops the dead ones. A bookmark whose target has
+  since been moved or deleted is shown as `(missing)` and refuses to jump,
+  rather than silently doing nothing; one that merely cannot be read right now
+  is `(unreadable)` and is never pruned, because "I could not look" is not
+  "it is gone". Paths are stored absolute and link-free, so the same directory
+  reached two ways is one bookmark.
+
+  They are kept in `bookmarks.toml` beside `config.toml`, written the moment
+  one changes rather than on `:w`: `config.toml` is a file you edit by hand,
+  and rewriting it on every keypress is not a thing a file manager should do.
+  The write goes through a temporary file and a rename, so an interrupted one
+  cannot cost the whole list, and a corrupt file starts empty with a warning
+  instead of stopping rodeo from starting.
+* The filter bar picks the query out from its label: the pattern is drawn in
+  the same colour that marks its matches in the listing, so an active filter
+  reads at a glance rather than as one uniform grey line.
+
 # 0.2.0
 
 ## Fixed

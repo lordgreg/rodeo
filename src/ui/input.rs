@@ -14,6 +14,7 @@ use super::{
     dialog::{Dialog, DialogAction, DialogResult},
     keymap::{Action, Binding},
     panes::{EntryKind, MoveDirection, OpenAction},
+    popup_bookmarks::BookmarksView,
     popup_bulkrename::BulkRename,
     popup_findfiles::FileFinder,
     popup_findinfiles::FindInFiles,
@@ -130,6 +131,7 @@ impl App {
             Some(OverlayKind::FindFiles) => self.handle_find_files_key(key_event),
             Some(OverlayKind::BulkRename) => self.handle_bulk_rename_key(key_event),
             Some(OverlayKind::Trash) => self.handle_trash_key(key_event),
+            Some(OverlayKind::Bookmarks) => self.handle_bookmarks_key(key_event),
             // These two leave the panes usable underneath, so a key they do
             // not claim falls through to the normal bindings.
             Some(OverlayKind::Preview | OverlayKind::Keybinds) => {
@@ -359,6 +361,227 @@ impl App {
             self.panes.get_active_pane_mut().select_by_path(&path);
         }
         self.sync_header();
+    }
+
+    /// Paths the bookmark key applies to: the marked entries, or the one under
+    /// the cursor when nothing is marked — the same rule as copy, move and
+    /// delete ([`App::op_targets`]).
+    ///
+    /// A cursor sitting on `..` means the pane's own directory, so bookmarking
+    /// the folder you are looking at needs no second key.
+    fn bookmark_targets(&self) -> Vec<PathBuf> {
+        let pane = self.panes.get_active_pane();
+
+        let marked: Vec<PathBuf> = pane
+            .selected_entries()
+            .into_iter()
+            .map(|e| e.path)
+            .collect();
+        let targets = if !marked.is_empty() {
+            marked
+        } else {
+            match pane.get_selected_entry() {
+                Some(entry) if entry.kind == EntryKind::Parent => vec![PathBuf::from(&pane.path)],
+                Some(entry) => vec![entry.path],
+                None => vec![PathBuf::from(&pane.path)],
+            }
+        };
+
+        targets.iter().map(|p| Self::normalized(p)).collect()
+    }
+
+    /// An absolute, link-free form of `path`, falling back to `path` itself.
+    ///
+    /// A bookmark outlives the session that made it, so a relative path is no
+    /// use: `rodeo --left .` would otherwise write `"."` into the file and
+    /// resolve it against whatever directory the next run started in. It also
+    /// makes the same directory reached two ways compare equal, so bookmarking
+    /// `sub` and then bookmarking `..` from inside it cannot produce two
+    /// entries for one folder. `Pane::open` canonicalizes for the same reason.
+    fn normalized(path: &Path) -> PathBuf {
+        path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+    }
+
+    /// Bookmarks the targets, or removes them when every one is already
+    /// bookmarked.
+    ///
+    /// Toggling each target independently would make a part-bookmarked
+    /// selection add some and drop others, which looks arbitrary. Adding wins
+    /// unless there is nothing left to add.
+    fn toggle_bookmark(&mut self) {
+        let targets = self.bookmark_targets();
+        if targets.is_empty() {
+            return;
+        }
+
+        let all_known = targets.iter().all(|p| self.bookmarks.contains(p));
+
+        // Paths actually changed, so the message can name the right one: with
+        // three marked entries of which two were already bookmarked, `count`
+        // is 1 and naming `targets[0]` would point at the wrong entry.
+        let changed: Vec<PathBuf> = if all_known {
+            targets
+                .iter()
+                .filter(|p| self.bookmarks.remove(p))
+                .cloned()
+                .collect()
+        } else {
+            // TOML cannot carry a path that is not valid UTF-8. Skipping it
+            // here, with the path named, beats accepting the bookmark and then
+            // failing to write the file every time any other one changes. Only
+            // adding is affected — removing such a path must stay possible.
+            let (ok, bad): (Vec<_>, Vec<_>) = targets.iter().partition(|p| p.to_str().is_some());
+            for path in bad {
+                self.err_status(format!(
+                    "Cannot bookmark '{}': the path is not valid UTF-8",
+                    path.display()
+                ));
+            }
+            ok.into_iter()
+                .filter(|p| self.bookmarks.add((*p).clone()))
+                .cloned()
+                .collect()
+        };
+
+        if changed.is_empty() {
+            return;
+        }
+        if !self.save_bookmarks() {
+            return;
+        }
+
+        let what = if changed.len() == 1 {
+            ops::file_name_of(&changed[0])
+        } else {
+            format!("{} entries", changed.len())
+        };
+        if all_known {
+            self.ok_status(format!("Bookmark removed: {what}"));
+        } else {
+            self.ok_status(format!("Bookmarked: {what}"));
+        }
+    }
+
+    fn open_bookmarks(&mut self) {
+        self.overlay = Some(Overlay::Bookmarks(BookmarksView::new(&self.bookmarks)));
+    }
+
+    fn handle_bookmarks_key(&mut self, key: &KeyEvent) {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => {
+                self.overlay = None;
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                if let Some(view) = self.bookmarks_view_mut() {
+                    view.move_up();
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if let Some(view) = self.bookmarks_view_mut() {
+                    view.move_down();
+                }
+            }
+            KeyCode::Enter => {
+                let Some(index) = self.bookmarks_view().and_then(|v| v.selected_idx()) else {
+                    return;
+                };
+                self.jump_to_bookmark(index);
+            }
+            // Position in the list, not on the screen: the number printed
+            // beside a row is the key that goes there, and it stays that key
+            // once the list scrolls.
+            KeyCode::Char(c @ '1'..='9') => {
+                let index = c as usize - '1' as usize;
+                self.jump_to_bookmark(index);
+            }
+            KeyCode::Char('d') | KeyCode::Delete => {
+                self.remove_selected_bookmark();
+            }
+            KeyCode::Char('P') => self.prune_bookmarks(),
+            _ => {}
+        }
+    }
+
+    /// Takes the active pane to the nth bookmark and closes the popup.
+    ///
+    /// A bookmark whose target is gone is reported and the popup stays open, so
+    /// it can be removed there and then rather than left to fail again.
+    fn jump_to_bookmark(&mut self, index: usize) {
+        let Some(row) = self.bookmarks_view().and_then(|v| v.row(index)).cloned() else {
+            return;
+        };
+
+        // The row's state was settled when the popup opened, and the popup can
+        // stay up for a long time. One `stat` on a keypress is cheap, and
+        // trusting the cached answer would land the pane in a directory that
+        // is no longer there — `reveal` assigns the path unconditionally and
+        // the listing would just come back empty, with nothing said.
+        let state = crate::bookmarks::PathState::of(&row.path);
+        if state.is_missing() {
+            self.refresh_bookmarks_view();
+            self.err_status(format!("Bookmark is gone: {}", row.path.display()));
+            return;
+        }
+
+        self.overlay = None;
+        self.reveal(&row.path, state.is_dir());
+    }
+
+    /// Re-reads the store and re-checks every path, keeping the cursor where
+    /// it was.
+    fn refresh_bookmarks_view(&mut self) {
+        let fresh = BookmarksView::new(&self.bookmarks);
+        if let Some(view) = self.bookmarks_view_mut() {
+            let selected = view.selected_idx();
+            *view = fresh;
+            if let Some(i) = selected {
+                view.list_state.select(Some(i));
+                view.clamp_selection();
+            }
+        }
+    }
+
+    fn remove_selected_bookmark(&mut self) {
+        // By path, not by index: the view's row order only happens to match
+        // the store's, and an index that drifted would silently remove the
+        // wrong bookmark.
+        let Some(path) = self
+            .bookmarks_view()
+            .and_then(|v| v.selected_idx().and_then(|i| v.row(i)))
+            .map(|row| row.path.clone())
+        else {
+            return;
+        };
+        if !self.bookmarks.remove(&path) {
+            return;
+        }
+        if !self.save_bookmarks() {
+            return;
+        }
+
+        // Rebuilt from the store rather than patched in two places, so the
+        // list and the file cannot disagree.
+        self.refresh_bookmarks_view();
+        self.ok_status(format!("Bookmark removed: {}", ops::file_name_of(&path)));
+    }
+
+    fn prune_bookmarks(&mut self) {
+        let gone = self.bookmarks.prune_missing();
+
+        // Refreshed even when nothing was pruned: the rows were checked when
+        // the popup opened, so a bookmark whose target came back would
+        // otherwise keep saying `(missing)` until the popup was reopened.
+        if gone == 0 {
+            self.refresh_bookmarks_view();
+            self.ok_status("No missing bookmarks".to_string());
+            return;
+        }
+
+        if !self.save_bookmarks() {
+            return;
+        }
+        self.refresh_bookmarks_view();
+        self.ok_status(format!("{gone} missing bookmark(s) removed"));
     }
 
     fn handle_trash_key(&mut self, key: &KeyEvent) {
@@ -1043,6 +1266,7 @@ impl App {
             "trash" => {
                 self.overlay = Some(Overlay::Trash(TrashView::load()));
             }
+            "bookmarks" => self.open_bookmarks(),
             _ => {
                 self.err_status(format!("Unknown command: {cmd}  (try :help)"));
             }
@@ -1336,6 +1560,8 @@ impl App {
             Action::SortNext => self.set_sort_type(self.config.sort_type.next()),
             Action::SortPrev => self.set_sort_type(self.config.sort_type.prev()),
             Action::SortReverse => self.set_sort_order(self.config.sort_order.reversed()),
+            Action::BookmarkToggle => self.toggle_bookmark(),
+            Action::Bookmarks => self.open_bookmarks(),
         }
     }
 
@@ -1527,6 +1753,10 @@ mod tests {
     use super::*;
 
     /// A throwaway app rooted in a temporary directory.
+    ///
+    /// The config path points inside `dir` so bookmarks are read from and
+    /// written to the temporary directory: tests must never touch the
+    /// developer's real `~/.config/rodeo/bookmarks.toml`.
     fn test_app(dir: &Path) -> App {
         let config = Config {
             initial_directory_left: dir.to_string_lossy().to_string(),
@@ -1534,7 +1764,7 @@ mod tests {
             ..Default::default()
         };
         let theme = Theme::load_theme(None).expect("default theme in themes/");
-        App::new(theme, config)
+        App::new(theme, config, &dir.join("config.toml"))
     }
 
     fn key(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
@@ -1880,7 +2110,11 @@ mod tests {
                 .collect(),
             ..Default::default()
         };
-        App::new(Theme::builtin().expect("built-in theme"), config)
+        App::new(
+            Theme::builtin().expect("built-in theme"),
+            config,
+            &dir.join("config.toml"),
+        )
     }
 
     #[test]
@@ -1911,6 +2145,455 @@ mod tests {
         // Ctrl+g used to be hardcoded; it now comes from the same table.
         app.dispatch_key(&key(KeyCode::Char('g'), KeyModifiers::CONTROL));
         assert!(app.find_in_files().is_some());
+    }
+
+    /// Bookmarks: `b` toggles the entry under the cursor, `B` lists them, and
+    /// the list is written out the moment it changes.
+    mod bookmarks {
+        use super::*;
+
+        /// Three files and a subdirectory, so the cursor has somewhere to go.
+        fn dir_with_entries() -> tempfile::TempDir {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(dir.path().join("a.txt"), "a").unwrap();
+            std::fs::write(dir.path().join("b.txt"), "b").unwrap();
+            std::fs::create_dir(dir.path().join("sub")).unwrap();
+            dir
+        }
+
+        fn press(app: &mut App, c: char) {
+            app.dispatch_key(&key(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+
+        /// The path under the cursor, whatever the listing order turned out
+        /// to be.
+        fn cursor_path(app: &App) -> PathBuf {
+            app.panes
+                .get_active_pane()
+                .get_selected_entry()
+                .expect("an entry under the cursor")
+                .path
+        }
+
+        #[test]
+        fn b_bookmarks_the_entry_under_the_cursor() {
+            let dir = dir_with_entries();
+            let mut app = test_app(dir.path());
+
+            press(&mut app, 'j');
+            let path = cursor_path(&app);
+            press(&mut app, 'b');
+
+            assert!(app.bookmarks.contains(&path));
+        }
+
+        #[test]
+        fn b_again_removes_the_bookmark() {
+            let dir = dir_with_entries();
+            let mut app = test_app(dir.path());
+
+            press(&mut app, 'j');
+            let path = cursor_path(&app);
+            press(&mut app, 'b');
+            press(&mut app, 'b');
+
+            assert!(!app.bookmarks.contains(&path));
+            assert!(app.bookmarks.is_empty());
+        }
+
+        /// `b` follows the marked entries like copy, move and delete do,
+        /// rather than being the one action that ignores a selection.
+        #[test]
+        fn b_bookmarks_every_marked_entry_at_once() {
+            let dir = dir_with_entries();
+            let mut app = test_app(dir.path());
+
+            press(&mut app, 'j');
+            press(&mut app, 'x');
+            press(&mut app, 'j');
+            press(&mut app, 'x');
+            press(&mut app, 'b');
+
+            assert_eq!(app.bookmarks.len(), 2);
+        }
+
+        /// Toggling each target on its own would add some and drop others,
+        /// which looks arbitrary. Adding wins while anything is left to add.
+        #[test]
+        fn a_partly_bookmarked_selection_bookmarks_the_rest_instead_of_clearing() {
+            let dir = dir_with_entries();
+            let mut app = test_app(dir.path());
+
+            // Bookmark one entry, then mark it and its neighbour.
+            press(&mut app, 'j');
+            press(&mut app, 'b');
+            assert_eq!(app.bookmarks.len(), 1);
+
+            press(&mut app, 'x');
+            press(&mut app, 'j');
+            press(&mut app, 'x');
+            press(&mut app, 'b');
+
+            assert_eq!(app.bookmarks.len(), 2);
+        }
+
+        /// Bookmarking the folder you are looking at needs no second key: the
+        /// cursor on `..` means the pane's own directory, not its parent.
+        #[test]
+        fn b_on_the_parent_row_bookmarks_the_pane_directory() {
+            let dir = dir_with_entries();
+            let mut app = test_app(dir.path());
+
+            assert_eq!(
+                app.panes
+                    .get_active_pane()
+                    .get_selected_entry()
+                    .unwrap()
+                    .kind,
+                EntryKind::Parent,
+                "the cursor starts on the parent row"
+            );
+            press(&mut app, 'b');
+
+            assert!(app.bookmarks.contains(dir.path()));
+        }
+
+        /// Bookmarks are not part of config.toml, so `:w` never saves them —
+        /// each change has to reach the disk on its own.
+        #[test]
+        fn bookmarks_are_written_as_soon_as_they_change() {
+            let dir = dir_with_entries();
+            let mut app = test_app(dir.path());
+
+            press(&mut app, 'j');
+            press(&mut app, 'b');
+
+            let file = dir.path().join("bookmarks.toml");
+            assert!(file.exists(), "the file is written on the first bookmark");
+            assert_eq!(crate::bookmarks::Bookmarks::load(&file), app.bookmarks);
+        }
+
+        #[test]
+        fn bookmarks_are_read_back_when_the_app_starts() {
+            let dir = dir_with_entries();
+            let mut first = test_app(dir.path());
+            press(&mut first, 'j');
+            press(&mut first, 'b');
+
+            let second = test_app(dir.path());
+
+            assert_eq!(second.bookmarks, first.bookmarks);
+        }
+
+        #[test]
+        fn capital_b_opens_the_bookmarks_popup() {
+            let dir = dir_with_entries();
+            let mut app = test_app(dir.path());
+
+            press(&mut app, 'B');
+
+            assert!(app.bookmarks_view().is_some());
+        }
+
+        #[test]
+        fn the_bookmarks_command_opens_the_same_popup() {
+            let dir = dir_with_entries();
+            let mut app = test_app(dir.path());
+
+            app.run_command("bookmarks");
+
+            assert!(app.bookmarks_view().is_some());
+        }
+
+        #[test]
+        fn enter_in_the_bookmarks_popup_takes_the_pane_to_the_bookmark() {
+            let dir = dir_with_entries();
+            let sub = dir.path().join("sub");
+            let mut app = test_app(dir.path());
+            app.bookmarks.add(sub.clone());
+
+            press(&mut app, 'B');
+            app.dispatch_key(&key(KeyCode::Enter, KeyModifiers::NONE));
+
+            assert_eq!(app.panes.get_active_pane().path, sub.to_string_lossy());
+            assert!(app.bookmarks_view().is_none(), "the popup closes on a jump");
+        }
+
+        /// A bookmarked file puts the pane in its directory with the file
+        /// under the cursor, the same as the file finder does.
+        #[test]
+        fn jumping_to_a_bookmarked_file_selects_it_in_its_directory() {
+            let dir = dir_with_entries();
+            let file = dir.path().join("sub").join("deep.txt");
+            std::fs::write(&file, "x").unwrap();
+            let mut app = test_app(dir.path());
+            app.bookmarks.add(file.clone());
+
+            press(&mut app, 'B');
+            app.dispatch_key(&key(KeyCode::Enter, KeyModifiers::NONE));
+
+            assert_eq!(cursor_path(&app), file);
+        }
+
+        #[test]
+        fn a_number_key_jumps_straight_to_that_bookmark() {
+            let dir = dir_with_entries();
+            let sub = dir.path().join("sub");
+            let mut app = test_app(dir.path());
+            app.bookmarks.add(dir.path().to_path_buf());
+            app.bookmarks.add(sub.clone());
+
+            press(&mut app, 'B');
+            press(&mut app, '2');
+
+            assert_eq!(app.panes.get_active_pane().path, sub.to_string_lossy());
+        }
+
+        #[test]
+        fn a_number_past_the_end_of_the_list_does_nothing() {
+            let dir = dir_with_entries();
+            let mut app = test_app(dir.path());
+            app.bookmarks.add(dir.path().to_path_buf());
+
+            press(&mut app, 'B');
+            press(&mut app, '9');
+
+            assert!(app.bookmarks_view().is_some(), "the popup stays open");
+        }
+
+        /// A dead bookmark must say so and stay put, so it can be removed
+        /// there and then instead of failing again next time.
+        #[test]
+        fn jumping_to_a_missing_bookmark_reports_it_and_keeps_the_popup_open() {
+            let dir = dir_with_entries();
+            let mut app = test_app(dir.path());
+            app.bookmarks.add(dir.path().join("long-gone"));
+
+            press(&mut app, 'B');
+            app.dispatch_key(&key(KeyCode::Enter, KeyModifiers::NONE));
+
+            assert!(app.bookmarks_view().is_some());
+            assert_eq!(
+                app.panes.get_active_pane().path,
+                dir.path().to_string_lossy()
+            );
+        }
+
+        #[test]
+        fn a_bookmark_whose_target_is_gone_is_shown_as_missing() {
+            let dir = dir_with_entries();
+            let mut app = test_app(dir.path());
+            app.bookmarks.add(dir.path().to_path_buf());
+            app.bookmarks.add(dir.path().join("long-gone"));
+
+            press(&mut app, 'B');
+
+            assert_eq!(app.bookmarks_view().unwrap().missing_count(), 1);
+        }
+
+        #[test]
+        fn d_removes_the_highlighted_bookmark_and_rewrites_the_file() {
+            let dir = dir_with_entries();
+            let kept = dir.path().join("sub");
+            let mut app = test_app(dir.path());
+            app.bookmarks.add(dir.path().to_path_buf());
+            app.bookmarks.add(kept.clone());
+            assert!(app.save_bookmarks());
+
+            press(&mut app, 'B');
+            press(&mut app, 'd');
+
+            assert_eq!(app.bookmarks.paths(), std::slice::from_ref(&kept));
+            assert_eq!(app.bookmarks_view().unwrap().rows.len(), 1);
+            let on_disk = crate::bookmarks::Bookmarks::load(&dir.path().join("bookmarks.toml"));
+            assert_eq!(on_disk.paths(), std::slice::from_ref(&kept));
+        }
+
+        /// Removing the last row used to leave the cursor pointing past the
+        /// end of the list.
+        #[test]
+        fn removing_the_last_bookmark_leaves_a_usable_cursor() {
+            let dir = dir_with_entries();
+            let mut app = test_app(dir.path());
+            app.bookmarks.add(dir.path().to_path_buf());
+            app.bookmarks.add(dir.path().join("sub"));
+
+            press(&mut app, 'B');
+            press(&mut app, 'j');
+            press(&mut app, 'd');
+
+            let view = app.bookmarks_view().unwrap();
+            assert_eq!(view.rows.len(), 1);
+            assert_eq!(view.selected_idx(), Some(0));
+        }
+
+        #[test]
+        fn p_prunes_only_the_missing_bookmarks() {
+            let dir = dir_with_entries();
+            let alive = dir.path().join("sub");
+            let mut app = test_app(dir.path());
+            app.bookmarks.add(alive.clone());
+            app.bookmarks.add(dir.path().join("long-gone"));
+            app.bookmarks.add(dir.path().join("also-gone"));
+
+            press(&mut app, 'B');
+            press(&mut app, 'P');
+
+            assert_eq!(app.bookmarks.paths(), [alive]);
+            assert_eq!(app.bookmarks_view().unwrap().rows.len(), 1);
+        }
+
+        #[test]
+        fn esc_closes_the_bookmarks_popup() {
+            let dir = dir_with_entries();
+            let mut app = test_app(dir.path());
+
+            press(&mut app, 'B');
+            app.dispatch_key(&key(KeyCode::Esc, KeyModifiers::NONE));
+
+            assert!(app.bookmarks_view().is_none());
+        }
+
+        /// A bookmark outlives the session that made it, so a relative path is
+        /// no use: `rodeo --left .` used to write `"."` into the file.
+        #[test]
+        fn a_bookmarked_path_is_stored_absolute() {
+            let dir = dir_with_entries();
+            let config = Config {
+                initial_directory_left: ".".to_string(),
+                initial_directory_right: ".".to_string(),
+                ..Default::default()
+            };
+            let theme = Theme::load_theme(None).expect("default theme in themes/");
+            let mut app = App::new(theme, config, &dir.path().join("config.toml"));
+
+            press(&mut app, 'b');
+
+            let stored = &app.bookmarks.paths()[0];
+            assert!(stored.is_absolute(), "{stored:?} must not be relative");
+        }
+
+        /// One directory reached two ways is one bookmark. Reached through a
+        /// symlink it arrives under a different string, and without
+        /// normalizing you get two entries for the same folder — and neither
+        /// `b` can remove the other.
+        #[test]
+        fn one_directory_reached_two_ways_is_one_bookmark() {
+            let dir = dir_with_entries();
+            let real = dir.path().join("sub");
+            let link = dir.path().join("link");
+            std::os::unix::fs::symlink(&real, &link).unwrap();
+
+            let mut app = test_app(dir.path());
+
+            // Bookmark it under its real name...
+            app.panes.get_active_pane_mut().select_by_path(&real);
+            press(&mut app, 'b');
+            assert_eq!(app.bookmarks.len(), 1);
+
+            // ...then again through the symlink.
+            app.panes.get_active_pane_mut().select_by_path(&link);
+            press(&mut app, 'b');
+
+            assert_eq!(
+                app.bookmarks.len(),
+                0,
+                "the same directory, so the second press removed it"
+            );
+        }
+
+        /// The row's state is settled when the popup opens, and the popup can
+        /// stay up. Trusting it landed the pane in a directory that had gone,
+        /// with an empty listing and nothing said.
+        #[test]
+        fn a_bookmark_that_dies_while_the_popup_is_open_still_refuses_to_jump() {
+            let dir = dir_with_entries();
+            let doomed = dir.path().join("doomed");
+            std::fs::create_dir(&doomed).unwrap();
+            let mut app = test_app(dir.path());
+            app.bookmarks.add(doomed.clone());
+
+            press(&mut app, 'B');
+            assert!(!app.bookmarks_view().unwrap().rows[0].state.is_missing());
+
+            std::fs::remove_dir(&doomed).unwrap();
+            app.dispatch_key(&key(KeyCode::Enter, KeyModifiers::NONE));
+
+            assert!(app.bookmarks_view().is_some(), "the popup stays open");
+            assert_eq!(
+                app.panes.get_active_pane().path,
+                dir.path().to_string_lossy()
+            );
+        }
+
+        /// `P` used to return early when there was nothing to prune, leaving a
+        /// row that had come back to life still labelled `(missing)`.
+        #[test]
+        fn p_refreshes_the_list_even_when_there_is_nothing_to_prune() {
+            let dir = dir_with_entries();
+            let later = dir.path().join("later");
+            let mut app = test_app(dir.path());
+            app.bookmarks.add(later.clone());
+
+            press(&mut app, 'B');
+            assert_eq!(app.bookmarks_view().unwrap().missing_count(), 1);
+
+            std::fs::create_dir(&later).unwrap();
+            press(&mut app, 'P');
+
+            assert_eq!(app.bookmarks_view().unwrap().missing_count(), 0);
+            assert_eq!(app.bookmarks.len(), 1, "nothing was pruned");
+        }
+
+        /// A read-only directory made `b` say "Bookmarked", write nothing, and
+        /// lose the whole list on restart.
+        #[test]
+        fn a_bookmark_that_cannot_be_written_is_reported_not_claimed() {
+            use std::os::unix::fs::PermissionsExt;
+
+            let dir = dir_with_entries();
+            let locked = dir.path().join("locked");
+            std::fs::create_dir(&locked).unwrap();
+
+            let config = Config {
+                initial_directory_left: dir.path().to_string_lossy().to_string(),
+                initial_directory_right: dir.path().to_string_lossy().to_string(),
+                ..Default::default()
+            };
+            let theme = Theme::load_theme(None).expect("default theme in themes/");
+            let mut app = App::new(theme, config, &locked.join("config.toml"));
+
+            std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o500)).unwrap();
+
+            press(&mut app, 'j');
+            press(&mut app, 'b');
+
+            // Running as root defeats the permission bits.
+            if !locked.join("bookmarks.toml").exists() {
+                let status = app.footer.status_text().unwrap_or_default().to_string();
+                assert!(
+                    status.starts_with("Cannot write"),
+                    "a failed write must be reported, not claimed as success: {status:?}"
+                );
+            }
+
+            std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        /// `B` was bulk rename before bookmarks took the pair `b` / `B`.
+        #[test]
+        fn bulk_rename_answers_to_r_now() {
+            let dir = dir_with_entries();
+            let mut app = test_app(dir.path());
+
+            press(&mut app, 'j');
+            press(&mut app, 'x');
+            press(&mut app, 'j');
+            press(&mut app, 'x');
+            press(&mut app, 'R');
+
+            assert_eq!(app.overlay_kind(), Some(OverlayKind::BulkRename));
+        }
     }
 
     /// A directory tree with matches in a subdirectory, for find-in-files.

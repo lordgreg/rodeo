@@ -5,8 +5,6 @@ written in Rust. It pairs the classic dual-pane layout with Vim-style
 keybindings, a rich preview, and themes — with no runtime dependencies beyond a
 terminal.
 
-> **Status:** 0.1.0 — everything below works today.
-
 ## Features
 
 - **Dual-pane navigation** with per-pane sorting, filtering and hidden-file
@@ -38,7 +36,13 @@ terminal.
 - **Git aware** — entry names are coloured by status, the header shows the
   branch and counts, and wide terminals get a status column showing the raw
   porcelain code (so staged and unstaged changes are distinguishable).
-- **Power tools** — bulk rename with regex or numbering (`B`), a trash browser
+- **Bookmarks** — `b` bookmarks the entry under the cursor (or the pane's own
+  directory, when the cursor is on `..`), `B` lists them. `Enter` or `1`–`9`
+  jumps, `d` removes, and entries whose target has since disappeared are
+  flagged `(missing)` so they can be pruned with `P`. One that merely cannot
+  be read right now — an unreadable parent, a stalled network mount — is
+  flagged `(unreadable)` instead and is never pruned.
+- **Power tools** — bulk rename with regex or numbering (`R`), a trash browser
   (`:trash`), on-demand directory sizes (`S`), wildcard selection (`*`), and a
   command palette (`:`) that can capture command output or hand over the
   terminal.
@@ -127,9 +131,24 @@ Action names: `open` `parent` `first` `last` `select`
 `select_all` `glob` `sizes` `quit` `left` `right` `switch` `help`
 `preview` `search` `filter` `find` `palette` `rename` `create` `yank` `paste`
 `paste_move` `delete_chord` `copy` `move` `delete` `down` `up` `hidden`
-`refresh` `sort_next` `sort_prev` `sort_reverse` `bulk_rename`
+`refresh` `sort_next` `sort_prev` `sort_reverse` `bulk_rename` `bookmark`
+`bookmarks`
 
 `:so` reloads the config at runtime, `:w` writes the current settings back.
+
+### Bookmarks
+
+Bookmarks live in `bookmarks.toml` beside `config.toml` (so `--config
+./rodeo.toml` keeps its own set next to it), as a plain list of paths:
+
+```toml
+paths = ["/home/you/src/rodeo", "/etc/nginx/nginx.conf"]
+```
+
+They are written the moment one changes, not on `:w` — `config.toml` is yours
+to edit, and folding machine-managed state into it would rewrite your settings
+on every keypress. A missing or malformed `bookmarks.toml` starts an empty
+list with a warning rather than refusing to start.
 
 Bundled themes: `default`, `catppuccin-frappe`, `catppuccin-latte`,
 `catppuccin-macchiato`, `catppuccin-mocha`, `dracula`, `github-dark`, `nord`,
@@ -153,7 +172,8 @@ actually bound — rebind something and the bar says so.
 | `y` / `p` / `P` | Yank / paste copy / paste move |
 | `Y` / `M` | Copy / move to the other pane (one-key `y`+`Tab`+`p`) |
 | `r` | Rename |
-| `B` | Bulk rename (2+ selected) |
+| `R` | Bulk rename (2+ selected) |
+| `b` / `B` | Bookmark the entry (or the pane's directory on `..`) / list bookmarks |
 | `a` | Create file, or directory with a `/` suffix |
 | `dd`, `Del` | Move to trash |
 | `/` | Find files by name (fuzzy or regex) |
@@ -206,6 +226,7 @@ theme names for `:theme`.
 | `:delete` | Trash the selected or current entries |
 | `:theme [name]` | Switch theme, or list the available ones |
 | `:trash` | Browse the trash |
+| `:bookmarks` | Browse the bookmarks |
 | `:term <cmd>` | Run a command attached to the terminal (lazygit, htop…) |
 | `:!<cmd>` | Run a shell command and show its output |
 | `:help` | Show the help popup |

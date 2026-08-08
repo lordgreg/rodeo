@@ -57,6 +57,8 @@ pub enum Action {
     SortPrev,
     SortReverse,
     BulkRename,
+    BookmarkToggle,
+    Bookmarks,
 }
 
 impl Action {
@@ -98,6 +100,8 @@ impl Action {
             Self::SortNext => "sort_next",
             Self::SortPrev => "sort_prev",
             Self::SortReverse => "sort_reverse",
+            Self::BookmarkToggle => "bookmark",
+            Self::Bookmarks => "bookmarks",
         }
     }
 
@@ -138,6 +142,8 @@ impl Action {
         Self::SortPrev,
         Self::SortReverse,
         Self::BulkRename,
+        Self::BookmarkToggle,
+        Self::Bookmarks,
     ];
 
     pub fn from_name(name: &str) -> Option<Self> {
@@ -384,7 +390,11 @@ pub fn default_keymap() -> Keymap {
         (plain(Char('G')), GotoLast),
         (plain(Char('x')), ToggleSelect),
         (ctrl(Char('a')), SelectAll),
-        (plain(Char('B')), BulkRename),
+        // `B` used to be bulk rename; it moved to `R` so the bookmark pair
+        // could be the mnemonic `b` / `B`.
+        (plain(Char('R')), BulkRename),
+        (plain(Char('b')), BookmarkToggle),
+        (plain(Char('B')), Bookmarks),
         (plain(Char('*')), SelectGlob),
         (plain(Char('S')), DirSizes),
         (plain(Char('q')), Quit),

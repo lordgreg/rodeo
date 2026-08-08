@@ -1,13 +1,14 @@
 //! The application: state, the event loop and the render tree.
 
 use std::{
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::Command,
     sync::{Arc, atomic::AtomicBool, mpsc},
     time::{Duration, Instant},
 };
 
 use crate::{
+    bookmarks::Bookmarks,
     config::Config,
     fs::ops::ProgressMsg,
     ui::{footer::Footer, theme::Theme},
@@ -17,6 +18,7 @@ use ratatui::{
     DefaultTerminal, Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
+    text::{Line, Span},
     widgets::{Block, Borders, Clear, Gauge},
 };
 
@@ -31,6 +33,7 @@ pub mod header;
 pub mod input;
 pub mod keymap;
 pub mod panes;
+pub mod popup_bookmarks;
 pub mod popup_bulkrename;
 pub mod popup_findfiles;
 pub mod popup_findinfiles;
@@ -46,14 +49,16 @@ use component::Component;
 use dialog::Dialog;
 use header::Header;
 use panes::Panes;
+use popup_bookmarks::BookmarksView;
 use popup_bulkrename::BulkRename;
 use popup_findfiles::FileFinder;
 use popup_findinfiles::FindInFiles;
 use popup_keybinds::PopupKeybinds;
 use popup_preview::PopupPreview;
 use popup_trash::TrashView;
-use search::Search;
+use search::{FilterSpec, Search};
 use textinput::TextInput;
+use theme::Colors;
 
 /// A file waiting to be opened in `$EDITOR`, optionally at a line.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -149,6 +154,7 @@ pub enum Overlay {
     FindFiles(FileFinder),
     BulkRename(BulkRename),
     Trash(TrashView),
+    Bookmarks(BookmarksView),
     Keybinds,
 }
 
@@ -164,6 +170,7 @@ pub enum OverlayKind {
     FindFiles,
     BulkRename,
     Trash,
+    Bookmarks,
     Keybinds,
 }
 
@@ -176,6 +183,7 @@ impl Overlay {
             Self::FindFiles(_) => OverlayKind::FindFiles,
             Self::BulkRename(_) => OverlayKind::BulkRename,
             Self::Trash(_) => OverlayKind::Trash,
+            Self::Bookmarks(_) => OverlayKind::Bookmarks,
             Self::Keybinds => OverlayKind::Keybinds,
         }
     }
@@ -234,11 +242,21 @@ pub struct App {
     /// shared with every preview (and its background loader) instead of being
     /// rebuilt per preview.
     syn_theme: Arc<syntect::highlighting::Theme>,
+    /// Bookmarked paths, written out the moment one changes.
+    pub(crate) bookmarks: Bookmarks,
+    /// Where [`App::bookmarks`] is persisted. Held rather than recomputed so
+    /// `--config` keeps its bookmarks beside it, and so tests can point at a
+    /// temporary directory instead of the user's real one.
+    bookmarks_path: PathBuf,
 }
 
 impl App {
-    pub fn new(theme: Theme, config: Config) -> Self {
+    /// `config_path` is the file `config` was read from: bookmarks are stored
+    /// beside it.
+    pub fn new(theme: Theme, config: Config, config_path: &Path) -> Self {
         let panes = Panes::new(&config);
+        let bookmarks_path = Bookmarks::beside(config_path);
+        let bookmarks = Bookmarks::load(&bookmarks_path);
         let syn_theme = Arc::new(theme.to_syntect_theme());
         let current_directory = config.get_initial_dir();
         let header = Header::new(current_directory);
@@ -282,6 +300,8 @@ impl App {
             watched_dirs,
             fs_debounce: None,
             syn_theme,
+            bookmarks,
+            bookmarks_path,
         };
 
         app.footer.update_hints(&app.keymap);
@@ -697,6 +717,38 @@ impl App {
         }
     }
 
+    pub(crate) fn bookmarks_view(&self) -> Option<&BookmarksView> {
+        match &self.overlay {
+            Some(Overlay::Bookmarks(b)) => Some(b),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn bookmarks_view_mut(&mut self) -> Option<&mut BookmarksView> {
+        match &mut self.overlay {
+            Some(Overlay::Bookmarks(b)) => Some(b),
+            _ => None,
+        }
+    }
+
+    /// Persists the bookmarks. `false` when the write failed.
+    ///
+    /// Called after every change: bookmarks are not part of `config.toml` and
+    /// so are not covered by `:w`. Callers must not report success when this
+    /// returns `false` — a read-only config directory would otherwise say
+    /// "Bookmarked: x" and lose the lot on restart.
+    #[must_use]
+    pub(crate) fn save_bookmarks(&mut self) -> bool {
+        match self.bookmarks.save(&self.bookmarks_path) {
+            Ok(()) => true,
+            Err(e) => {
+                let path = self.bookmarks_path.display().to_string();
+                self.err_status(format!("Cannot write {path}: {e}"));
+                false
+            }
+        }
+    }
+
     pub(crate) fn keybinds_open(&self) -> bool {
         self.overlay_kind() == Some(OverlayKind::Keybinds)
     }
@@ -805,6 +857,7 @@ impl App {
             Some(Overlay::Preview(preview)) => preview.render(frame, &self.theme, area),
             Some(Overlay::BulkRename(br)) => br.render(frame, &self.theme, area),
             Some(Overlay::Trash(tv)) => tv.render(frame, &self.theme, area),
+            Some(Overlay::Bookmarks(bv)) => bv.render(frame, &self.theme, area),
             Some(Overlay::FindInFiles(find)) => {
                 frame.render_widget(Clear, search_popup_area);
                 find.render(frame, &self.theme, search_popup_area);
@@ -945,53 +998,83 @@ impl App {
     fn render_input_bar(&mut self, frame: &mut Frame<'_>, area: ratatui::layout::Rect) {
         use ratatui::widgets::Paragraph;
 
-        let (text, style, cursor_offset): (String, Style, Option<u16>) =
-            if let Some(input) = self.command() {
-                (
-                    format!(":{}", input.value),
-                    Style::new().fg(self.theme.colors.foreground()),
-                    Some(1 + input.cursor as u16),
-                )
-            } else {
-                match self.search() {
-                    // One filter bar for both kinds of query: the prefix says
-                    // how what has been typed is being read.
-                    Some(s) => {
-                        let style = if s.regex_invalid {
-                            Style::new().fg(self.theme.colors.error())
-                        } else {
-                            Style::new().fg(self.theme.colors.foreground())
-                        };
-                        const PREFIX: &str = "filter: ";
-                        (
-                            format!("{PREFIX}{}", s.input.value),
-                            style,
-                            Some(PREFIX.len() as u16 + s.input.cursor as u16),
-                        )
-                    }
-                    None => match self.panes.get_active_pane().filter() {
-                        Some(filter) => (
-                            format!(
-                                "{} filter: {}  (Ctrl+f to edit, Esc to clear)",
-                                filter.kind_label(),
-                                filter.pattern()
-                            ),
-                            Style::new().fg(self.theme.colors.muted()),
-                            None,
-                        ),
-                        None => (String::new(), Style::new(), None),
-                    },
-                }
-            };
+        let (spans, cursor_offset) = input_bar_spans(
+            self.command(),
+            self.search(),
+            self.panes.get_active_pane().filter(),
+            &self.theme.colors,
+        );
 
+        // Only the background is set here: each span carries its own
+        // foreground, so the query can differ from its label.
         frame.render_widget(
-            Paragraph::new(text).style(style.bg(self.theme.colors.surface())),
+            Paragraph::new(Line::from(spans)).style(Style::new().bg(self.theme.colors.surface())),
             area,
         );
 
         if let Some(offset) = cursor_offset {
             frame.set_cursor_position((area.x + offset, area.y));
         }
+    }
+}
+
+/// The input bar's spans, plus where the cursor belongs.
+///
+/// The query itself is coloured `warning` — the same colour that marks its
+/// matches in the listing — while its label stays muted, so an active filter
+/// is visible at a glance rather than being one uniform grey line.
+///
+/// Pure, so the colouring can be asserted on without rendering a frame.
+fn input_bar_spans(
+    command: Option<&TextInput>,
+    search: Option<&Search>,
+    filter: Option<&FilterSpec>,
+    colors: &Colors,
+) -> (Vec<Span<'static>>, Option<u16>) {
+    let label = Style::new().fg(colors.muted());
+    let query = Style::new().fg(colors.warning()).bold();
+
+    if let Some(input) = command {
+        return (
+            vec![
+                Span::styled(":", label),
+                Span::styled(input.value.clone(), Style::new().fg(colors.foreground())),
+            ],
+            Some(1 + input.cursor as u16),
+        );
+    }
+
+    match search {
+        // One filter bar for both kinds of query: the prefix says how what has
+        // been typed is being read.
+        Some(s) => {
+            // A regex that does not compile yet outranks the query colour: the
+            // user needs to know the pattern is not doing what it reads like.
+            let value = if s.regex_invalid {
+                Style::new().fg(colors.error()).bold()
+            } else {
+                query
+            };
+            const PREFIX: &str = "filter: ";
+            (
+                vec![
+                    Span::styled(PREFIX, label),
+                    Span::styled(s.input.value.clone(), value),
+                ],
+                Some(PREFIX.len() as u16 + s.input.cursor as u16),
+            )
+        }
+        None => match filter {
+            Some(filter) => (
+                vec![
+                    Span::styled(format!("{} filter: ", filter.kind_label()), label),
+                    Span::styled(filter.pattern().to_string(), query),
+                    Span::styled("  (Ctrl+f to edit, Esc to clear)", label),
+                ],
+                None,
+            ),
+            None => (Vec::new(), None),
+        },
     }
 }
 
@@ -1102,5 +1185,86 @@ mod tests {
     #[test]
     fn without_a_line_nothing_changes() {
         assert_eq!(args_for("vim", None), vec!["/tmp/a.rs"]);
+    }
+
+    fn colors() -> Colors {
+        Theme::builtin().expect("the built-in theme parses").colors
+    }
+
+    /// The spans of the input bar as `(text, foreground)` pairs.
+    fn bar(
+        command: Option<&TextInput>,
+        search: Option<&Search>,
+        filter: Option<&FilterSpec>,
+    ) -> Vec<(String, Option<ratatui::style::Color>)> {
+        let (spans, _) = input_bar_spans(command, search, filter, &colors());
+        spans
+            .into_iter()
+            .map(|s| (s.content.into_owned(), s.style.fg))
+            .collect()
+    }
+
+    #[test]
+    fn an_active_filter_shows_its_pattern_in_the_match_colour() {
+        let colors = colors();
+        let filter = FilterSpec::Fuzzy("cargo".into());
+        let spans = bar(None, None, Some(&filter));
+
+        assert_eq!(spans[0].0, "fuzzy filter: ");
+        assert_eq!(spans[0].1, Some(colors.muted()));
+        // The pattern itself, in the same colour that marks its matches.
+        assert_eq!(spans[1].0, "cargo");
+        assert_eq!(spans[1].1, Some(colors.warning()));
+        assert_eq!(spans[2].1, Some(colors.muted()));
+    }
+
+    #[test]
+    fn a_filter_being_typed_shows_the_query_in_the_match_colour() {
+        let colors = colors();
+        let search = Search::new("carg".into());
+        let spans = bar(None, Some(&search), None);
+
+        assert_eq!(spans[0].0, "filter: ");
+        assert_eq!(spans[0].1, Some(colors.muted()));
+        assert_eq!(spans[1].0, "carg");
+        assert_eq!(spans[1].1, Some(colors.warning()));
+    }
+
+    #[test]
+    fn a_regex_that_does_not_compile_yet_is_flagged_as_an_error() {
+        let colors = colors();
+        let mut search = Search::new("foo(".into());
+        search.regex_invalid = true;
+        let spans = bar(None, Some(&search), None);
+
+        // The broken-regex warning outranks the query colour.
+        assert_eq!(spans[1].0, "foo(");
+        assert_eq!(spans[1].1, Some(colors.error()));
+    }
+
+    #[test]
+    fn the_command_bar_is_left_alone() {
+        let colors = colors();
+        let input = TextInput::new("rename");
+        let spans = bar(Some(&input), None, None);
+
+        assert_eq!(spans[0].0, ":");
+        assert_eq!(spans[1].0, "rename");
+        assert_eq!(spans[1].1, Some(colors.foreground()));
+    }
+
+    #[test]
+    fn the_cursor_sits_after_what_has_been_typed() {
+        let search = Search::new("ab".into());
+        let (_, cursor) = input_bar_spans(None, Some(&search), None, &colors());
+        // "filter: " is eight columns wide.
+        assert_eq!(cursor, Some(10));
+    }
+
+    #[test]
+    fn an_applied_filter_has_no_cursor() {
+        let filter = FilterSpec::Regex("^a".into());
+        let (_, cursor) = input_bar_spans(None, None, Some(&filter), &colors());
+        assert_eq!(cursor, None);
     }
 }

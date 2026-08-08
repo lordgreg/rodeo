@@ -104,6 +104,12 @@ pub const COMMANDS: &[CommandSpec] = &[
         arg_kind: ArgKind::None,
     },
     CommandSpec {
+        names: &["bookmarks"],
+        args: "",
+        description: "Browse the bookmarks",
+        arg_kind: ArgKind::None,
+    },
+    CommandSpec {
         names: &["term"],
         args: "<cmd>",
         description: "Run a command attached to the terminal (lazygit, htop…)",

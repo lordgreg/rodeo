@@ -46,7 +46,12 @@ const fn bind(
 const KEYBINDS: &[Keybind] = &[
     bind("?", "This help", &[Action::Help]),
     bind("r", "Rename", &[Action::Rename]),
-    bind("B", "Bulk rename (2+ selected)", &[Action::BulkRename]),
+    bind("R", "Bulk rename (2+ selected)", &[Action::BulkRename]),
+    bind(
+        "b / B",
+        "Bookmark entry / list bookmarks",
+        &[Action::BookmarkToggle, Action::Bookmarks],
+    ),
     bind(
         "/",
         "Find files by name (fuzzy or regex)",
@@ -126,6 +131,11 @@ const KEYBINDS: &[Keybind] = &[
     bind(
         "r / D / x (trash)",
         "Restore / delete permanently / select",
+        &[],
+    ),
+    bind(
+        "Enter / 1-9 / d / P (bookmarks)",
+        "Jump / jump to nth / remove / prune missing",
         &[],
     ),
     bind("Esc", "Close / clear filter / clear selection", &[]),

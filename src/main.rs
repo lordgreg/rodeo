@@ -10,6 +10,9 @@ fn main() -> color_eyre::Result<()> {
 
     let args = rodeo::cli::Args::parse();
 
+    // Held on to: bookmarks are stored beside whichever config was actually
+    // read, so `--config ./rodeo.toml` keeps its own set.
+    let config_path = Config::get_config_path(args.config.as_deref());
     let mut config = Config::load_config(args.config.as_deref())?;
 
     if args.left.is_some() || args.right.is_some() {
@@ -33,6 +36,6 @@ fn main() -> color_eyre::Result<()> {
     };
 
     info!("Starting UI");
-    ratatui::run(|terminal| App::new(theme, config).run(terminal))?;
+    ratatui::run(|terminal| App::new(theme, config, &config_path).run(terminal))?;
     Ok(())
 }
