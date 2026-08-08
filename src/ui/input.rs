@@ -4,6 +4,7 @@
 //! dialogs, the input bar, the remaining overlays, then Ctrl-, Shift- and
 //! finally unmodified keys resolved through the configurable keymap.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -24,7 +25,7 @@ use super::{
     textinput::{TextEdit, TextInput},
 };
 use crate::config::Config;
-use crate::fs::{filter::SearchFilter, ops};
+use crate::fs::{archive, filter::SearchFilter, ops};
 use crate::types::{ActivePane, SortOrder, SortType};
 use crate::ui::theme::Theme;
 
@@ -835,6 +836,18 @@ impl App {
                 self.clipboard.clear();
                 self.clipboard_cut = false;
             }
+            (
+                DialogAction::ExtractArchive {
+                    archive_path,
+                    kind,
+                    names,
+                    dest_dir,
+                    total,
+                },
+                DialogResult::Confirmed,
+            ) => {
+                self.run_archive_extract(archive_path, kind, names, dest_dir, total);
+            }
             _ => {}
         }
     }
@@ -887,6 +900,9 @@ impl App {
     }
 
     fn start_rename(&mut self) {
+        if self.archive_write_blocked() {
+            return;
+        }
         let Some(entry) = self.panes.get_active_pane().get_selected_entry() else {
             return;
         };
@@ -971,6 +987,9 @@ impl App {
     }
 
     fn start_delete(&mut self) {
+        if self.archive_write_blocked() {
+            return;
+        }
         let targets = self.op_targets();
         if targets.is_empty() {
             return;
@@ -1020,17 +1039,54 @@ impl App {
         self.ok_status("Deleted permanently".to_string());
     }
 
+    /// `true` (after leaving a footer error) when the active pane is
+    /// browsing inside an archive, where nothing but navigating, selecting
+    /// and extracting (`Copy`) is allowed.
+    fn archive_write_blocked(&mut self) -> bool {
+        if self.panes.get_active_pane().is_archive() {
+            self.err_status("Read-only inside an archive".to_string());
+            true
+        } else {
+            false
+        }
+    }
+
+    /// `true` (after leaving a footer error) when the inactive pane — the
+    /// destination of a copy/move/paste — is browsing inside an archive.
+    fn archive_paste_target_blocked(&mut self) -> bool {
+        if self.panes.get_inactive_pane().is_archive() {
+            self.err_status("Cannot paste into an archive".to_string());
+            true
+        } else {
+            false
+        }
+    }
+
     fn start_copy(&mut self) {
+        if self.panes.get_active_pane().is_archive() {
+            self.start_archive_extract();
+            return;
+        }
         self.start_transfer_op(Transfer::Copy);
     }
 
     fn start_move(&mut self) {
+        // Nothing can be removed from a read-only archive, so a "move" out of
+        // one would really just be a copy — refused rather than silently
+        // reinterpreted.
+        if self.archive_write_blocked() {
+            return;
+        }
         self.start_transfer_op(Transfer::Move);
     }
 
     /// Checks the targets, then either asks about overwrites or gets on with
     /// it. Copy and move used to be two functions differing by three lines.
     fn start_transfer_op(&mut self, transfer: Transfer) {
+        if self.archive_paste_target_blocked() {
+            return;
+        }
+
         let sources = self.op_targets();
         if sources.is_empty() {
             return;
@@ -1100,9 +1156,78 @@ impl App {
         });
     }
 
+    /// Extracts the archive pane's targets (selection, or the highlighted
+    /// entry) into the other pane's real directory. The only write-shaped
+    /// action a read-only archive pane allows.
+    fn start_archive_extract(&mut self) {
+        if self.archive_paste_target_blocked() {
+            return;
+        }
+
+        let pane = self.panes.get_active_pane();
+        let Some((archive_path, kind)) = pane.archive_source() else {
+            return; // not actually in archive mode — nothing to do
+        };
+        let names: BTreeSet<String> = pane.archive_targets().into_iter().collect();
+        if names.is_empty() {
+            return;
+        }
+        let total = pane.archive_extract_size(&names);
+        let dest_dir = PathBuf::from(&self.panes.get_inactive_pane().path);
+
+        let conflicts = names
+            .iter()
+            .filter(|n| {
+                let base = n.rsplit('/').next().unwrap_or(n);
+                dest_dir.join(base).exists()
+            })
+            .count();
+
+        if conflicts > 0 {
+            self.open_dialog(Dialog::confirm(
+                "Overwrite?",
+                format!("{conflicts} item(s) exist in the other pane. Overwrite?"),
+                DialogAction::ExtractArchive {
+                    archive_path,
+                    kind,
+                    names,
+                    dest_dir,
+                    total,
+                },
+            ));
+        } else {
+            self.run_archive_extract(archive_path, kind, names, dest_dir, total);
+        }
+    }
+
+    /// Starts the background extraction worker and shows the same progress
+    /// gauge a regular transfer uses.
+    fn run_archive_extract(
+        &mut self,
+        archive_path: PathBuf,
+        kind: archive::ArchiveKind,
+        names: BTreeSet<String>,
+        dest_dir: PathBuf,
+        total: u64,
+    ) {
+        let (rx, cancel) = archive::spawn_extract(archive_path, kind, names, dest_dir);
+        self.progress = Some(super::Progress {
+            title: "Extracting…".to_string(),
+            total_bytes: total,
+            done_bytes: 0,
+            rx,
+            cancel,
+            is_cut: false,
+        });
+    }
+
     /// Yanks the operation targets (selection or highlighted entry) into the
     /// internal clipboard as a copy.
     fn yank(&mut self) {
+        if self.archive_write_blocked() {
+            return;
+        }
+
         let targets = self.op_targets();
         if targets.is_empty() {
             return;
@@ -1115,7 +1240,7 @@ impl App {
     /// Pastes the clipboard into the active pane's directory. `cut` moves
     /// instead of copying and clears the clipboard afterwards.
     fn paste(&mut self, cut: bool) {
-        if self.clipboard.is_empty() {
+        if self.clipboard.is_empty() || self.archive_write_blocked() {
             return;
         }
 
@@ -1600,6 +1725,9 @@ impl App {
     }
 
     fn compute_dir_sizes(&mut self) {
+        if self.archive_write_blocked() {
+            return;
+        }
         let count = self.panes.get_active_pane_mut().compute_dir_sizes();
         self.ok_status(format!("Sizes computed for {count} directories"));
     }
@@ -1607,6 +1735,9 @@ impl App {
     /// Bulk rename works on the selection, or on the highlighted entry when
     /// nothing is selected. Fewer than two targets is not worth a popup.
     fn start_bulk_rename(&mut self) {
+        if self.archive_write_blocked() {
+            return;
+        }
         let pane = self.panes.get_active_pane();
         let targets: Vec<PathBuf> = if pane.has_selections() {
             pane.selected_entries()
@@ -1674,6 +1805,9 @@ impl App {
     }
 
     fn prompt_create(&mut self) {
+        if self.archive_write_blocked() {
+            return;
+        }
         let parent = PathBuf::from(&self.panes.get_active_pane().path);
         self.open_dialog(Dialog::input(
             "Create",
@@ -3021,5 +3155,206 @@ mod tests {
             app.panes.get_active_pane().filter(),
             Some(FilterSpec::Fuzzy(_))
         ));
+    }
+
+    /// `Enter` on a zip/tar/tar.gz switches the pane into a read-only virtual
+    /// listing of its contents; navigation, selection and `Copy` (extraction)
+    /// keep working, everything that writes is refused.
+    mod archive_vfs {
+        use super::*;
+
+        fn zip_with(dir: &Path, name: &str, files: &[(&str, &[u8])]) -> PathBuf {
+            let path = dir.join(name);
+            let file = std::fs::File::create(&path).unwrap();
+            let mut zip = zip::ZipWriter::new(file);
+            let options = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
+            for (entry_name, content) in files {
+                zip.start_file(*entry_name, options).unwrap();
+                std::io::Write::write_all(&mut zip, content).unwrap();
+            }
+            zip.finish().unwrap();
+            path
+        }
+
+        /// Two independent panes, so extraction has somewhere real to land.
+        fn test_app_two_dirs(left: &Path, right: &Path) -> App {
+            let config = Config {
+                initial_directory_left: left.to_string_lossy().to_string(),
+                initial_directory_right: right.to_string_lossy().to_string(),
+                ..Default::default()
+            };
+            let theme = Theme::load_theme(None).expect("default theme in themes/");
+            App::new(theme, config, &left.join("config.toml"))
+        }
+
+        fn enter_archive(app: &mut App, zip: &Path) {
+            app.panes.get_active_pane_mut().select_by_path(zip);
+            app.dispatch_key(&key(KeyCode::Enter, KeyModifiers::NONE));
+        }
+
+        /// Drains the active transfer to completion, the same way the run
+        /// loop does every frame, without needing a real terminal tick.
+        fn settle_progress(app: &mut App) {
+            for _ in 0..600 {
+                app.pump_progress();
+                if app.progress.is_none() {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            panic!("the background transfer never finished");
+        }
+
+        #[test]
+        fn enter_on_an_archive_lists_its_contents_instead_of_opening_an_editor() {
+            let dir = tempfile::tempdir().unwrap();
+            let zip = zip_with(dir.path(), "a.zip", &[("src/main.rs", b"fn main() {}")]);
+            let mut app = test_app(dir.path());
+
+            enter_archive(&mut app, &zip);
+
+            assert!(app.panes.get_active_pane().is_archive());
+            assert!(
+                app.panes
+                    .get_active_pane()
+                    .display_path()
+                    .ends_with("a.zip")
+            );
+            assert!(app.pending_editor_file.is_none());
+
+            let pane = app.panes.get_active_pane_mut();
+            pane.select_by_path(&PathBuf::from("src"));
+            assert_eq!(
+                pane.get_selected_entry().map(|e| e.name),
+                Some("src".to_string())
+            );
+        }
+
+        #[test]
+        fn backspace_at_the_archive_root_exits_to_the_real_directory() {
+            let dir = tempfile::tempdir().unwrap();
+            let zip = zip_with(dir.path(), "a.zip", &[("top.txt", b"hi")]);
+            let mut app = test_app(dir.path());
+            enter_archive(&mut app, &zip);
+            assert!(app.panes.get_active_pane().is_archive());
+
+            app.dispatch_key(&key(KeyCode::Backspace, KeyModifiers::NONE));
+
+            assert!(!app.panes.get_active_pane().is_archive());
+            let pane = app.panes.get_active_pane_mut();
+            pane.select_by_path(&dir.path().join("a.zip"));
+            assert_eq!(
+                pane.get_selected_entry().map(|e| e.name),
+                Some("a.zip".to_string())
+            );
+        }
+
+        #[test]
+        fn write_actions_are_refused_inside_an_archive() {
+            let dir = tempfile::tempdir().unwrap();
+            let zip = zip_with(dir.path(), "a.zip", &[("top.txt", b"hi")]);
+            let mut app = test_app(dir.path());
+            enter_archive(&mut app, &zip);
+
+            for (code, modifiers) in [
+                (KeyCode::Char('a'), KeyModifiers::NONE), // Create
+                (KeyCode::Char('r'), KeyModifiers::NONE), // Rename
+                (KeyCode::Char('M'), KeyModifiers::NONE), // Move
+                (KeyCode::Char('S'), KeyModifiers::NONE), // DirSizes
+            ] {
+                app.dispatch_key(&key(code, modifiers));
+                assert!(
+                    app.overlay.is_none(),
+                    "{code:?} must not open a dialog inside an archive"
+                );
+                let status = app.footer.status_text().unwrap_or_default();
+                assert!(
+                    status.contains("Read-only"),
+                    "{code:?} should report read-only, got {status:?}"
+                );
+            }
+
+            // `dd` (delete) is a chord; both keys must be swallowed.
+            app.dispatch_key(&key(KeyCode::Char('d'), KeyModifiers::NONE));
+            app.dispatch_key(&key(KeyCode::Char('d'), KeyModifiers::NONE));
+            assert!(app.overlay.is_none());
+        }
+
+        #[test]
+        fn copy_extracts_the_selected_entry_into_the_other_pane() {
+            let left = tempfile::tempdir().unwrap();
+            let right = tempfile::tempdir().unwrap();
+            let zip = zip_with(
+                left.path(),
+                "a.zip",
+                &[("src/main.rs", b"fn main() {}"), ("top.txt", b"hi")],
+            );
+            let mut app = test_app_two_dirs(left.path(), right.path());
+            enter_archive(&mut app, &zip);
+            app.panes
+                .get_active_pane_mut()
+                .select_by_path(&PathBuf::from("top.txt"));
+
+            app.dispatch_key(&key(KeyCode::Char('Y'), KeyModifiers::NONE));
+            settle_progress(&mut app);
+
+            assert_eq!(
+                std::fs::read_to_string(right.path().join("top.txt")).unwrap(),
+                "hi"
+            );
+            let status = app.footer.status_text().unwrap_or_default().to_string();
+            assert!(!status.to_lowercase().contains("fail"), "{status}");
+        }
+
+        #[test]
+        fn move_is_refused_inside_an_archive_even_though_copy_extracts() {
+            let left = tempfile::tempdir().unwrap();
+            let right = tempfile::tempdir().unwrap();
+            let zip = zip_with(left.path(), "a.zip", &[("top.txt", b"hi")]);
+            let mut app = test_app_two_dirs(left.path(), right.path());
+            enter_archive(&mut app, &zip);
+            app.panes
+                .get_active_pane_mut()
+                .select_by_path(&PathBuf::from("top.txt"));
+
+            app.dispatch_key(&key(KeyCode::Char('M'), KeyModifiers::NONE));
+
+            assert!(!right.path().join("top.txt").exists());
+            assert!(
+                app.footer
+                    .status_text()
+                    .unwrap_or_default()
+                    .contains("Read-only")
+            );
+        }
+
+        #[test]
+        fn pasting_into_an_archive_pane_is_refused() {
+            let left = tempfile::tempdir().unwrap();
+            let right = tempfile::tempdir().unwrap();
+            std::fs::write(right.path().join("donor.txt"), "x").unwrap();
+            let zip = zip_with(left.path(), "a.zip", &[("top.txt", b"hi")]);
+            let mut app = test_app_two_dirs(left.path(), right.path());
+
+            // Yank from the real (right) pane, switch to the archive (left)
+            // pane, then try to paste into it.
+            app.panes.set_active_pane(ActivePane::Right);
+            app.panes
+                .get_active_pane_mut()
+                .select_by_path(&right.path().join("donor.txt"));
+            app.dispatch_key(&key(KeyCode::Char('y'), KeyModifiers::NONE));
+            app.panes.set_active_pane(ActivePane::Left);
+            enter_archive(&mut app, &zip);
+
+            app.dispatch_key(&key(KeyCode::Char('p'), KeyModifiers::NONE));
+
+            assert!(
+                app.footer
+                    .status_text()
+                    .unwrap_or_default()
+                    .contains("Read-only")
+            );
+        }
     }
 }

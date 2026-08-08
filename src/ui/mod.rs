@@ -571,7 +571,7 @@ impl App {
     /// listing's own `git status` run, so this costs no subprocesses.
     pub(crate) fn sync_header(&mut self) {
         let pane = self.panes.get_active_pane();
-        let path = pane.path.to_string();
+        let path = pane.display_path();
         let git = pane.git_summary().cloned();
         self.header.update(path, git);
     }

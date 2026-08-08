@@ -327,11 +327,7 @@ impl PopupPreview {
         if lower.ends_with(".pdf") {
             return FileType::Pdf;
         }
-        if lower.ends_with(".zip")
-            || lower.ends_with(".tar")
-            || lower.ends_with(".tar.gz")
-            || lower.ends_with(".tgz")
-        {
+        if crate::fs::archive::ArchiveKind::of(std::path::Path::new(path)).is_some() {
             return FileType::Archive;
         }
 

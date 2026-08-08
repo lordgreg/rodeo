@@ -4,6 +4,7 @@
 //! ([`DialogAction`]), so the caller can hand it off and forget about it until
 //! a [`DialogResult`] comes back.
 
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use crossterm::event::{KeyCode, KeyEvent};
@@ -15,6 +16,7 @@ use ratatui::{
     widgets::{Block, Borders, Clear, Padding, Paragraph, Wrap},
 };
 
+use crate::fs::archive::ArchiveKind;
 use crate::ui::{
     component::{Component, centered_popup, content_size},
     textinput::TextInput,
@@ -64,6 +66,13 @@ pub enum DialogAction {
     PasteMove {
         sources: Vec<PathBuf>,
         dest_dir: PathBuf,
+    },
+    ExtractArchive {
+        archive_path: PathBuf,
+        kind: ArchiveKind,
+        names: BTreeSet<String>,
+        dest_dir: PathBuf,
+        total: u64,
     },
     None,
 }

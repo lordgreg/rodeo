@@ -13,6 +13,7 @@ use std::{
 
 use crate::{
     config::Config,
+    fs::archive::{self, ArchiveEntry, ArchiveKind},
     types::{ActivePane, SortOrder, SortType},
     ui::{
         component::Component,
@@ -334,6 +335,61 @@ impl Entry {
     pub fn toggle_selected(&mut self) {
         self.selected = !self.selected;
     }
+
+    /// Builds a listing row from an archive entry. There is no filesystem
+    /// backing it, so `path` carries the entry's full archive-root-relative
+    /// name (used to navigate into it, or to name it in an extraction
+    /// request) rather than a real path — and metadata a real `stat` would
+    /// give (modified time, permissions, owner) is not available without
+    /// per-format parsing, so those columns stay a plain "-".
+    fn from_archive(entry: &ArchiveEntry) -> Self {
+        Self {
+            kind: if entry.is_dir {
+                EntryKind::Directory
+            } else {
+                EntryKind::File
+            },
+            path: PathBuf::from(&entry.name),
+            name: entry.basename().to_string(),
+            size: if entry.is_dir {
+                "-".to_string()
+            } else {
+                format_size(entry.size)
+            },
+            modified: "-".to_string(),
+            selected: false,
+            raw_size: entry.size,
+            raw_modified: SystemTime::UNIX_EPOCH,
+            git_status: None,
+            is_symlink: false,
+            link_target: None,
+            dir_size: None,
+            permissions: "-".to_string(),
+            owner: "-".to_string(),
+        }
+    }
+
+    /// The ".." row shown while browsing inside an archive. Kept separate
+    /// from [`Entry::parent`], which resolves a real filesystem path that
+    /// does not exist inside an archive.
+    fn archive_parent() -> Self {
+        Self {
+            kind: EntryKind::Parent,
+            path: PathBuf::new(),
+            name: String::from(".."),
+            modified: String::from("-"),
+            raw_modified: SystemTime::UNIX_EPOCH,
+            raw_size: 0,
+            selected: false,
+            size: String::from("-"),
+            git_status: None,
+            is_symlink: false,
+            link_target: None,
+            dir_size: None,
+            permissions: "-".to_string(),
+            owner: "-".to_string(),
+        }
+    }
 }
 
 /// `Span::styled` when there is a style, a plain span when there is not.
@@ -436,6 +492,23 @@ impl Highlighter {
     }
 }
 
+/// Where a pane is while it is browsing inside an archive, instead of a real
+/// directory.
+///
+/// `Pane::path` is left untouched the whole time — it stays the real
+/// directory that contains the archive file, which is what the filesystem
+/// watcher and git both keep working against — while this carries the
+/// virtual state: which archive, and where inside it.
+#[derive(Debug)]
+struct ArchiveView {
+    archive_path: PathBuf,
+    kind: ArchiveKind,
+    /// `""` at the archive root, else a `/`-separated path within it.
+    internal_dir: String,
+    /// The full listing, read once when the archive was entered.
+    entries: Vec<ArchiveEntry>,
+}
+
 /// One directory pane: its listing, cursor, selection and filter.
 ///
 /// Deliberately not `Clone`: a pane owns the receiving end of its background
@@ -463,6 +536,9 @@ pub struct Pane {
     /// A `git status` still running in the background, if any. Its result is
     /// picked up by [`Pane::poll_git`].
     pending_git: Option<git::PendingRepoInfo>,
+    /// `Some` while this pane is browsing inside an archive rather than a
+    /// real directory. See [`ArchiveView`].
+    archive: Option<ArchiveView>,
 }
 
 impl Pane {
@@ -484,6 +560,7 @@ impl Pane {
             icons: config.icons,
             git_summary: None,
             pending_git: Some(git::PendingRepoInfo::spawn(Path::new(&path))),
+            archive: None,
         };
 
         pane.state.select(Some(0));
@@ -912,11 +989,18 @@ impl Pane {
             .map(|p| p.path.clone())
             .collect();
 
-        (self.entries, self.hidden_count) = read_entries(&self.path, config);
-        // Dropping any previous receiver here is what discards a stale answer:
-        // the old worker's send fails and its result is never applied to this
-        // listing.
-        self.pending_git = Some(git::PendingRepoInfo::spawn(Path::new(&self.path)));
+        match &self.archive {
+            Some(view) => {
+                (self.entries, self.hidden_count) = read_archive_entries(view, config);
+            }
+            None => {
+                (self.entries, self.hidden_count) = read_entries(&self.path, config);
+                // Dropping any previous receiver here is what discards a stale
+                // answer: the old worker's send fails and its result is never
+                // applied to this listing.
+                self.pending_git = Some(git::PendingRepoInfo::spawn(Path::new(&self.path)));
+            }
+        }
 
         if !clear_selection {
             for entry in &mut self.entries {
@@ -947,7 +1031,26 @@ impl Pane {
         self.state.select(Some(cursor_index));
     }
 
+    /// Goes up one level: one archive path segment while inside an archive
+    /// (or leaves the archive entirely from its root), otherwise one real
+    /// directory level.
     pub fn go_to_parent(&mut self, current_path: &str) -> OpenAction {
+        if let Some(view) = &mut self.archive {
+            if view.internal_dir.is_empty() {
+                // At the archive root: step back out to the real directory
+                // that contains it. `self.path` never changed while
+                // browsing, so there is nothing to restore.
+                self.archive = None;
+            } else {
+                view.internal_dir = view
+                    .internal_dir
+                    .rsplit_once('/')
+                    .map(|(parent, _)| parent.to_string())
+                    .unwrap_or_default();
+            }
+            return OpenAction::DirectoryOpened;
+        }
+
         if let Some(parent) = Path::new(current_path).parent() {
             let resolved = parent
                 .canonicalize()
@@ -969,8 +1072,29 @@ impl Pane {
             return OpenAction::Nothing;
         };
 
+        if self.archive.is_some() {
+            return match entry.kind {
+                EntryKind::Parent => {
+                    let previous = self.path.clone();
+                    self.go_to_parent(&previous)
+                }
+                EntryKind::Directory => {
+                    let name = entry.path.to_string_lossy().into_owned();
+                    // Unwrap: guarded by the `is_some()` check above.
+                    self.archive.as_mut().unwrap().internal_dir = name;
+                    OpenAction::Reload
+                }
+                // Files inside an archive are not openable, and nested
+                // archives are not supported: browsing and extraction only.
+                _ => OpenAction::Nothing,
+            };
+        }
+
         match entry.kind {
-            EntryKind::File => OpenAction::FileOpened(entry.path.clone()),
+            EntryKind::File => match ArchiveKind::of(&entry.path) {
+                Some(kind) => self.enter_archive(entry.path.clone(), kind),
+                None => OpenAction::FileOpened(entry.path.clone()),
+            },
             EntryKind::Parent => {
                 let previous = self.path.clone();
 
@@ -987,6 +1111,100 @@ impl Pane {
                 }
             },
             _ => OpenAction::Nothing,
+        }
+    }
+
+    /// Reads an archive's full listing and switches this pane into browsing
+    /// it, at its root.
+    fn enter_archive(&mut self, archive_path: PathBuf, kind: ArchiveKind) -> OpenAction {
+        match archive::list_entries(&archive_path, kind) {
+            Ok(entries) => {
+                self.archive = Some(ArchiveView {
+                    archive_path,
+                    kind,
+                    internal_dir: String::new(),
+                    entries,
+                });
+                // Not applicable inside an archive; a stale summary from
+                // before entering must not linger in the header.
+                self.git_summary = None;
+                OpenAction::Reload
+            }
+            Err(e) => {
+                log::error!("cannot read archive {}: {e}", archive_path.display());
+                OpenAction::Nothing
+            }
+        }
+    }
+
+    /// `true` while this pane is browsing inside an archive rather than a
+    /// real directory — everything but navigating, selecting and extracting
+    /// is refused while this holds.
+    pub fn is_archive(&self) -> bool {
+        self.archive.is_some()
+    }
+
+    /// The archive-internal names an operation should apply to: the
+    /// selection, or the highlighted entry when nothing is selected. Mirrors
+    /// `App::op_targets`, but for archive-internal names rather than real
+    /// paths. Empty outside archive mode.
+    pub fn archive_targets(&self) -> Vec<String> {
+        if self.archive.is_none() {
+            return Vec::new();
+        }
+
+        let selected: Vec<String> = self
+            .selected_entries()
+            .into_iter()
+            .filter(|e| matches!(e.kind, EntryKind::File | EntryKind::Directory))
+            .map(|e| e.path.to_string_lossy().into_owned())
+            .collect();
+        if !selected.is_empty() {
+            return selected;
+        }
+
+        self.get_selected_entry()
+            .filter(|e| matches!(e.kind, EntryKind::File | EntryKind::Directory))
+            .map(|e| vec![e.path.to_string_lossy().into_owned()])
+            .unwrap_or_default()
+    }
+
+    /// The archive being browsed, and its kind — `None` outside archive mode.
+    pub fn archive_source(&self) -> Option<(PathBuf, ArchiveKind)> {
+        self.archive
+            .as_ref()
+            .map(|v| (v.archive_path.clone(), v.kind))
+    }
+
+    /// Total uncompressed size of `names` within the archive being browsed —
+    /// `0` outside archive mode.
+    pub fn archive_extract_size(&self, names: &std::collections::BTreeSet<String>) -> u64 {
+        self.archive
+            .as_ref()
+            .map(|v| archive::extract_size(&v.entries, names))
+            .unwrap_or(0)
+    }
+
+    /// What the pane's border title and the header should show: the real
+    /// path, or — while browsing an archive — the real path plus the
+    /// archive's own name and the position inside it. `self.path` itself is
+    /// never rewritten while browsing, so this is purely a display concern.
+    pub fn display_path(&self) -> String {
+        let Some(view) = &self.archive else {
+            return self.path.clone();
+        };
+
+        let archive_name = view
+            .archive_path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| view.archive_path.to_string_lossy().into_owned());
+        let base = self.path.trim_end_matches('/');
+
+        if view.internal_dir.is_empty() {
+            format!("{base}/{archive_name}")
+        } else {
+            format!("{base}/{archive_name}/{}", view.internal_dir)
         }
     }
 
@@ -1038,10 +1256,14 @@ impl Pane {
 
         let width = (area.width as usize).saturating_sub_signed(8);
 
-        let path = if self.path.len() > width {
-            format!("...{}", &self.path[self.path.len().saturating_sub(width)..])
+        let display_path = self.display_path();
+        let path = if display_path.len() > width {
+            format!(
+                "...{}",
+                &display_path[display_path.len().saturating_sub(width)..]
+            )
         } else {
-            self.path.clone()
+            display_path
         };
 
         // The cursor row is only shown in the focused pane, and the unfocused
@@ -1196,6 +1418,31 @@ fn read_entries(dir: &str, config: &Config) -> (Vec<Entry>, usize) {
     sort_entries(&mut entries, config);
 
     entries.insert(0, Entry::parent(dir));
+
+    (entries, hidden_count)
+}
+
+/// Lists the children of `view.internal_dir` from the archive's cached
+/// listing into sorted [`Entry`] values — the archive-mode counterpart of
+/// [`read_entries`].
+fn read_archive_entries(view: &ArchiveView, config: &Config) -> (Vec<Entry>, usize) {
+    let mut hidden_count = 0;
+
+    let mut entries: Vec<Entry> = archive::children(&view.entries, &view.internal_dir)
+        .into_iter()
+        .filter(|e| {
+            let is_hidden = e.basename().starts_with('.');
+            if is_hidden {
+                hidden_count += 1;
+            }
+            config.show_hidden || !is_hidden
+        })
+        .map(Entry::from_archive)
+        .collect();
+
+    sort_entries(&mut entries, config);
+
+    entries.insert(0, Entry::archive_parent());
 
     (entries, hidden_count)
 }
@@ -1863,6 +2110,133 @@ mod tests {
             assert!(pane.git_pending(), "reload must re-run git");
             settle(&mut pane);
             assert!(!pane.git_pending());
+        }
+    }
+
+    mod archive_pane {
+        use super::*;
+
+        fn zip_with(dir: &std::path::Path, name: &str, files: &[(&str, &[u8])]) -> PathBuf {
+            let path = dir.join(name);
+            let file = fs::File::create(&path).unwrap();
+            let mut zip = zip::ZipWriter::new(file);
+            let options = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
+            for (entry_name, content) in files {
+                zip.start_file(*entry_name, options).unwrap();
+                zip.write_all(content).unwrap();
+            }
+            zip.finish().unwrap();
+            path
+        }
+
+        /// A pane at `dir`, with its cursor moved onto `name`.
+        fn pane_selecting(dir: &std::path::Path, name: &str) -> Pane {
+            let mut pane = Pane::new(&Config::default(), dir.to_str().unwrap());
+            pane.select_by_path(&dir.join(name));
+            pane
+        }
+
+        #[test]
+        fn entering_a_zip_lists_its_root() {
+            let dir = tempfile::tempdir().unwrap();
+            zip_with(dir.path(), "a.zip", &[("src/main.rs", b"fn main() {}")]);
+            let mut pane = pane_selecting(dir.path(), "a.zip");
+
+            assert!(!pane.is_archive());
+            let action = pane.open();
+            assert!(matches!(action, OpenAction::Reload));
+            pane.reload(&Config::default(), true);
+
+            assert!(pane.is_archive());
+            assert!(pane.display_path().ends_with("a.zip"));
+            let names: Vec<&str> = pane.visible_entries().map(|e| e.name.as_str()).collect();
+            assert!(names.contains(&".."));
+            assert!(names.contains(&"src"));
+            assert!(
+                pane.visible_entries()
+                    .find(|e| e.name == "src")
+                    .is_some_and(|e| e.kind == EntryKind::Directory)
+            );
+        }
+
+        #[test]
+        fn navigating_into_a_directory_and_back_out_round_trips() {
+            let dir = tempfile::tempdir().unwrap();
+            zip_with(dir.path(), "a.zip", &[("src/main.rs", b"fn main() {}")]);
+            let mut pane = pane_selecting(dir.path(), "a.zip");
+            pane.open();
+            pane.reload(&Config::default(), true);
+
+            // Down into "src".
+            pane.select_by_path(&PathBuf::from("src"));
+            pane.open();
+            pane.reload(&Config::default(), true);
+            let names: Vec<&str> = pane.visible_entries().map(|e| e.name.as_str()).collect();
+            assert!(names.contains(&"main.rs"));
+
+            // ".." goes back to the archive root, still inside the archive.
+            pane.state.select(Some(0)); // the Parent row is always first
+            pane.open();
+            pane.reload(&Config::default(), true);
+            assert!(pane.is_archive());
+            let names: Vec<&str> = pane.visible_entries().map(|e| e.name.as_str()).collect();
+            assert!(names.contains(&"src"));
+
+            // ".." again leaves the archive; the real directory is unchanged.
+            let real_path = pane.path.clone();
+            pane.state.select(Some(0));
+            pane.open();
+            pane.reload(&Config::default(), true);
+            assert!(!pane.is_archive());
+            assert_eq!(pane.path, real_path);
+            assert!(
+                pane.visible_entries().any(|e| e.name == "a.zip"),
+                "back to a real listing of the containing directory"
+            );
+        }
+
+        #[test]
+        fn archive_targets_report_the_full_internal_name() {
+            let dir = tempfile::tempdir().unwrap();
+            zip_with(
+                dir.path(),
+                "a.zip",
+                &[("src/main.rs", b"fn main() {}"), ("top.txt", b"hi")],
+            );
+            let mut pane = pane_selecting(dir.path(), "a.zip");
+            pane.open();
+            pane.reload(&Config::default(), true);
+
+            pane.select_by_path(&PathBuf::from("top.txt"));
+            assert_eq!(pane.archive_targets(), vec!["top.txt".to_string()]);
+        }
+
+        #[test]
+        fn extract_size_counts_the_selected_files() {
+            let dir = tempfile::tempdir().unwrap();
+            zip_with(
+                dir.path(),
+                "a.zip",
+                &[("src/main.rs", b"0123456789"), ("top.txt", b"hi")],
+            );
+            let mut pane = pane_selecting(dir.path(), "a.zip");
+            pane.open();
+            pane.reload(&Config::default(), true);
+
+            let mut names = std::collections::BTreeSet::new();
+            names.insert("src".to_string());
+            assert_eq!(pane.archive_extract_size(&names), 10);
+        }
+
+        #[test]
+        fn a_non_archive_file_still_opens_normally() {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(dir.path().join("plain.txt"), "hi").unwrap();
+            let mut pane = pane_selecting(dir.path(), "plain.txt");
+
+            assert!(matches!(pane.open(), OpenAction::FileOpened(_)));
+            assert!(!pane.is_archive());
         }
     }
 

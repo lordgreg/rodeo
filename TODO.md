@@ -7,7 +7,70 @@ see below for what each turned out to be.
 
 ---
 
+## Feature Ideas
+
+Not scheduled, not designed — a candidate list for where rodeo could go next,
+ranked roughly by fit/impact. Kept lean and MC-inspired: prefer extending
+existing subsystems and shelling out to external tools over adding heavy
+runtime dependencies or a scripting layer.
+
+1. **Archive creation.** The inverse of the archive VFS below — pack a
+   pane's selection into a zip/tar.gz. Same deps (`zip`, `tar`, `flate2`),
+   closes the asymmetry.
+2. **Directory compare & sync.** Diff two dirs (name/size/mtime, optionally
+   content hash), highlight differences pane-to-pane, offer bulk
+   copy/sync — a classic MC feature that maps directly onto the dual-pane
+   model and the existing diff-coloring used for git status.
+3. **Undo/redo for destructive ops.** An in-session journal of the last N
+   copy/move/delete/rename operations with `u` to reverse. Delete already
+   routes through `trash`, so this is mostly bookkeeping plus reversing
+   copy/move/rename.
+4. **Permission/ownership editor + symlink creation.** A small popup (like
+   `popup_bulkrename.rs`) for chmod (octal + rwx toggles) and chown, plus a
+   "create symlink" command. No new deps — `libc` is already pulled in.
+5. **Duplicate-file / hash finder.** Background-thread scan (same spawn
+   pattern as git status / `notify`) that hashes files under a pane and
+   flags content duplicates, not just name matches.
+6. **Per-extension user actions.** Config-driven "open with," e.g. an
+   `[actions]` table mapping globs to shell commands (`*.pdf = "zathura %f"`).
+   Reuses the `%f` expansion already implemented for `:!`/`:term`.
+7. **Directory tree panel.** A collapsible tree view as an alternative to the
+   flat listing for one pane, for faster jumps in deep trees.
+8. **Act on find-files / find-in-files results.** Multi-select hits in the
+   Telescope-style popups and batch-delete/copy/move them through the
+   existing `fs/ops.rs` worker, instead of only navigate/open-in-`$EDITOR`.
+9. **Remote panel via SSH tooling.** Shell out to `ssh`/`sftp`/`rsync` (same
+   philosophy as shelling to `git` rather than linking `libgit2`) to browse
+   and transfer to a remote host. Highest effort of the list; only worth it
+   if remote workflows matter to users.
+
+*Archive VFS was #1 here — done, see Completed below.*
+
+---
+
 ## Completed
+
+### Feature ideas, done so far
+
+- **Archive VFS.** `Enter` on a `.zip`/`.tar`/`.tar.gz` now switches the pane
+  into a read-only virtual listing of its contents instead of opening it in
+  `$EDITOR`; `Enter`/`Backspace` navigate in and out (stepping back out at
+  the archive's root returns to the real directory that contains it, which
+  is never rewritten while browsing), and `Copy` extracts the selection into
+  the other pane through the same worker-thread transfer machinery as a
+  normal copy — `fs::archive::spawn_extract` reports progress over the same
+  `ProgressMsg` channel `fs::ops::spawn_transfer` does, so the progress
+  gauge and its cancellation needed no new UI code. `Move`, and every write
+  action (create/rename/delete/bulk-rename/paste/dir-size), is refused with
+  a footer error while a pane is in archive mode. `fs::archive::list_entries`
+  synthesizes any ancestor directories an archive did not store explicitly,
+  so navigation always has a full breadcrumb even for a zip built file-by-
+  file. It is a new, separate module rather than a reuse of
+  `popup_preview.rs`'s existing `zip_listing`/`tar_listing`: those produce a
+  flat "name  size" text block for a human to read, the VFS needs a real
+  is-a-directory hierarchy to walk — sharing one function would have forced
+  an awkward shape onto one side or the other. Nested archives and opening
+  a file from inside one are explicitly out of scope.
 
 ### 0.2.0 — the seven priority items
 
