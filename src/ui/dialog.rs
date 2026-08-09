@@ -57,14 +57,23 @@ pub enum DialogAction {
     },
     Copy {
         sources: Vec<PathBuf>,
+        /// Directory the sources were listed under; their layout below it is
+        /// recreated under `dest_dir`. See `fs::ops::dest_dir_for`.
+        base: PathBuf,
         dest_dir: PathBuf,
     },
     Move {
         sources: Vec<PathBuf>,
+        /// Directory the sources were listed under; their layout below it is
+        /// recreated under `dest_dir`. See `fs::ops::dest_dir_for`.
+        base: PathBuf,
         dest_dir: PathBuf,
     },
     PasteMove {
         sources: Vec<PathBuf>,
+        /// Directory the sources were listed under; their layout below it is
+        /// recreated under `dest_dir`. See `fs::ops::dest_dir_for`.
+        base: PathBuf,
         dest_dir: PathBuf,
     },
     ExtractArchive {

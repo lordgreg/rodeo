@@ -18,10 +18,55 @@ pub fn file_name_of(path: &Path) -> String {
         .unwrap_or_default()
 }
 
+/// The directory `src` lands in when a transfer preserves the layout below
+/// `base` — the pane's own directory.
+///
+/// In a flat listing every source is a direct child of `base`, so the relative
+/// path is a bare file name and this is always `dest_dir` itself. A tree pane
+/// can hand up rows from any depth, where flattening them all into `dest_dir`
+/// would let `src/config.rs` and `tests/config.rs` land on the same name and
+/// silently overwrite each other.
+pub fn dest_dir_for(src: &Path, base: &Path, dest_dir: &Path) -> PathBuf {
+    src.strip_prefix(base)
+        .ok()
+        .and_then(|rel| rel.parent())
+        .filter(|rel_parent| !rel_parent.as_os_str().is_empty())
+        .map(|rel_parent| dest_dir.join(rel_parent))
+        .unwrap_or_else(|| dest_dir.to_path_buf())
+}
+
+/// [`dest_dir_for`], creating the directory when the layout calls for one that
+/// is not there yet.
+pub fn prepare_dest_dir(src: &Path, base: &Path, dest_dir: &Path) -> io::Result<PathBuf> {
+    let target = dest_dir_for(src, base, dest_dir);
+    if target != dest_dir {
+        fs::create_dir_all(&target)?;
+    }
+
+    Ok(target)
+}
+
+/// Canonicalizes `path`, or — when it does not exist yet — its nearest
+/// existing ancestor with the missing tail put back on.
+///
+/// A structure-preserving transfer aims at directories that have still to be
+/// created, and refusing to check those would drop the guards below exactly
+/// where they are needed.
+fn canonicalize_lenient(path: &Path) -> Option<PathBuf> {
+    if let Ok(resolved) = path.canonicalize() {
+        return Some(resolved);
+    }
+
+    let parent = path.parent()?;
+    let name = path.file_name()?;
+
+    Some(canonicalize_lenient(parent)?.join(name))
+}
+
 /// Rejects transfer when the destination is the source itself (would truncate
 /// the file on copy) or lies inside the source directory (infinite recursion).
 pub fn check_transfer_paths(src: &Path, dest_dir: &Path) -> Result<(), String> {
-    let (Ok(src_c), Ok(dest_c)) = (src.canonicalize(), dest_dir.canonicalize()) else {
+    let (Ok(src_c), Some(dest_c)) = (src.canonicalize(), canonicalize_lenient(dest_dir)) else {
         return Ok(()); // cannot verify — let the fs operation surface any error
     };
 
@@ -192,8 +237,12 @@ pub enum ProgressMsg {
 /// Spawns a background copy (cut=false) or move (cut=true) transfer.
 /// Returns the progress channel and a cancellation flag: set it to `true` to
 /// abort (the partially written file is removed).
+///
+/// `base` is the directory the sources are listed under; their layout below it
+/// is recreated under `dest_dir`. See [`dest_dir_for`].
 pub fn spawn_transfer(
     sources: Vec<PathBuf>,
+    base: PathBuf,
     dest_dir: PathBuf,
     cut: bool,
 ) -> (mpsc::Receiver<ProgressMsg>, Arc<AtomicBool>) {
@@ -203,9 +252,9 @@ pub fn spawn_transfer(
 
     thread::spawn(move || {
         let result = if cut {
-            move_with_progress(&sources, &dest_dir, &cancel_worker, &tx)
+            move_with_progress(&sources, &base, &dest_dir, &cancel_worker, &tx)
         } else {
-            copy_with_progress(&sources, &dest_dir, &cancel_worker, &tx)
+            copy_with_progress(&sources, &base, &dest_dir, &cancel_worker, &tx)
         };
         let _ = tx.send(ProgressMsg::Done(result.map_err(|e| e.to_string())));
     });
@@ -222,24 +271,27 @@ fn check_cancel(cancel: &AtomicBool) -> io::Result<()> {
 
 fn copy_with_progress(
     sources: &[PathBuf],
+    base: &Path,
     dest_dir: &Path,
     cancel: &AtomicBool,
     tx: &mpsc::Sender<ProgressMsg>,
 ) -> io::Result<()> {
     for src in sources {
         check_cancel(cancel)?;
-        copy_entry_progress(src, dest_dir, cancel, tx)?;
+        let target = prepare_dest_dir(src, base, dest_dir)?;
+        copy_entry_progress(src, &target, cancel, tx)?;
     }
     Ok(())
 }
 
 fn move_with_progress(
     sources: &[PathBuf],
+    base: &Path,
     dest_dir: &Path,
     cancel: &AtomicBool,
     tx: &mpsc::Sender<ProgressMsg>,
 ) -> io::Result<()> {
-    copy_with_progress(sources, dest_dir, cancel, tx)?;
+    copy_with_progress(sources, base, dest_dir, cancel, tx)?;
     check_cancel(cancel)?;
     for src in sources {
         delete_entry(src)?;
@@ -544,6 +596,86 @@ mod tests {
         assert!(capped.bytes <= full.bytes);
     }
 
+    /// A flat listing only ever yields direct children, so preserving the
+    /// layout must be a no-op there — this is what keeps the old behaviour.
+    #[test]
+    fn a_direct_child_lands_straight_in_the_destination() {
+        let dest = Path::new("/dest");
+
+        assert_eq!(
+            dest_dir_for(Path::new("/base/a.txt"), Path::new("/base"), dest),
+            dest
+        );
+    }
+
+    #[test]
+    fn a_nested_source_keeps_the_directories_above_it() {
+        assert_eq!(
+            dest_dir_for(
+                Path::new("/base/a/b/c.txt"),
+                Path::new("/base"),
+                Path::new("/dest")
+            ),
+            Path::new("/dest/a/b")
+        );
+    }
+
+    /// Nothing sensible to preserve, so fall back to the destination itself
+    /// rather than inventing a path.
+    #[test]
+    fn a_source_outside_the_base_lands_in_the_destination() {
+        assert_eq!(
+            dest_dir_for(
+                Path::new("/elsewhere/a.txt"),
+                Path::new("/base"),
+                Path::new("/dest")
+            ),
+            Path::new("/dest")
+        );
+    }
+
+    /// Two files sharing a name, as a tree pane can easily offer, must not
+    /// collide in the destination.
+    #[test]
+    fn same_named_files_from_different_directories_do_not_overwrite() {
+        let src = tempfile::tempdir().unwrap();
+        let dst = tempfile::tempdir().unwrap();
+        for sub in ["one", "two"] {
+            fs::create_dir(src.path().join(sub)).unwrap();
+            fs::write(src.path().join(sub).join("config.rs"), sub).unwrap();
+        }
+
+        for sub in ["one", "two"] {
+            let file = src.path().join(sub).join("config.rs");
+            let target = prepare_dest_dir(&file, src.path(), dst.path()).unwrap();
+            copy_entry(&file, &target).unwrap();
+        }
+
+        assert_eq!(
+            fs::read_to_string(dst.path().join("one/config.rs")).unwrap(),
+            "one"
+        );
+        assert_eq!(
+            fs::read_to_string(dst.path().join("two/config.rs")).unwrap(),
+            "two"
+        );
+    }
+
+    /// With the layout preserved, a nested source copied into a pane rooted at
+    /// its own ancestor lands back on itself — `fs::copy` would truncate it.
+    #[test]
+    fn a_transfer_onto_itself_is_refused_even_before_the_directory_exists() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir(root.path().join("a")).unwrap();
+        let file = root.path().join("a/b.txt");
+        fs::write(&file, "keep").unwrap();
+
+        let target = dest_dir_for(&file, root.path(), root.path());
+
+        assert_eq!(target, root.path().join("a"));
+        assert!(check_transfer_paths(&file, &target).is_err());
+    }
+
     #[test]
     fn spawn_transfer_copies_and_reports_done() {
         let src_root = tempfile::tempdir().unwrap();
@@ -553,6 +685,7 @@ mod tests {
 
         let (rx, _cancel) = spawn_transfer(
             vec![src_root.path().join("big.bin")],
+            src_root.path().to_path_buf(),
             dst_root.path().to_path_buf(),
             false,
         );
@@ -589,6 +722,7 @@ mod tests {
 
         let result = copy_with_progress(
             &[src_root.path().join("a.bin")],
+            src_root.path(),
             dst_root.path(),
             &cancel,
             &tx,

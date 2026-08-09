@@ -87,6 +87,12 @@ const KEYBINDS: &[Keybind] = &[
         &[Action::OpenEntry],
     ),
     bind("Backspace", "Parent directory", &[Action::ParentDir]),
+    bind("t", "Tree view on/off", &[Action::ToggleTree]),
+    bind(
+        "Right / Left",
+        "Tree: open/close a directory",
+        &[Action::TreeExpand, Action::TreeCollapse],
+    ),
     bind(
         "Tab, h, l",
         "Switch panes",

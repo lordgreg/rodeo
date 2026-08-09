@@ -5,6 +5,7 @@
 //! name/size/date instead of squeezing everything.
 
 use std::{
+    collections::HashSet,
     fs,
     ops::Range,
     path::{Path, PathBuf},
@@ -132,7 +133,7 @@ pub(crate) fn format_date(t: SystemTime) -> String {
     dt.format("%Y-%m-%d %H:%M").to_string()
 }
 
-#[derive(PartialEq, Debug, Clone)]
+#[derive(PartialEq, Debug, Clone, Copy)]
 /// What a listing entry is. Symlinks keep their *resolved* kind so that
 /// navigating and editing follow the link; only broken or exotic targets stay
 /// [`EntryKind::Symlink`].
@@ -206,6 +207,10 @@ pub struct Entry {
     pub raw_mode: u32,
     pub raw_uid: u32,
     pub raw_gid: u32,
+    /// How far this row is indented in a tree listing; `0` everywhere else.
+    /// Kept on the entry rather than in a parallel vector so that narrowing
+    /// `visible` (a filter) cannot desynchronise a row from its own depth.
+    pub depth: u16,
 }
 
 impl Entry {
@@ -322,6 +327,7 @@ impl Entry {
             raw_mode,
             raw_uid,
             raw_gid,
+            depth: 0,
         }
     }
 
@@ -349,6 +355,7 @@ impl Entry {
             raw_mode: 0,
             raw_uid: 0,
             raw_gid: 0,
+            depth: 0,
         }
     }
 
@@ -389,6 +396,7 @@ impl Entry {
             raw_mode: 0,
             raw_uid: 0,
             raw_gid: 0,
+            depth: 0,
         }
     }
 
@@ -414,6 +422,7 @@ impl Entry {
             raw_mode: 0,
             raw_uid: 0,
             raw_gid: 0,
+            depth: 0,
         }
     }
 }
@@ -535,6 +544,77 @@ struct ArchiveView {
     entries: Vec<ArchiveEntry>,
 }
 
+/// Where a pane is while it is showing a collapsible tree instead of a flat
+/// listing of one directory.
+///
+/// The root is `Pane::path`, deliberately: everything that reads a pane's
+/// directory — the filesystem watcher, `git status`, the header — keeps
+/// working unchanged, and re-rooting stays the same operation it is in a flat
+/// listing. Only which rows the pane shows is different.
+#[derive(Debug, Default)]
+struct TreeView {
+    /// Directories the user has opened, by absolute path.
+    ///
+    /// Keyed by path rather than by row so that a reload — which rebuilds
+    /// every entry from scratch — can put the tree back exactly as it was
+    /// instead of collapsing it on every filesystem event.
+    expanded: HashSet<PathBuf>,
+}
+
+/// What a pane is listing.
+///
+/// The modes are mutually exclusive by nature — a pane cannot be inside an
+/// archive *and* showing a tree — so this is one enum rather than a field per
+/// mode, which would make three of its four states legal and one a bug.
+/// Matching on it exhaustively is also what stops a new mode from silently
+/// missing a branch in `reload`/`open`/`go_to_parent`/`display_path`.
+#[derive(Debug, Default)]
+enum ListingSource {
+    /// The pane's own directory, read straight from the filesystem.
+    #[default]
+    Directory,
+    /// Browsing inside an archive file. See [`ArchiveView`].
+    Archive(ArchiveView),
+    /// A collapsible tree rooted at the pane's directory. See [`TreeView`].
+    Tree(TreeView),
+}
+
+impl ListingSource {
+    fn archive(&self) -> Option<&ArchiveView> {
+        match self {
+            Self::Archive(view) => Some(view),
+            _ => None,
+        }
+    }
+
+    fn archive_mut(&mut self) -> Option<&mut ArchiveView> {
+        match self {
+            Self::Archive(view) => Some(view),
+            _ => None,
+        }
+    }
+
+    fn tree(&self) -> Option<&TreeView> {
+        match self {
+            Self::Tree(view) => Some(view),
+            _ => None,
+        }
+    }
+
+    fn tree_mut(&mut self) -> Option<&mut TreeView> {
+        match self {
+            Self::Tree(view) => Some(view),
+            _ => None,
+        }
+    }
+
+    /// `false` where creating, renaming or deleting makes no sense — an
+    /// archive is browsed read-only.
+    fn is_writable(&self) -> bool {
+        !matches!(self, Self::Archive(_))
+    }
+}
+
 /// One directory pane: its listing, cursor, selection and filter.
 ///
 /// Deliberately not `Clone`: a pane owns the receiving end of its background
@@ -562,9 +642,9 @@ pub struct Pane {
     /// A `git status` still running in the background, if any. Its result is
     /// picked up by [`Pane::poll_git`].
     pending_git: Option<git::PendingRepoInfo>,
-    /// `Some` while this pane is browsing inside an archive rather than a
-    /// real directory. See [`ArchiveView`].
-    archive: Option<ArchiveView>,
+    /// What this pane is listing: its own directory, or something virtual.
+    /// See [`ListingSource`].
+    source: ListingSource,
 }
 
 impl Pane {
@@ -586,7 +666,7 @@ impl Pane {
             icons: config.icons,
             git_summary: None,
             pending_git: Some(git::PendingRepoInfo::spawn(Path::new(&path))),
-            archive: None,
+            source: ListingSource::Directory,
         };
 
         pane.state.select(Some(0));
@@ -617,7 +697,7 @@ impl Pane {
         match info {
             Some(info) => {
                 for entry in &mut self.entries {
-                    entry.git_status = info.entries.get(&entry.name).copied();
+                    entry.git_status = info.entries.get(&entry.path).copied();
                 }
                 self.git_summary = Some(info.summary);
             }
@@ -683,6 +763,10 @@ impl Pane {
     /// Rebuilds the visible list, keeping entries the rank function scores
     /// `Some` and ordering them best-first (stable).
     fn apply_rank(&mut self, mut rank: impl FnMut(&str) -> Option<u32>) {
+        if self.is_tree() {
+            return self.apply_rank_in_tree(rank);
+        }
+
         let mut parents: Vec<usize> = Vec::new();
         let mut scored: Vec<(u32, usize)> = Vec::new();
 
@@ -711,13 +795,44 @@ impl Pane {
             }));
     }
 
+    /// Filtering a tree prunes it instead of ranking it.
+    ///
+    /// Best-first ordering would tear children away from their parents and
+    /// leave the indentation describing a shape that is no longer there, so
+    /// rows keep their tree order and every directory on the way down to a
+    /// match is kept — a match five levels deep is meaningless without the
+    /// path that leads to it.
+    fn apply_rank_in_tree(&mut self, mut rank: impl FnMut(&str) -> Option<u32>) {
+        let matched: Vec<&Entry> = self
+            .entries
+            .iter()
+            .filter(|entry| rank(&entry.name).is_some())
+            .collect();
+
+        let mut keep: HashSet<&Path> = HashSet::new();
+        for entry in matched {
+            keep.insert(entry.path.as_path());
+            keep.extend(entry.path.ancestors().skip(1));
+        }
+
+        self.visible = self
+            .entries
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| keep.contains(entry.path.as_path()))
+            .map(|(i, _)| i)
+            .collect();
+
+        self.state.select(Some(0));
+    }
+
     /// Shows every entry, in listing order.
     fn show_all(&mut self) {
         self.visible = (0..self.entries.len()).collect();
     }
 
     /// The entries on screen, in display order.
-    fn visible_entries(&self) -> impl Iterator<Item = &Entry> {
+    pub(crate) fn visible_entries(&self) -> impl Iterator<Item = &Entry> {
         self.visible.iter().filter_map(|&i| self.entries.get(i))
     }
 
@@ -850,6 +965,9 @@ impl Pane {
                     };
 
                     let mut spans = Vec::new();
+                    if let Some(guide) = self.tree_guide(e) {
+                        spans.push(Span::styled(guide, Style::new().fg(theme.colors.muted())));
+                    }
                     if self.icons {
                         // Coloured like the name so git status and broken
                         // symlinks stay readable at a glance.
@@ -901,6 +1019,24 @@ impl Pane {
                 Row::new(cells)
             })
             .collect()
+    }
+
+    /// The indent and the open/closed marker a tree row is prefixed with, or
+    /// `None` in a flat listing.
+    ///
+    /// Files get a marker-width run of spaces rather than nothing, so names at
+    /// the same depth line up whether or not they can be opened.
+    fn tree_guide(&self, entry: &Entry) -> Option<String> {
+        let view = self.source.tree()?;
+        let marker = if entry.kind != EntryKind::Directory {
+            "  "
+        } else if view.expanded.contains(&entry.path) {
+            "▾ "
+        } else {
+            "▸ "
+        };
+
+        Some(format!("{}{marker}", "  ".repeat(entry.depth as usize)))
     }
 
     pub fn toggle_select(&mut self) {
@@ -1015,12 +1151,15 @@ impl Pane {
             .map(|p| p.path.clone())
             .collect();
 
-        match &self.archive {
-            Some(view) => {
+        match &self.source {
+            ListingSource::Archive(view) => {
                 (self.entries, self.hidden_count) = read_archive_entries(view, config);
             }
-            None => {
-                (self.entries, self.hidden_count) = read_entries(&self.path, config);
+            ListingSource::Directory | ListingSource::Tree(_) => {
+                (self.entries, self.hidden_count) = match &self.source {
+                    ListingSource::Tree(view) => read_tree_entries(&self.path, view, config),
+                    _ => read_entries(&self.path, config),
+                };
                 // Dropping any previous receiver here is what discards a stale
                 // answer: the old worker's send fails and its result is never
                 // applied to this listing.
@@ -1061,12 +1200,12 @@ impl Pane {
     /// (or leaves the archive entirely from its root), otherwise one real
     /// directory level.
     pub fn go_to_parent(&mut self, current_path: &str) -> OpenAction {
-        if let Some(view) = &mut self.archive {
+        if let Some(view) = self.source.archive_mut() {
             if view.internal_dir.is_empty() {
                 // At the archive root: step back out to the real directory
                 // that contains it. `self.path` never changed while
                 // browsing, so there is nothing to restore.
-                self.archive = None;
+                self.source = ListingSource::Directory;
             } else {
                 view.internal_dir = view
                     .internal_dir
@@ -1081,6 +1220,15 @@ impl Pane {
             let resolved = parent
                 .canonicalize()
                 .unwrap_or_else(|_| parent.to_path_buf());
+
+            // A tree re-roots upwards rather than replacing its contents, so
+            // keep the directory just left open: collapsing it would hide the
+            // very rows the cursor came from.
+            if let Some(name) = Path::new(current_path).file_name() {
+                let child = resolved.join(name);
+                self.expand(&child);
+            }
+
             self.path = resolved.to_string_lossy().to_string();
 
             OpenAction::DirectoryOpened
@@ -1098,22 +1246,34 @@ impl Pane {
             return OpenAction::Nothing;
         };
 
-        if self.archive.is_some() {
-            return match entry.kind {
+        if self.source.archive().is_some() {
+            let kind = entry.kind;
+            let name = entry.path.to_string_lossy().into_owned();
+
+            return match kind {
                 EntryKind::Parent => {
                     let previous = self.path.clone();
                     self.go_to_parent(&previous)
                 }
                 EntryKind::Directory => {
-                    let name = entry.path.to_string_lossy().into_owned();
                     // Unwrap: guarded by the `is_some()` check above.
-                    self.archive.as_mut().unwrap().internal_dir = name;
+                    self.source.archive_mut().unwrap().internal_dir = name;
                     OpenAction::Reload
                 }
                 // Files inside an archive are not openable, and nested
                 // archives are not supported: browsing and extraction only.
                 _ => OpenAction::Nothing,
             };
+        }
+
+        // In a tree a directory opens and closes in place instead of
+        // re-rooting the pane; everything else — files, archives — behaves
+        // exactly as it does in a flat listing.
+        if self.is_tree() && entry.kind == EntryKind::Directory {
+            let path = entry.path.clone();
+            self.toggle_expanded(&path);
+
+            return OpenAction::TreeChanged;
         }
 
         match entry.kind {
@@ -1140,12 +1300,78 @@ impl Pane {
         }
     }
 
+    /// Opens a closed directory or closes an open one.
+    fn toggle_expanded(&mut self, path: &Path) -> bool {
+        if self.is_expanded(path) {
+            self.collapse(path)
+        } else {
+            self.expand(path)
+        }
+    }
+
+    /// `Right`: opens the highlighted directory, or — when it is already open
+    /// — steps onto its first child. Returns `true` when the listing has to be
+    /// rebuilt; a cursor move alone does not need one.
+    pub fn tree_expand(&mut self) -> bool {
+        let Some(entry) = self.get_selected_entry() else {
+            return false;
+        };
+        if !self.is_tree() || entry.kind != EntryKind::Directory {
+            return false;
+        }
+
+        if self.is_expanded(&entry.path) {
+            // The first child is always the very next row: the tree is
+            // flattened parent-first, children spliced in directly beneath.
+            self.move_cursor_by(1);
+            return false;
+        }
+
+        self.expand(&entry.path)
+    }
+
+    /// `Left`: closes the highlighted directory, or — when there is nothing to
+    /// close — steps out to the row of its parent. Returns `true` when the
+    /// listing has to be rebuilt.
+    pub fn tree_collapse(&mut self) -> bool {
+        let Some(entry) = self.get_selected_entry() else {
+            return false;
+        };
+        if !self.is_tree() {
+            return false;
+        }
+
+        if entry.kind == EntryKind::Directory && self.is_expanded(&entry.path) {
+            return self.collapse(&entry.path);
+        }
+
+        // Nothing to close, so go out a level. At depth 0 the parent is the
+        // tree's root, which has no row of its own, and the cursor stays put.
+        if let Some(parent) = entry.path.parent() {
+            self.select_by_path(parent);
+        }
+
+        false
+    }
+
+    /// Moves the cursor by `delta` rows without wrapping.
+    fn move_cursor_by(&mut self, delta: isize) {
+        let Some(current) = self.state.selected() else {
+            return;
+        };
+        let target = current.saturating_add_signed(delta);
+
+        if target < self.visible_len() {
+            self.state.select(Some(target));
+        }
+    }
+
     /// Reads an archive's full listing and switches this pane into browsing
     /// it, at its root.
     fn enter_archive(&mut self, archive_path: PathBuf, kind: ArchiveKind) -> OpenAction {
         match archive::list_entries(&archive_path, kind) {
             Ok(entries) => {
-                self.archive = Some(ArchiveView {
+                self.source = ListingSource::Archive(ArchiveView {
                     archive_path,
                     kind,
                     internal_dir: String::new(),
@@ -1167,7 +1393,118 @@ impl Pane {
     /// real directory — everything but navigating, selecting and extracting
     /// is refused while this holds.
     pub fn is_archive(&self) -> bool {
-        self.archive.is_some()
+        self.source.archive().is_some()
+    }
+
+    /// `false` where creating, renaming or deleting makes no sense.
+    pub fn is_writable(&self) -> bool {
+        self.source.is_writable()
+    }
+
+    /// `true` while this pane is showing a tree rather than a flat listing.
+    pub fn is_tree(&self) -> bool {
+        self.source.tree().is_some()
+    }
+
+    /// Directories this pane is showing the contents of.
+    ///
+    /// A flat listing shows one. A tree shows its root plus every opened node,
+    /// and each needs watching in its own right — the watcher is deliberately
+    /// non-recursive, so watching only the root would leave changes deep in an
+    /// opened subtree invisible, while watching it recursively would mean
+    /// walking everything below a root like `$HOME` whether it is open or not.
+    pub fn watch_dirs(&self) -> Vec<PathBuf> {
+        let root = PathBuf::from(&self.path);
+        let Some(view) = self.source.tree() else {
+            return vec![root];
+        };
+
+        let mut dirs = vec![root];
+        dirs.extend(view.expanded.iter().cloned());
+
+        dirs
+    }
+
+    /// The directory the cursor is *in* — where a new file would be created
+    /// and where a paste would land.
+    ///
+    /// In a flat listing this is always the pane's own directory. In a tree
+    /// the cursor can sit levels below the root, and `self.path` alone would
+    /// silently send the operation to the wrong place. A directory row counts
+    /// as being inside itself, which is what "create here" means with one
+    /// highlighted.
+    pub fn cursor_dir(&self) -> PathBuf {
+        let root = || PathBuf::from(&self.path);
+        if !self.is_tree() {
+            return root();
+        }
+
+        let Some(entry) = self.get_selected_entry() else {
+            return root();
+        };
+
+        match entry.kind {
+            EntryKind::Directory => entry.path,
+            _ => entry
+                .path
+                .parent()
+                .map(Path::to_path_buf)
+                .unwrap_or_else(root),
+        }
+    }
+
+    /// Switches between the flat listing and the tree, keeping the pane's
+    /// directory as the tree's root. Returns `false` — changing nothing — when
+    /// the pane is inside an archive, whose listing is not a real directory
+    /// tree to begin with.
+    ///
+    /// The caller reloads: this only decides what the next read will produce.
+    pub fn toggle_tree(&mut self) -> bool {
+        match self.source {
+            ListingSource::Archive(_) => false,
+            ListingSource::Tree(_) => {
+                self.source = ListingSource::Directory;
+                true
+            }
+            ListingSource::Directory => {
+                self.source = ListingSource::Tree(TreeView::default());
+                true
+            }
+        }
+    }
+
+    /// `true` when `path` is an opened directory in this pane's tree.
+    pub fn is_expanded(&self, path: &Path) -> bool {
+        self.source
+            .tree()
+            .is_some_and(|view| view.expanded.contains(path))
+    }
+
+    /// Opens a directory in the tree. Returns `false` when nothing changed —
+    /// not a tree, not a directory, or already open — so the caller can skip
+    /// a reload it does not need.
+    pub fn expand(&mut self, path: &Path) -> bool {
+        if !path.is_dir() {
+            return false;
+        }
+
+        self.source
+            .tree_mut()
+            .is_some_and(|view| view.expanded.insert(path.to_path_buf()))
+    }
+
+    /// Closes a directory in the tree, and everything beneath it: leaving
+    /// descendants in the set would make them silently spring back open the
+    /// next time the parent is expanded.
+    pub fn collapse(&mut self, path: &Path) -> bool {
+        let Some(view) = self.source.tree_mut() else {
+            return false;
+        };
+
+        let before = view.expanded.len();
+        view.expanded.retain(|p| !p.starts_with(path));
+
+        view.expanded.len() != before
     }
 
     /// The archive-internal names an operation should apply to: the
@@ -1175,7 +1512,7 @@ impl Pane {
     /// `App::op_targets`, but for archive-internal names rather than real
     /// paths. Empty outside archive mode.
     pub fn archive_targets(&self) -> Vec<String> {
-        if self.archive.is_none() {
+        if self.source.archive().is_none() {
             return Vec::new();
         }
 
@@ -1197,16 +1534,16 @@ impl Pane {
 
     /// The archive being browsed, and its kind — `None` outside archive mode.
     pub fn archive_source(&self) -> Option<(PathBuf, ArchiveKind)> {
-        self.archive
-            .as_ref()
+        self.source
+            .archive()
             .map(|v| (v.archive_path.clone(), v.kind))
     }
 
     /// Total uncompressed size of `names` within the archive being browsed —
     /// `0` outside archive mode.
     pub fn archive_extract_size(&self, names: &std::collections::BTreeSet<String>) -> u64 {
-        self.archive
-            .as_ref()
+        self.source
+            .archive()
             .map(|v| archive::extract_size(&v.entries, names))
             .unwrap_or(0)
     }
@@ -1216,7 +1553,7 @@ impl Pane {
     /// archive's own name and the position inside it. `self.path` itself is
     /// never rewritten while browsing, so this is purely a display concern.
     pub fn display_path(&self) -> String {
-        let Some(view) = &self.archive else {
+        let Some(view) = self.source.archive() else {
             return self.path.clone();
         };
 
@@ -1416,6 +1753,17 @@ fn sort_entries(entries: &mut [Entry], config: &Config) {
 /// thread ([`git::PendingRepoInfo`]), not in the middle of a reload the user is
 /// waiting on.
 fn read_entries(dir: &str, config: &Config) -> (Vec<Entry>, usize) {
+    let (mut entries, hidden_count) = read_level(Path::new(dir), config);
+    entries.insert(0, Entry::parent(dir));
+
+    (entries, hidden_count)
+}
+
+/// One directory's own children, sorted, with no `..` row.
+///
+/// Split out of [`read_entries`] because a tree stitches many of these
+/// together and a `..` in the middle of a tree would be nonsense.
+fn read_level(dir: &Path, config: &Config) -> (Vec<Entry>, usize) {
     let mut hidden_count = 0;
 
     let mut entries: Vec<Entry> = match fs::read_dir(dir) {
@@ -1435,7 +1783,7 @@ fn read_entries(dir: &str, config: &Config) -> (Vec<Entry>, usize) {
             .collect(),
 
         Err(e) => {
-            log::error!("cannot read {}: {}", dir, e);
+            log::error!("cannot read {}: {}", dir.display(), e);
 
             vec![]
         }
@@ -1443,7 +1791,51 @@ fn read_entries(dir: &str, config: &Config) -> (Vec<Entry>, usize) {
 
     sort_entries(&mut entries, config);
 
-    entries.insert(0, Entry::parent(dir));
+    (entries, hidden_count)
+}
+
+/// Flattens the tree rooted at `root` into display order: every child of
+/// `root`, with the children of each expanded directory spliced in directly
+/// beneath it.
+///
+/// Only directories the user has actually opened are read, so the cost is one
+/// `read_dir` per expanded node and never a recursive walk. That also bounds
+/// the recursion: descending requires a path to be in `expanded`, which only a
+/// keypress puts there, so even a symlink loop cannot run away here.
+fn read_tree_entries(root: &str, view: &TreeView, config: &Config) -> (Vec<Entry>, usize) {
+    fn push_level(
+        dir: &Path,
+        depth: u16,
+        view: &TreeView,
+        config: &Config,
+        out: &mut Vec<Entry>,
+        hidden: &mut usize,
+    ) {
+        let (level, level_hidden) = read_level(dir, config);
+        *hidden += level_hidden;
+
+        for mut entry in level {
+            entry.depth = depth;
+            let descend = entry.kind == EntryKind::Directory && view.expanded.contains(&entry.path);
+            let path = entry.path.clone();
+            out.push(entry);
+
+            if descend {
+                push_level(&path, depth + 1, view, config, out, hidden);
+            }
+        }
+    }
+
+    let mut entries = Vec::new();
+    let mut hidden_count = 0;
+    push_level(
+        Path::new(root),
+        0,
+        view,
+        config,
+        &mut entries,
+        &mut hidden_count,
+    );
 
     (entries, hidden_count)
 }
@@ -1487,6 +1879,10 @@ pub enum OpenAction {
     FileOpened(PathBuf),
     Nothing,
     DirectoryOpened,
+    /// A tree node was opened or closed: the same directory, different rows.
+    /// Distinct from [`OpenAction::Reload`] because the pane has not moved,
+    /// so the flagged selection must survive.
+    TreeChanged,
 }
 
 #[derive(Debug)]
@@ -1527,11 +1923,13 @@ impl Panes {
     }
 
     /// Returns the filesystem paths currently displayed in both panes.
-    pub fn pane_dirs(&self) -> [PathBuf; 2] {
-        [
-            PathBuf::from(&self.pane_left.path),
-            PathBuf::from(&self.pane_right.path),
-        ]
+    /// Every directory whose contents are currently on screen, for the
+    /// filesystem watcher. Usually two; a tree adds one per opened node.
+    pub fn pane_dirs(&self) -> Vec<PathBuf> {
+        let mut dirs = self.pane_left.watch_dirs();
+        dirs.extend(self.pane_right.watch_dirs());
+
+        dirs
     }
 
     pub fn get_inactive_pane(&self) -> &Pane {
@@ -2111,6 +2509,64 @@ mod tests {
             panic!("the background git status never finished");
         }
 
+        /// A repository with one changed file at the top level and one buried
+        /// two directories down. `None` when there is no usable git here.
+        fn scratch_repo() -> Option<tempfile::TempDir> {
+            let dir = tempfile::tempdir().ok()?;
+            let git = |args: &[&str]| {
+                std::process::Command::new("git")
+                    .current_dir(dir.path())
+                    .args(args)
+                    .output()
+                    .ok()
+                    .filter(|o| o.status.success())
+            };
+
+            git(&["init", "--initial-branch=trunk"])?;
+            git(&["config", "user.email", "t@example.com"])?;
+            git(&["config", "user.name", "t"])?;
+            std::fs::create_dir_all(dir.path().join("deep/inner")).ok()?;
+            std::fs::write(dir.path().join("top.txt"), "hello").ok()?;
+            std::fs::write(dir.path().join("deep/inner/buried.txt"), "hello").ok()?;
+            git(&["add", "."])?;
+            git(&["commit", "-m", "init"])?;
+            std::fs::write(dir.path().join("top.txt"), "changed").ok()?;
+            std::fs::write(dir.path().join("deep/inner/buried.txt"), "changed").ok()?;
+
+            Some(dir)
+        }
+
+        /// The status map is keyed by absolute path while entry paths are built
+        /// by `read_dir`, so the two have to agree exactly — a mismatch would
+        /// leave the column silently empty rather than fail loudly.
+        #[test]
+        fn statuses_land_on_the_entries_they_belong_to() {
+            let Some(dir) = scratch_repo() else {
+                return; // No usable git on this machine.
+            };
+            let mut pane = Pane::new(&Config::default(), dir.path().to_str().unwrap());
+
+            settle(&mut pane);
+
+            let status_of = |pane: &Pane, name: &str| {
+                pane.visible_entries()
+                    .find(|e| e.name == name)
+                    .and_then(|e| e.git_status)
+                    .map(|s| s.kind)
+            };
+
+            assert_eq!(
+                status_of(&pane, "top.txt"),
+                Some(git::GitEntryStatus::Modified)
+            );
+            // The change is two levels down; the directory row still shows it.
+            assert_eq!(
+                status_of(&pane, "deep"),
+                Some(git::GitEntryStatus::Modified),
+                "a directory must aggregate what changed beneath it"
+            );
+        }
+
         /// The listing must be usable before git has answered — that is the
         /// entire point of moving it off the UI thread.
         #[test]
@@ -2159,10 +2615,330 @@ mod tests {
         }
     }
 
+    mod tree_pane {
+        use super::*;
+
+        /// `a/` (containing `inner/deep.txt` and `mid.txt`) alongside `b.txt`.
+        fn scratch() -> tempfile::TempDir {
+            let dir = tempfile::tempdir().unwrap();
+            fs::create_dir_all(dir.path().join("a/inner")).unwrap();
+            fs::write(dir.path().join("a/inner/deep.txt"), b"").unwrap();
+            fs::write(dir.path().join("a/mid.txt"), b"").unwrap();
+            fs::write(dir.path().join("b.txt"), b"").unwrap();
+            dir
+        }
+
+        fn tree_pane(dir: &std::path::Path) -> Pane {
+            let mut pane = Pane::new(&Config::default(), dir.to_str().unwrap());
+            assert!(pane.toggle_tree());
+            pane.reload(&Config::default(), true);
+            pane
+        }
+
+        fn names(pane: &Pane) -> Vec<String> {
+            pane.visible_entries().map(|e| e.name.clone()).collect()
+        }
+
+        /// Nothing is open yet, so a tree is the flat listing — minus `..`,
+        /// which has no meaning once rows carry a depth.
+        #[test]
+        fn a_collapsed_tree_shows_only_the_root_level() {
+            let dir = scratch();
+            let pane = tree_pane(dir.path());
+
+            assert_eq!(names(&pane), vec!["a", "b.txt"]);
+            assert!(pane.visible_entries().all(|e| e.depth == 0));
+        }
+
+        #[test]
+        fn expanding_splices_children_in_beneath_their_parent() {
+            let dir = scratch();
+            let mut pane = tree_pane(dir.path());
+
+            assert!(pane.expand(&dir.path().join("a")));
+            pane.reload(&Config::default(), true);
+
+            assert_eq!(names(&pane), vec!["a", "inner", "mid.txt", "b.txt"]);
+            let depths: Vec<u16> = pane.visible_entries().map(|e| e.depth).collect();
+            assert_eq!(depths, vec![0, 1, 1, 0]);
+        }
+
+        #[test]
+        fn expansion_nests_and_survives_a_reload() {
+            let dir = scratch();
+            let mut pane = tree_pane(dir.path());
+            pane.expand(&dir.path().join("a"));
+            pane.expand(&dir.path().join("a/inner"));
+
+            // A filesystem event reloads the pane; the tree must not collapse.
+            pane.reload(&Config::default(), false);
+
+            assert_eq!(
+                names(&pane),
+                vec!["a", "inner", "deep.txt", "mid.txt", "b.txt"]
+            );
+            assert_eq!(
+                pane.visible_entries().map(|e| e.depth).collect::<Vec<_>>(),
+                vec![0, 1, 2, 1, 0]
+            );
+        }
+
+        /// Descendants left in the set would spring back open the next time
+        /// the parent was expanded, which is not what closing a node means.
+        #[test]
+        fn collapsing_closes_the_whole_subtree() {
+            let dir = scratch();
+            let mut pane = tree_pane(dir.path());
+            pane.expand(&dir.path().join("a"));
+            pane.expand(&dir.path().join("a/inner"));
+
+            assert!(pane.collapse(&dir.path().join("a")));
+            assert!(!pane.is_expanded(&dir.path().join("a/inner")));
+
+            pane.expand(&dir.path().join("a"));
+            pane.reload(&Config::default(), true);
+            assert_eq!(names(&pane), vec!["a", "inner", "mid.txt", "b.txt"]);
+        }
+
+        /// The root is what every two-pane operation and the watcher read.
+        #[test]
+        fn toggling_leaves_the_pane_directory_alone() {
+            let dir = scratch();
+            let before = Pane::new(&Config::default(), dir.path().to_str().unwrap())
+                .path
+                .clone();
+            let mut pane = tree_pane(dir.path());
+
+            assert_eq!(pane.path, before);
+            assert!(pane.toggle_tree());
+            pane.reload(&Config::default(), true);
+
+            assert!(!pane.is_tree());
+            assert_eq!(pane.path, before);
+            assert!(
+                names(&pane).contains(&"..".to_string()),
+                "flat listing is back"
+            );
+        }
+
+        #[test]
+        fn only_directories_can_be_expanded() {
+            let dir = scratch();
+            let mut pane = tree_pane(dir.path());
+
+            assert!(!pane.expand(&dir.path().join("b.txt")));
+            assert!(!pane.expand(&dir.path().join("nope")));
+        }
+
+        #[test]
+        fn enter_opens_and_closes_a_directory_in_place() {
+            let dir = scratch();
+            let mut pane = tree_pane(dir.path());
+            pane.select_by_path(&dir.path().join("a"));
+
+            assert!(matches!(pane.open(), OpenAction::TreeChanged));
+            pane.reload(&Config::default(), false);
+            assert_eq!(names(&pane), vec!["a", "inner", "mid.txt", "b.txt"]);
+            assert_eq!(
+                pane.path,
+                dir.path().to_str().unwrap(),
+                "the pane stays put"
+            );
+
+            assert!(matches!(pane.open(), OpenAction::TreeChanged));
+            pane.reload(&Config::default(), false);
+            assert_eq!(names(&pane), vec!["a", "b.txt"]);
+        }
+
+        /// Files keep working as they do in a flat listing — the tree changes
+        /// what directories do, not what `Enter` on a file means.
+        #[test]
+        fn enter_on_a_file_still_opens_it() {
+            let dir = scratch();
+            let mut pane = tree_pane(dir.path());
+            pane.select_by_path(&dir.path().join("b.txt"));
+
+            match pane.open() {
+                OpenAction::FileOpened(p) => assert_eq!(p, dir.path().join("b.txt")),
+                _ => panic!("a file must still be handed to the editor"),
+            }
+        }
+
+        #[test]
+        fn right_opens_a_directory_then_steps_into_it() {
+            let dir = scratch();
+            let mut pane = tree_pane(dir.path());
+            pane.select_by_path(&dir.path().join("a"));
+
+            assert!(pane.tree_expand(), "the first press opens the directory");
+            pane.reload(&Config::default(), false);
+
+            assert!(
+                !pane.tree_expand(),
+                "the second press only moves the cursor"
+            );
+            assert_eq!(
+                pane.get_selected_entry().map(|e| e.name),
+                Some("inner".to_string())
+            );
+        }
+
+        #[test]
+        fn left_closes_a_directory_then_steps_out_of_it() {
+            let dir = scratch();
+            let mut pane = tree_pane(dir.path());
+            pane.expand(&dir.path().join("a"));
+            pane.reload(&Config::default(), false);
+            pane.select_by_path(&dir.path().join("a/mid.txt"));
+
+            // On a file there is nothing to close, so the cursor goes out.
+            assert!(!pane.tree_collapse());
+            assert_eq!(
+                pane.get_selected_entry().map(|e| e.name),
+                Some("a".to_string())
+            );
+
+            assert!(pane.tree_collapse(), "now the directory itself closes");
+            pane.reload(&Config::default(), false);
+            assert_eq!(names(&pane), vec!["a", "b.txt"]);
+        }
+
+        /// Re-rooting upwards must not hide the rows the cursor came from.
+        #[test]
+        fn backspace_re_roots_upwards_and_keeps_the_old_root_open() {
+            let dir = scratch();
+            let root = dir.path().canonicalize().unwrap();
+            let mut pane = Pane::new(&Config::default(), root.join("a").to_str().unwrap());
+            assert!(pane.toggle_tree());
+            pane.reload(&Config::default(), true);
+            assert_eq!(names(&pane), vec!["inner", "mid.txt"]);
+
+            let here = pane.path.clone();
+            assert!(matches!(
+                pane.go_to_parent(&here),
+                OpenAction::DirectoryOpened
+            ));
+            pane.reload(&Config::default(), true);
+
+            assert!(pane.is_tree(), "re-rooting must not leave the tree");
+            assert_eq!(pane.path, root.to_str().unwrap());
+            assert_eq!(names(&pane), vec!["a", "inner", "mid.txt", "b.txt"]);
+        }
+
+        /// Every two-pane operation asks the pane where the cursor is, not
+        /// where its root is — otherwise a copy from deep in a tree would go
+        /// somewhere the user never pointed at.
+        #[test]
+        fn the_cursor_directory_follows_the_cursor_down_the_tree() {
+            let dir = scratch();
+            let root = dir.path().canonicalize().unwrap();
+            let mut pane = tree_pane(&root);
+
+            // A directory row counts as being inside itself.
+            pane.select_by_path(&root.join("a"));
+            assert_eq!(pane.cursor_dir(), root.join("a"));
+
+            pane.expand(&root.join("a"));
+            pane.reload(&Config::default(), false);
+            pane.select_by_path(&root.join("a/mid.txt"));
+            assert_eq!(pane.cursor_dir(), root.join("a"), "a file means its parent");
+        }
+
+        /// Ranking best-first would tear children away from their parents and
+        /// leave the indentation lying about the shape of the listing.
+        #[test]
+        fn filtering_prunes_the_tree_instead_of_reordering_it() {
+            let dir = scratch();
+            let root = dir.path().canonicalize().unwrap();
+            let mut pane = tree_pane(&root);
+            pane.expand(&root.join("a"));
+            pane.expand(&root.join("a/inner"));
+            pane.reload(&Config::default(), true);
+
+            pane.set_filter(FilterSpec::Regex("deep".to_string()))
+                .unwrap();
+
+            // The path down to the match is kept, in tree order, and nothing
+            // unrelated survives.
+            assert_eq!(names(&pane), vec!["a", "inner", "deep.txt"]);
+            assert_eq!(
+                pane.visible_entries().map(|e| e.depth).collect::<Vec<_>>(),
+                vec![0, 1, 2]
+            );
+        }
+
+        #[test]
+        fn clearing_a_filter_restores_the_whole_tree() {
+            let dir = scratch();
+            let root = dir.path().canonicalize().unwrap();
+            let mut pane = tree_pane(&root);
+            pane.expand(&root.join("a"));
+            pane.reload(&Config::default(), true);
+
+            pane.set_filter(FilterSpec::Regex("mid".to_string()))
+                .unwrap();
+            assert_eq!(names(&pane), vec!["a", "mid.txt"]);
+
+            pane.clear_filter();
+            assert_eq!(names(&pane), vec!["a", "inner", "mid.txt", "b.txt"]);
+        }
+
+        /// The watcher is non-recursive, so an opened node needs a watch of
+        /// its own or changes inside it go unnoticed.
+        #[test]
+        fn every_opened_node_is_watched() {
+            let dir = scratch();
+            let root = dir.path().canonicalize().unwrap();
+            let mut pane = tree_pane(&root);
+
+            assert_eq!(pane.watch_dirs(), vec![root.clone()]);
+
+            pane.expand(&root.join("a"));
+            let watched = pane.watch_dirs();
+
+            assert_eq!(watched.len(), 2);
+            assert!(watched.contains(&root));
+            assert!(watched.contains(&root.join("a")));
+        }
+
+        /// A flat listing has no depth, so the answer is always the pane's own
+        /// directory — which is what every existing caller relied on.
+        #[test]
+        fn a_flat_listing_reports_its_own_directory() {
+            let dir = scratch();
+            let root = dir.path().canonicalize().unwrap();
+            let mut pane = Pane::new(&Config::default(), root.to_str().unwrap());
+            pane.select_by_path(&root.join("a"));
+
+            assert_eq!(pane.cursor_dir(), root);
+        }
+
+        /// An archive listing is not a real directory tree, so the two modes
+        /// must not be combinable.
+        #[test]
+        fn a_tree_is_refused_inside_an_archive() {
+            let dir = tempfile::tempdir().unwrap();
+            super::archive_pane::zip_with(dir.path(), "a.zip", &[("f.txt", b"x")]);
+            let mut pane = Pane::new(&Config::default(), dir.path().to_str().unwrap());
+            pane.select_by_path(&dir.path().join("a.zip"));
+            pane.open();
+            pane.reload(&Config::default(), true);
+
+            assert!(pane.is_archive());
+            assert!(!pane.toggle_tree(), "the toggle must be refused");
+            assert!(!pane.is_tree());
+            assert!(pane.is_archive(), "the archive view must be untouched");
+        }
+    }
+
     mod archive_pane {
         use super::*;
 
-        fn zip_with(dir: &std::path::Path, name: &str, files: &[(&str, &[u8])]) -> PathBuf {
+        pub(super) fn zip_with(
+            dir: &std::path::Path,
+            name: &str,
+            files: &[(&str, &[u8])],
+        ) -> PathBuf {
             let path = dir.join(name);
             let file = fs::File::create(&path).unwrap();
             let mut zip = zip::ZipWriter::new(file);
@@ -2887,6 +3663,7 @@ mod tests {
 
         fn make_file(name: &str, size: u64) -> Entry {
             Entry {
+                depth: 0,
                 path: PathBuf::from(name),
                 name: name.to_string(),
                 kind: EntryKind::File,

@@ -9,6 +9,11 @@ terminal.
 
 - **Dual-pane navigation** with per-pane sorting, filtering and hidden-file
   toggling; the active pane is highlighted and the inactive one dimmed.
+- **Tree view** (`t`) — a collapsible tree in place of a pane's flat listing,
+  rooted where the pane already is, for getting around a deep project without
+  walking into it one directory at a time. Nodes open lazily, file operations
+  work from a tree row as from a flat one, and a copy or move recreates the
+  directories the sources were listed under.
 - **File operations** — copy, move, rename, mkdir, touch, delete to trash
   (with a permanent-delete fallback), symlink creation (`L`, pointing at the
   source from the other pane), and a permissions/ownership popup (`C`: chmod
@@ -136,7 +141,7 @@ Action names: `open` `parent` `first` `last` `select`
 `preview` `search` `filter` `find` `palette` `rename` `create` `yank` `paste`
 `paste_move` `delete_chord` `copy` `move` `delete` `down` `up` `hidden`
 `refresh` `sort_next` `sort_prev` `sort_reverse` `bulk_rename` `bookmark`
-`bookmarks`
+`bookmarks` `permissions` `symlink` `tree` `tree_expand` `tree_collapse`
 
 `:so` reloads the config at runtime, `:w` writes the current settings back.
 
@@ -170,7 +175,9 @@ actually bound — rebind something and the bar says so.
 | `g` / `G` | First / last entry |
 | `h` / `l` / `Tab` | Left pane / right pane / switch |
 | `Enter` | Open directory, or edit file in `$EDITOR` |
-| `Backspace` | Parent directory |
+| `Backspace` | Parent directory (tree: re-root one level up) |
+| `t` | Tree view on/off |
+| `→` / `←` | Tree: open/close a directory, or step in/out |
 | `Space` | Preview (`w` wraps, `Ctrl+f/b` page, `Ctrl+d/u` half-page, `Ctrl+j/k` scroll) |
 | `x` / `*` / `Ctrl+a` | Toggle selection / select by wildcard / select all |
 | `y` / `p` / `P` | Yank / paste copy / paste move |

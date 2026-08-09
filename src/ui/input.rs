@@ -71,12 +71,49 @@ impl Transfer {
         }
     }
 
-    fn dialog_action(self, sources: Vec<PathBuf>, dest_dir: PathBuf) -> DialogAction {
+    fn dialog_action(
+        self,
+        sources: Vec<PathBuf>,
+        base: PathBuf,
+        dest_dir: PathBuf,
+    ) -> DialogAction {
         match self {
-            Self::Copy => DialogAction::Copy { sources, dest_dir },
-            Self::Move => DialogAction::Move { sources, dest_dir },
+            Self::Copy => DialogAction::Copy {
+                sources,
+                base,
+                dest_dir,
+            },
+            Self::Move => DialogAction::Move {
+                sources,
+                base,
+                dest_dir,
+            },
         }
     }
+}
+
+/// Validates every source against the destination it will really land in, and
+/// counts the names already taken there.
+///
+/// Both checks have to use the per-source destination rather than the pane's
+/// own directory: with the layout preserved, `X/a/b.txt` copied into a pane
+/// rooted at `X` lands back on itself, which the pane-level check would miss.
+fn check_and_count_conflicts(
+    sources: &[PathBuf],
+    base: &Path,
+    dest_dir: &Path,
+) -> Result<usize, String> {
+    let mut conflicts = 0;
+
+    for src in sources {
+        let target = ops::dest_dir_for(src, base, dest_dir);
+        ops::check_transfer_paths(src, &target)?;
+        if target.join(ops::file_name_of(src)).exists() {
+            conflicts += 1;
+        }
+    }
+
+    Ok(conflicts)
 }
 
 /// Longest command echoed back in a footer message, so a long one-liner does
@@ -913,14 +950,35 @@ impl App {
             (DialogAction::DeletePermanent { paths }, DialogResult::Confirmed) => {
                 self.delete_permanent(paths);
             }
-            (DialogAction::Copy { sources, dest_dir }, DialogResult::Confirmed) => {
-                self.transfer_entries(Transfer::Copy, sources, dest_dir);
+            (
+                DialogAction::Copy {
+                    sources,
+                    base,
+                    dest_dir,
+                },
+                DialogResult::Confirmed,
+            ) => {
+                self.transfer_entries(Transfer::Copy, sources, base, dest_dir);
             }
-            (DialogAction::Move { sources, dest_dir }, DialogResult::Confirmed) => {
-                self.transfer_entries(Transfer::Move, sources, dest_dir);
+            (
+                DialogAction::Move {
+                    sources,
+                    base,
+                    dest_dir,
+                },
+                DialogResult::Confirmed,
+            ) => {
+                self.transfer_entries(Transfer::Move, sources, base, dest_dir);
             }
-            (DialogAction::PasteMove { sources, dest_dir }, DialogResult::Confirmed) => {
-                self.transfer_entries(Transfer::Move, sources, dest_dir);
+            (
+                DialogAction::PasteMove {
+                    sources,
+                    base,
+                    dest_dir,
+                },
+                DialogResult::Confirmed,
+            ) => {
+                self.transfer_entries(Transfer::Move, sources, base, dest_dir);
                 self.clipboard.clear();
                 self.clipboard_cut = false;
             }
@@ -1134,7 +1192,7 @@ impl App {
     /// browsing inside an archive, where nothing but navigating, selecting
     /// and extracting (`Copy`) is allowed.
     fn archive_write_blocked(&mut self) -> bool {
-        if self.panes.get_active_pane().is_archive() {
+        if !self.panes.get_active_pane().is_writable() {
             self.err_status("Read-only inside an archive".to_string());
             true
         } else {
@@ -1183,41 +1241,44 @@ impl App {
             return;
         }
 
-        let dest_dir = PathBuf::from(&self.panes.get_inactive_pane().path);
-        for src in &sources {
-            if let Err(msg) = ops::check_transfer_paths(src, &dest_dir) {
-                self.err_status(msg);
-                return;
-            }
-        }
+        let base = PathBuf::from(&self.panes.get_active_pane().path);
+        let dest_dir = self.panes.get_inactive_pane().cursor_dir();
 
-        let conflicts = sources
-            .iter()
-            .filter(|s| dest_dir.join(ops::file_name_of(s)).exists())
-            .count();
+        let conflicts = match check_and_count_conflicts(&sources, &base, &dest_dir) {
+            Ok(conflicts) => conflicts,
+            Err(msg) => return self.err_status(msg),
+        };
 
         if conflicts > 0 {
             self.open_dialog(Dialog::confirm(
                 "Overwrite?",
                 format!("{conflicts} item(s) exist in the other pane. Overwrite?"),
-                transfer.dialog_action(sources, dest_dir),
+                transfer.dialog_action(sources, base, dest_dir),
             ));
         } else {
-            self.transfer_entries(transfer, sources, dest_dir);
+            self.transfer_entries(transfer, sources, base, dest_dir);
         }
     }
 
     /// Transfers larger than this run in the background with a progress gauge.
     const ASYNC_THRESHOLD_BYTES: u64 = 10 * 1024 * 1024;
 
-    fn transfer_entries(&mut self, transfer: Transfer, sources: Vec<PathBuf>, dest_dir: PathBuf) {
+    fn transfer_entries(
+        &mut self,
+        transfer: Transfer,
+        sources: Vec<PathBuf>,
+        base: PathBuf,
+        dest_dir: PathBuf,
+    ) {
         if ops::total_size(&sources) > Self::ASYNC_THRESHOLD_BYTES {
-            self.start_transfer(sources, dest_dir, transfer.is_cut());
+            self.start_transfer(sources, base, dest_dir, transfer.is_cut());
             return;
         }
 
         for src in &sources {
-            if let Err(e) = transfer.apply(src, &dest_dir) {
+            let result = ops::prepare_dest_dir(src, &base, &dest_dir)
+                .and_then(|target| transfer.apply(src, &target));
+            if let Err(e) = result {
                 let verb = transfer.verb();
                 self.err_status(format!("Cannot {verb} '{}': {e}", src.display()));
                 return;
@@ -1230,9 +1291,15 @@ impl App {
 
     /// Starts a background copy (cut=false) or move (cut=true) with a progress
     /// gauge. The transfer is cancellable with Esc.
-    fn start_transfer(&mut self, sources: Vec<PathBuf>, dest_dir: PathBuf, is_cut: bool) {
+    fn start_transfer(
+        &mut self,
+        sources: Vec<PathBuf>,
+        base: PathBuf,
+        dest_dir: PathBuf,
+        is_cut: bool,
+    ) {
         let total = ops::total_size(&sources);
-        let (rx, cancel) = ops::spawn_transfer(sources, dest_dir, is_cut);
+        let (rx, cancel) = ops::spawn_transfer(sources, base, dest_dir, is_cut);
         self.progress = Some(super::Progress {
             title: if is_cut {
                 "Moving…".to_string()
@@ -1261,7 +1328,7 @@ impl App {
             return;
         }
 
-        let dest_dir = PathBuf::from(&self.panes.get_inactive_pane().path);
+        let dest_dir = self.panes.get_inactive_pane().cursor_dir();
         let pairs: Vec<(PathBuf, PathBuf)> = sources
             .iter()
             .map(|src| {
@@ -1331,7 +1398,7 @@ impl App {
             return;
         }
         let total = pane.archive_extract_size(&names);
-        let dest_dir = PathBuf::from(&self.panes.get_inactive_pane().path);
+        let dest_dir = self.panes.get_inactive_pane().cursor_dir();
 
         let conflicts = names
             .iter()
@@ -1391,6 +1458,7 @@ impl App {
             return;
         }
         self.clipboard = targets;
+        self.clipboard_base = PathBuf::from(&self.panes.get_active_pane().path);
         self.clipboard_cut = false;
         self.ok_status(format!("{} yanked", self.clipboard.len()));
     }
@@ -1403,25 +1471,29 @@ impl App {
         }
 
         let sources = self.clipboard.clone();
-        let dest_dir = PathBuf::from(&self.panes.get_active_pane().path);
+        // The layout is recreated relative to the pane the yank came from, not
+        // the one pasting: that is where the sources' structure is meaningful.
+        let base = self.clipboard_base.clone();
+        let dest_dir = self.panes.get_active_pane().cursor_dir();
 
-        for src in &sources {
-            if let Err(msg) = ops::check_transfer_paths(src, &dest_dir) {
-                self.err_status(msg);
-                return;
-            }
-        }
-
-        let conflicts = sources
-            .iter()
-            .filter(|s| dest_dir.join(ops::file_name_of(s)).exists())
-            .count();
+        let conflicts = match check_and_count_conflicts(&sources, &base, &dest_dir) {
+            Ok(conflicts) => conflicts,
+            Err(msg) => return self.err_status(msg),
+        };
 
         if conflicts > 0 {
             let action = if cut {
-                DialogAction::PasteMove { sources, dest_dir }
+                DialogAction::PasteMove {
+                    sources,
+                    base,
+                    dest_dir,
+                }
             } else {
-                DialogAction::Copy { sources, dest_dir }
+                DialogAction::Copy {
+                    sources,
+                    base,
+                    dest_dir,
+                }
             };
             self.open_dialog(Dialog::confirm(
                 "Overwrite?",
@@ -1432,11 +1504,11 @@ impl App {
         }
 
         if cut {
-            self.transfer_entries(Transfer::Move, sources, dest_dir);
+            self.transfer_entries(Transfer::Move, sources, base, dest_dir);
             self.clipboard.clear();
             self.clipboard_cut = false;
         } else {
-            self.transfer_entries(Transfer::Copy, sources, dest_dir);
+            self.transfer_entries(Transfer::Copy, sources, base, dest_dir);
         }
     }
 
@@ -1518,11 +1590,11 @@ impl App {
             "so" | "source" => self.reload_config(),
             "e" | "cd" => self.navigate_to(arg),
             "mkdir" => {
-                let parent = PathBuf::from(&self.panes.get_active_pane().path);
+                let parent = self.panes.get_active_pane().cursor_dir();
                 self.mkdir(parent, arg.to_string());
             }
             "touch" => {
-                let parent = PathBuf::from(&self.panes.get_active_pane().path);
+                let parent = self.panes.get_active_pane().cursor_dir();
                 self.touch(parent, arg.to_string());
             }
             "delete" => self.start_delete(),
@@ -1849,7 +1921,36 @@ impl App {
             Action::Bookmarks => self.open_bookmarks(),
             Action::Permissions => self.start_permissions_editor(),
             Action::CreateSymlink => self.start_create_symlink(),
+            Action::ToggleTree => self.toggle_tree(),
+            Action::TreeExpand => self.tree_step(true),
+            Action::TreeCollapse => self.tree_step(false),
         }
+    }
+
+    /// Opens or closes a tree node, reloading only when the rows actually
+    /// changed — stepping the cursor in or out needs no rebuild.
+    fn tree_step(&mut self, expand: bool) {
+        let pane = self.panes.get_active_pane_mut();
+        let changed = if expand {
+            pane.tree_expand()
+        } else {
+            pane.tree_collapse()
+        };
+
+        if changed {
+            self.panes.reload(&self.config, false);
+        }
+    }
+
+    /// Switches the active pane between the flat listing and the tree.
+    fn toggle_tree(&mut self) {
+        if !self.panes.get_active_pane_mut().toggle_tree() {
+            self.err_status("No tree view inside an archive".to_string());
+            return;
+        }
+
+        self.panes.reload(&self.config, true);
+        self.sync_header();
     }
 
     /// Opens the highlighted entry: a directory in the pane, a file in
@@ -1860,6 +1961,9 @@ impl App {
                 self.panes.reload(&self.config, true);
                 self.sync_header();
             }
+            // The pane has not moved, so the flagged selection is still about
+            // entries the user can see and must survive the rebuild.
+            OpenAction::TreeChanged => self.panes.reload(&self.config, false),
             OpenAction::FileOpened(path) => {
                 self.pending_editor_file = Some(EditorTarget::new(path));
             }
@@ -2004,7 +2108,7 @@ impl App {
         if self.archive_write_blocked() {
             return;
         }
-        let parent = PathBuf::from(&self.panes.get_active_pane().path);
+        let parent = self.panes.get_active_pane().cursor_dir();
         self.open_dialog(Dialog::input(
             "Create",
             "File name  (end with / for a directory):",
@@ -2103,6 +2207,89 @@ mod tests {
         KeyEvent::new(code, modifiers)
     }
 
+    mod tree_view {
+        use super::*;
+
+        /// `a/deep.txt` alongside `b.txt`, in both panes.
+        fn scratch() -> tempfile::TempDir {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::create_dir(dir.path().join("a")).unwrap();
+            std::fs::write(dir.path().join("a/deep.txt"), b"deep").unwrap();
+            std::fs::write(dir.path().join("b.txt"), b"top").unwrap();
+            dir
+        }
+
+        fn names(app: &App) -> Vec<String> {
+            app.panes
+                .get_active_pane()
+                .visible_entries()
+                .map(|e| e.name.clone())
+                .collect()
+        }
+
+        /// The whole feature, through the real keymap: `t` for the tree, the
+        /// cursor onto `a`, `Right` to open it.
+        #[test]
+        fn t_opens_a_tree_and_right_expands_a_directory() {
+            let dir = scratch();
+            let mut app = test_app(dir.path());
+
+            app.dispatch_key(&key(KeyCode::Char('t'), KeyModifiers::NONE));
+            assert!(app.panes.get_active_pane().is_tree());
+            assert_eq!(names(&app), vec!["a", "b.txt"]);
+
+            app.dispatch_key(&key(KeyCode::Right, KeyModifiers::NONE));
+            assert_eq!(names(&app), vec!["a", "deep.txt", "b.txt"]);
+
+            app.dispatch_key(&key(KeyCode::Left, KeyModifiers::NONE));
+            assert_eq!(names(&app), vec!["a", "b.txt"]);
+
+            app.dispatch_key(&key(KeyCode::Char('t'), KeyModifiers::NONE));
+            assert!(!app.panes.get_active_pane().is_tree());
+            assert!(names(&app).contains(&"..".to_string()));
+        }
+
+        /// The point of preserving the layout: a file copied from inside the
+        /// tree keeps the directory it lived in, rather than being flattened
+        /// into the destination where names from different directories could
+        /// collide.
+        #[test]
+        fn copying_from_inside_a_tree_recreates_the_directory_it_came_from() {
+            let dir = scratch();
+            let dest = tempfile::tempdir().unwrap();
+            let config = Config {
+                initial_directory_left: dir.path().to_string_lossy().to_string(),
+                initial_directory_right: dest.path().to_string_lossy().to_string(),
+                ..Default::default()
+            };
+            let theme = Theme::load_theme(None).expect("default theme in themes/");
+            let mut app = App::new(theme, config, &dir.path().join("config.toml"));
+
+            app.dispatch_key(&key(KeyCode::Char('t'), KeyModifiers::NONE));
+            app.dispatch_key(&key(KeyCode::Right, KeyModifiers::NONE));
+            // Cursor onto the nested file, then copy to the other pane.
+            app.dispatch_key(&key(KeyCode::Char('j'), KeyModifiers::NONE));
+            assert_eq!(
+                app.panes
+                    .get_active_pane()
+                    .get_selected_entry()
+                    .unwrap()
+                    .name,
+                "deep.txt"
+            );
+            app.dispatch_key(&key(KeyCode::Char('Y'), KeyModifiers::SHIFT));
+
+            assert_eq!(
+                std::fs::read_to_string(dest.path().join("a/deep.txt")).unwrap(),
+                "deep"
+            );
+            assert!(
+                !dest.path().join("deep.txt").exists(),
+                "the file must not be flattened into the destination root"
+            );
+        }
+    }
+
     /// Copy and move ran through two near-identical functions, so a fix to one
     /// could miss the other. They share one path now; these pin the parts that
     /// have to stay different.
@@ -2126,14 +2313,15 @@ mod tests {
         #[test]
         fn each_confirms_with_its_own_dialog_action() {
             let sources = vec![PathBuf::from("/a")];
+            let base = PathBuf::from("/");
             let dest = PathBuf::from("/b");
 
             assert!(matches!(
-                Transfer::Copy.dialog_action(sources.clone(), dest.clone()),
+                Transfer::Copy.dialog_action(sources.clone(), base.clone(), dest.clone()),
                 DialogAction::Copy { .. }
             ));
             assert!(matches!(
-                Transfer::Move.dialog_action(sources, dest),
+                Transfer::Move.dialog_action(sources, base, dest),
                 DialogAction::Move { .. }
             ));
         }

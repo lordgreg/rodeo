@@ -61,6 +61,9 @@ pub enum Action {
     Bookmarks,
     Permissions,
     CreateSymlink,
+    ToggleTree,
+    TreeExpand,
+    TreeCollapse,
 }
 
 impl Action {
@@ -106,6 +109,9 @@ impl Action {
             Self::Bookmarks => "bookmarks",
             Self::Permissions => "permissions",
             Self::CreateSymlink => "symlink",
+            Self::ToggleTree => "tree",
+            Self::TreeExpand => "tree_expand",
+            Self::TreeCollapse => "tree_collapse",
         }
     }
 
@@ -150,6 +156,9 @@ impl Action {
         Self::Bookmarks,
         Self::Permissions,
         Self::CreateSymlink,
+        Self::ToggleTree,
+        Self::TreeExpand,
+        Self::TreeCollapse,
     ];
 
     pub fn from_name(name: &str) -> Option<Self> {
@@ -437,6 +446,9 @@ pub fn default_keymap() -> Keymap {
         // Mnemonic "Link", and shifted like `Y`/`M`: it names the other pane,
         // which is where the link is created.
         (plain(Char('L')), CreateSymlink),
+        (plain(Char('t')), ToggleTree),
+        (plain(Right), TreeExpand),
+        (plain(Left), TreeCollapse),
     ];
 
     Keymap {

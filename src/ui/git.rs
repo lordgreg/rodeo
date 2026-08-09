@@ -1,8 +1,8 @@
 //! Git status for the entries of a directory.
 //!
 //! Shells out to `git status --porcelain=v1 -z` once per pane reload and maps
-//! the result onto the names in that directory; directories aggregate the most
-//! severe status found beneath them.
+//! the result onto the paths under that directory; directories aggregate the
+//! most severe status found beneath them.
 //!
 //! The same run also yields a [`RepoSummary`] for the header, so the branch and
 //! the change counts cost no extra subprocesses.
@@ -108,8 +108,9 @@ pub struct RepoSummary {
 /// UI thread; it now costs two per pane and none for the header.
 #[derive(Debug, Clone, Default)]
 pub struct RepoInfo {
-    /// Status of each direct child of the directory queried, by file name.
-    pub entries: HashMap<String, GitStatus>,
+    /// Status of every path under the directory queried, by absolute path.
+    /// Directories carry the most severe status found beneath them.
+    pub entries: HashMap<PathBuf, GitStatus>,
     /// Counts across the whole repository.
     pub summary: RepoSummary,
 }
@@ -157,7 +158,7 @@ impl PendingRepoInfo {
     }
 }
 
-/// Git status for `pane_dir`: per-child statuses and a repository summary.
+/// Git status for `pane_dir`: per-path statuses and a repository summary.
 ///
 /// Files are matched directly; directories aggregate the most severe status of
 /// any status-bearing path beneath them. Returns `None` outside a git worktree.
@@ -282,26 +283,31 @@ fn parse_porcelain_z(output: &[u8], repo_root: &Path) -> Vec<(PathBuf, GitStatus
     statuses
 }
 
-/// Reduces absolute status paths to a map of pane-dir child names, folding
-/// nested paths into their top-level directory with severity merge.
-fn aggregate(pane_dir: &Path, statuses: Vec<(PathBuf, GitStatus)>) -> HashMap<String, GitStatus> {
-    let mut map: HashMap<String, GitStatus> = HashMap::new();
+/// Indexes absolute status paths by path, recording each status against every
+/// directory level between it and `pane_dir` with a severity merge.
+///
+/// Keying by path rather than by child name is what lets a tree pane, whose
+/// rows sit at arbitrary depths, look up a row directly — two `config.rs` in
+/// different directories are two keys here, where a name would collide. The
+/// ancestor walk is what makes a *collapsed* directory show the worst status
+/// beneath it; for a flat listing, whose rows are all direct children, only
+/// the last step of that walk is ever read, which is exactly the top-level
+/// fold this used to do.
+fn aggregate(pane_dir: &Path, statuses: Vec<(PathBuf, GitStatus)>) -> HashMap<PathBuf, GitStatus> {
+    let mut map: HashMap<PathBuf, GitStatus> = HashMap::new();
 
     for (path, status) in statuses {
         let Ok(rel) = path.strip_prefix(pane_dir) else {
             continue; // outside this pane's directory
         };
-        let Some(name) = rel
-            .components()
-            .next()
-            .map(|c| c.as_os_str().to_string_lossy().into_owned())
-        else {
-            continue;
-        };
 
-        map.entry(name)
-            .and_modify(|s| *s = s.merge(status))
-            .or_insert(status);
+        // `ancestors` ends at the empty path, which is `pane_dir` itself: a
+        // pane never shows a row for its own directory, so stop before it.
+        for level in rel.ancestors().take_while(|p| !p.as_os_str().is_empty()) {
+            map.entry(pane_dir.join(level))
+                .and_modify(|s| *s = s.merge(status))
+                .or_insert(status);
+        }
     }
 
     map
@@ -367,11 +373,15 @@ mod tests {
         assert_eq!(info.summary.modified, 1);
         assert_eq!(info.summary.untracked, 1);
         assert_eq!(
-            info.entries.get("tracked.txt").map(|s| s.kind),
+            info.entries
+                .get(&dir.path().join("tracked.txt"))
+                .map(|s| s.kind),
             Some(GitEntryStatus::Modified)
         );
         assert_eq!(
-            info.entries.get("fresh.txt").map(|s| s.kind),
+            info.entries
+                .get(&dir.path().join("fresh.txt"))
+                .map(|s| s.kind),
             Some(GitEntryStatus::Untracked)
         );
     }
@@ -492,18 +502,75 @@ mod tests {
 
         let map = aggregate(&pane, statuses);
 
-        assert_eq!(map.len(), 2);
         // Severity merge: Modified (4) beats Ignored (1) inside dir/.
         assert_eq!(
-            map.get("dir").map(|s| s.kind),
+            map.get(Path::new("/repo/sub/dir")).map(|s| s.kind),
             Some(GitEntryStatus::Modified)
         );
         assert_eq!(
-            map.get("file.rs").map(|s| s.kind),
+            map.get(Path::new("/repo/sub/file.rs")).map(|s| s.kind),
             Some(GitEntryStatus::Untracked)
         );
         // Paths outside the pane are dropped.
-        assert!(!map.contains_key("elsewhere.rs"));
+        assert!(!map.contains_key(Path::new("/repo/elsewhere.rs")));
+        // The pane directory itself never carries a status of its own.
+        assert!(!map.contains_key(Path::new("/repo/sub")));
+    }
+
+    /// A tree pane shows rows several levels below its root, so each level has
+    /// to be addressable in its own right — not just folded into the top-level
+    /// name the flat listing happens to show.
+    #[test]
+    fn aggregate_keeps_every_level_of_a_nested_path() {
+        let pane = PathBuf::from("/repo");
+        let statuses = vec![(
+            PathBuf::from("/repo/a/b/c.rs"),
+            status(GitEntryStatus::Modified),
+        )];
+
+        let map = aggregate(&pane, statuses);
+
+        for level in ["/repo/a", "/repo/a/b", "/repo/a/b/c.rs"] {
+            assert_eq!(
+                map.get(Path::new(level)).map(|s| s.kind),
+                Some(GitEntryStatus::Modified),
+                "{level} should carry the status"
+            );
+        }
+        assert_eq!(map.len(), 3);
+    }
+
+    /// The severity merge has to apply at every level, not only the top one:
+    /// a collapsed `a/b` must show the worst thing inside it.
+    #[test]
+    fn aggregate_merges_severity_at_each_level() {
+        let pane = PathBuf::from("/repo");
+        let statuses = vec![
+            (
+                PathBuf::from("/repo/a/b/x.rs"),
+                status(GitEntryStatus::Ignored),
+            ),
+            (
+                PathBuf::from("/repo/a/b/y.rs"),
+                status(GitEntryStatus::Deleted),
+            ),
+        ];
+
+        let map = aggregate(&pane, statuses);
+
+        assert_eq!(
+            map.get(Path::new("/repo/a/b")).map(|s| s.kind),
+            Some(GitEntryStatus::Deleted)
+        );
+        assert_eq!(
+            map.get(Path::new("/repo/a")).map(|s| s.kind),
+            Some(GitEntryStatus::Deleted)
+        );
+        // Each leaf keeps its own status, which is what an expanded tree shows.
+        assert_eq!(
+            map.get(Path::new("/repo/a/b/x.rs")).map(|s| s.kind),
+            Some(GitEntryStatus::Ignored)
+        );
     }
 
     #[test]

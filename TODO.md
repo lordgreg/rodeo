@@ -31,18 +31,16 @@ runtime dependencies or a scripting layer.
 5. **Per-extension user actions.** Config-driven "open with," e.g. an
    `[actions]` table mapping globs to shell commands (`*.pdf = "zathura %f"`).
    Reuses the `%f` expansion already implemented for `:!`/`:term`.
-6. **Directory tree panel.** A collapsible tree view as an alternative to the
-   flat listing for one pane, for faster jumps in deep trees.
-7. **Act on find-files / find-in-files results.** Multi-select hits in the
+6. **Act on find-files / find-in-files results.** Multi-select hits in the
    Telescope-style popups and batch-delete/copy/move them through the
    existing `fs/ops.rs` worker, instead of only navigate/open-in-`$EDITOR`.
-8. **Remote panel via SSH tooling.** Shell out to `ssh`/`sftp`/`rsync` (same
+7. **Remote panel via SSH tooling.** Shell out to `ssh`/`sftp`/`rsync` (same
    philosophy as shelling to `git` rather than linking `libgit2`) to browse
    and transfer to a remote host. Highest effort of the list; only worth it
    if remote workflows matter to users.
 
-*Archive VFS and the permissions/ownership editor were #1 and #4 here —
-done, see Completed below.*
+*Archive VFS, the permissions/ownership editor and the directory tree panel
+were #1, #4 and #6 here — done, see Completed below.*
 
 ---
 
@@ -50,6 +48,30 @@ done, see Completed below.*
 
 ### Feature ideas, done so far
 
+- **Directory tree panel.** `t` swaps a pane's flat listing for a collapsible
+  tree rooted at the same directory; `Enter`/`Right`/`Left` open and close
+  nodes, `Backspace` re-roots upward keeping the directory just left open.
+  Expansion is lazy (one `read_dir` per opened node, never a recursive walk)
+  and remembered by path, so the reload a filesystem event triggers does not
+  collapse it. Two subsystems had assumptions that had to go first. `git.rs`
+  keyed its status map by *direct child name*, folding everything nested into
+  the top-level directory — fine for a flat listing, useless for rows at
+  arbitrary depth, and ambiguous between two `config.rs` in different
+  directories; `aggregate` now keys by absolute path and records each status
+  against every level up to the pane root, which is also what makes a
+  *collapsed* directory show the worst thing beneath it. And every two-pane
+  operation read `Pane::path` as "the directory the cursor is in", which stops
+  being true the moment the cursor is three levels down; `cursor_dir()` answers
+  that question instead and is identical to `path` in a flat listing.
+  `fs::ops::dest_dir_for` recreates the sources' layout under the destination
+  so a scattered multi-selection cannot collide on basenames — again a no-op
+  in a flat listing, where every source is a direct child. Filtering prunes the
+  tree and keeps the ancestors of each match rather than ranking rows
+  best-first, which would separate children from their parents. The third
+  listing mode is also what turned `Option<ArchiveView>` into a
+  `ListingSource` enum: two `Option`s would have made an
+  archive-*and*-tree state representable, and an exhaustive match is what stops
+  a fourth mode from quietly missing a branch. Refused inside an archive.
 - **Archive VFS.** `Enter` on a `.zip`/`.tar`/`.tar.gz` now switches the pane
   into a read-only virtual listing of its contents instead of opening it in
   `$EDITOR`; `Enter`/`Backspace` navigate in and out (stepping back out at

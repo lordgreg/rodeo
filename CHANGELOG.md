@@ -21,6 +21,39 @@
 
 ## Added
 
+* **Directory tree panel.** `t` switches a pane from the flat listing to a
+  collapsible tree rooted at the directory it was already showing, for finding
+  your way around a deep project without walking into it one `Enter` at a time.
+  `Enter` and `Right`/`Left` open and close a directory in place; `Right` on an
+  one already open steps onto its first child, `Left` on something with nothing
+  to close steps back out to the parent row. `Backspace` re-roots one level up
+  and leaves the directory just left open, so the rows the cursor came from do
+  not vanish. Only directories that have actually been opened are read, one
+  level at a time — a tree costs one `read_dir` per open node, never a
+  recursive walk — and which ones are open is remembered by path, so a
+  filesystem event rebuilding the listing does not collapse everything.
+
+  It is a full listing, not a navigator: copy, move, delete, rename and the
+  rest work from a tree row as they do from a flat one. Two things follow from
+  that. Operations that used to read the pane's own directory now ask where the
+  *cursor* is, since in a tree those are not the same thing and a paste would
+  otherwise land somewhere the user never pointed at. And a copy or move
+  recreates the layout the sources were listed under: selecting `src/config.rs`
+  and `tests/config.rs` together and flattening both into the destination would
+  have let the second silently overwrite the first. In a flat listing every
+  source is a direct child, so that reconstruction is a no-op and nothing
+  changes.
+
+  A filter (`/`, `Ctrl+f`) prunes a tree rather than ranking it, keeping every
+  directory on the way down to a match: ordering the rows best-first would tear
+  children away from their parents and leave the indentation describing a shape
+  that is no longer on screen. The filesystem watcher follows each open node
+  separately — it is deliberately not recursive, since watching a root like
+  `$HOME` recursively would mean walking everything under it whether it is open
+  or not.
+
+  Not available inside an archive, whose listing is not a real directory tree;
+  `t` there says so rather than doing nothing.
 * **Bookmarks.** `b` bookmarks the entry under the cursor — or every marked
   entry at once, like copy and move do, or the pane's own directory when the
   cursor is on `..`. `B` (or `:bookmarks`) lists them: `Enter` and `1`–`9`

@@ -224,6 +224,9 @@ pub struct App {
     /// Live completion for the command line, recomputed as it is edited.
     completion: completion::Completion,
     clipboard: Vec<PathBuf>,
+    /// Directory the clipboard's contents were listed under, so a paste can
+    /// recreate their layout below it. See `fs::ops::dest_dir_for`.
+    clipboard_base: PathBuf,
     clipboard_cut: bool,
     pending_d: bool,
     pending_editor_file: Option<EditorTarget>,
@@ -243,7 +246,7 @@ pub struct App {
     /// then simply does not auto-refresh.
     _fs_watcher: Option<notify::RecommendedWatcher>,
     /// Currently watched directories (left pane, right pane).
-    watched_dirs: [PathBuf; 2],
+    watched_dirs: Vec<PathBuf>,
     /// When the last filesystem event arrived; reload fires after 150 ms silence.
     fs_debounce: Option<Instant>,
     /// Syntax colours derived from the active theme. Built once here and
@@ -301,6 +304,7 @@ impl App {
             input_mode: None,
             completion: completion::Completion::default(),
             clipboard: Vec::new(),
+            clipboard_base: PathBuf::new(),
             clipboard_cut: false,
             pending_d: false,
             pending_editor_file: None,
@@ -508,9 +512,9 @@ impl App {
 
     /// Drains progress messages from a background transfer; finishes it when
     /// the worker reports Done.
-    /// Updates the filesystem watcher to track the two currently-displayed
-    /// directories. Called after navigation so new directories are watched
-    /// automatically.
+    /// Updates the filesystem watcher to track the currently-displayed
+    /// directories. Called after navigation so new directories — including
+    /// nodes just opened in a tree — are watched automatically.
     fn refresh_fs_watches(&mut self) {
         let new_dirs = self.panes.pane_dirs();
         if new_dirs == self.watched_dirs {
