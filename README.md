@@ -263,7 +263,7 @@ one to reach for.
 ## Releases
 
 Pushing a `v*` tag builds and publishes archives for Linux x86_64 and macOS
-(Apple silicon and Intel):
+(Apple silicon):
 
 ```sh
 git tag -a v0.1.0 -m "rodeo 0.1.0"

@@ -24,6 +24,9 @@
 
 ## Changed
 
+* **No more `x86_64-apple-darwin` release archive.** Intel Macs have to build
+  from source. `cargo-deny` and the README follow the same list.
+
 * **Bulk rename moved from `B` to `R`.** `b` and `B` are now bookmarks, which
   only works as a pair. `[keybindings] "B" = "bulk_rename"` in `config.toml`
   restores the old key.

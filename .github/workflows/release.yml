@@ -87,8 +87,6 @@ jobs:
             os: ubuntu-latest
           - target: aarch64-apple-darwin
             os: macos-latest
-          - target: x86_64-apple-darwin
-            os: macos-13
 
     steps:
       # Checks out the resolved tag, not the ref the run was started from, so a
@@ -166,8 +164,8 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  # One job publishes everything, so the three matrix legs cannot race each
-  # other to create the same release.
+  # One job publishes everything, so the matrix legs cannot race each other to
+  # create the same release.
   release:
     needs: [prepare, build]
     if: needs.prepare.outputs.dry_run != 'true'
