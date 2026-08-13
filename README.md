@@ -61,6 +61,14 @@ terminal.
 
 ## Installation
 
+### Homebrew (macOS, Apple Silicon)
+
+```sh
+brew install lordgreg/rodeo/rodeo
+```
+
+### From source
+
 Requires a Rust toolchain (edition 2024, so **Rust 1.85+**; developed on 1.95).
 
 ```sh
@@ -83,9 +91,12 @@ cp themes/*.toml ~/.local/share/rodeo/themes/
 ```
 
 Rodeo starts even with no themes installed — it falls back to a compiled-in
-copy of the default theme.
+copy of the default theme. The Homebrew formula does not install the extra
+themes; grab them from [`themes/`](themes) in this repo and copy them into
+`~/.local/share/rodeo/themes` if you want them.
 
-A man page is checked in at `docs/rodeo.1`:
+A man page is checked in at `docs/rodeo.1`. Installed automatically by
+Homebrew; for a from-source install:
 
 ```sh
 sudo install -Dm644 docs/rodeo.1 /usr/local/share/man/man1/rodeo.1
