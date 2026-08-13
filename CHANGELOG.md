@@ -2,6 +2,15 @@
 
 ## Fixed
 
+* **A move within one filesystem is a rename again.** Anything over 10 MiB went
+  to the background worker, which only ever copied byte-for-byte and then
+  deleted — a 32 GiB tree took half a minute instead of one syscall. Moves now
+  try `rename` first, and only what it cannot take (a cross-device move, a
+  directory to merge into) is sized up and copied. The size walk that feeds the
+  progress gauge also ran twice; it runs once, and not at all when nothing is
+  left to copy. A `rename` failing for any other reason is now reported rather
+  than silently retried as a copy.
+
 * `--config` now holds for the whole session. `:w` wrote to
   `~/.config/rodeo/config.toml` whatever file had been loaded, so a session
   started with `--config ./rodeo.toml` silently overwrote the user's real

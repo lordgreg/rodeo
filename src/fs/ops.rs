@@ -114,15 +114,70 @@ pub fn delete_entry(path: &Path) -> io::Result<()> {
     }
 }
 
-/// Moves a file or directory into `dest_dir`, falling back to copy + delete
-/// when `rename` fails (e.g., cross-device EXDEV).
-pub fn move_entry(src: &Path, dest_dir: &Path) -> io::Result<()> {
+/// Whether a failed `rename` is one that copy + delete can still get past.
+///
+/// Two cases, and only two — anything else (no permission, source gone, read
+/// only filesystem) is a real error that a copy would only hit again, more
+/// slowly, after having written half a tree:
+///
+/// * `CrossesDevices` (EXDEV) — the destination is on another filesystem, so
+///   the bytes genuinely have to be moved.
+/// * The destination is already taken. `rename` replaces a file, and an
+///   *empty* directory, but refuses a non-empty one (ENOTEMPTY/EEXIST) — and
+///   merging into it is exactly what the overwrite prompt promised.
+fn rename_needs_fallback(err: &io::Error, dst: &Path) -> bool {
+    err.kind() == io::ErrorKind::CrossesDevices || fs::symlink_metadata(dst).is_ok()
+}
+
+/// Attempts to move `src` into `dest_dir` with `rename` alone — one syscall,
+/// no matter how large the tree is.
+///
+/// `Ok(false)` means `rename` cannot do it and a copy + delete has to; an
+/// `Err` is a failure worth reporting rather than working around.
+fn try_rename_into(src: &Path, dest_dir: &Path) -> io::Result<bool> {
     let dst = dest_dir.join(file_name_of(src));
-    if fs::rename(src, &dst).is_ok() {
+    match fs::rename(src, &dst) {
+        Ok(()) => Ok(true),
+        Err(e) if rename_needs_fallback(&e, &dst) => Ok(false),
+        Err(e) => Err(e),
+    }
+}
+
+/// Moves a file or directory into `dest_dir`, falling back to copy + delete
+/// only where [`rename_needs_fallback`] says one is needed.
+pub fn move_entry(src: &Path, dest_dir: &Path) -> io::Result<()> {
+    if try_rename_into(src, dest_dir)? {
         return Ok(());
     }
     copy_entry(src, dest_dir)?;
     delete_entry(src)
+}
+
+/// Moves every source `rename` can take on its own, returning those left over
+/// for a real copy.
+///
+/// This runs before a transfer sizes itself up, because within one filesystem
+/// it is the whole operation: a 32 GiB tree of 100k files moves in one syscall
+/// per source, and never reaches [`total_size`]'s recursive walk — let alone
+/// the byte-for-byte copy loop. Only what comes back needs either.
+///
+/// An `Err` can leave earlier sources already moved, the same as the transfer
+/// loops themselves; the caller reloads the panes to show what happened.
+pub fn rename_movable(
+    sources: &[PathBuf],
+    base: &Path,
+    dest_dir: &Path,
+) -> io::Result<Vec<PathBuf>> {
+    let mut remaining = Vec::new();
+
+    for src in sources {
+        let target = prepare_dest_dir(src, base, dest_dir)?;
+        if !try_rename_into(src, &target)? {
+            remaining.push(src.clone());
+        }
+    }
+
+    Ok(remaining)
 }
 
 /// Sets `path`'s Unix permission bits (e.g. `0o755`). Pure `std`: follows a
@@ -541,6 +596,112 @@ mod tests {
 
         assert!(!file.exists());
         assert!(dst_root.path().join("a.txt").exists());
+    }
+
+    /// The inode survives a `rename` and cannot survive a copy, so this is the
+    /// one assertion that tells the two apart — and the whole point of the
+    /// fast path, since the alternative reads and rewrites every byte below.
+    #[cfg(unix)]
+    #[test]
+    fn move_entry_renames_a_directory_instead_of_copying_it() {
+        use std::os::unix::fs::MetadataExt;
+
+        let root = tempfile::tempdir().unwrap();
+        let src = root.path().join("src");
+        let dst_root = root.path().join("dst");
+        fs::create_dir(&src).unwrap();
+        fs::create_dir(&dst_root).unwrap();
+        fs::File::create(src.join("a.txt")).unwrap();
+        let before = fs::metadata(&src).unwrap().ino();
+
+        move_entry(&src, &dst_root).unwrap();
+
+        let after = fs::metadata(dst_root.join("src")).unwrap().ino();
+        assert_eq!(before, after, "directory was copied, not renamed");
+    }
+
+    /// `rename` refuses a non-empty destination directory, and merging into it
+    /// is what the overwrite prompt promised — so that error still falls back.
+    #[test]
+    fn move_entry_merges_into_an_existing_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let src = root.path().join("src/d");
+        let dst_root = root.path().join("dst");
+        fs::create_dir_all(&src).unwrap();
+        fs::create_dir_all(dst_root.join("d")).unwrap();
+        fs::File::create(src.join("new.txt")).unwrap();
+        fs::File::create(dst_root.join("d/old.txt")).unwrap();
+
+        move_entry(&src, &dst_root).unwrap();
+
+        assert!(!src.exists());
+        assert!(dst_root.join("d/new.txt").exists());
+        assert!(dst_root.join("d/old.txt").exists());
+    }
+
+    /// Anything else is reported as-is rather than retried as a copy, which
+    /// would only fail again after writing half a tree.
+    #[test]
+    fn move_entry_reports_a_missing_source() {
+        let root = tempfile::tempdir().unwrap();
+        let dst_root = root.path().join("dst");
+        fs::create_dir(&dst_root).unwrap();
+
+        let err = move_entry(&root.path().join("gone.txt"), &dst_root).unwrap_err();
+
+        assert_eq!(err.kind(), io::ErrorKind::NotFound);
+    }
+
+    #[test]
+    fn rename_movable_takes_every_source_within_one_filesystem() {
+        let root = tempfile::tempdir().unwrap();
+        let base = root.path().join("base");
+        let dst_root = root.path().join("dst");
+        fs::create_dir_all(base.join("d")).unwrap();
+        fs::create_dir(&dst_root).unwrap();
+        fs::File::create(base.join("a.txt")).unwrap();
+        let sources = vec![base.join("a.txt"), base.join("d")];
+
+        let remaining = rename_movable(&sources, &base, &dst_root).unwrap();
+
+        assert!(remaining.is_empty(), "nothing should be left to copy");
+        assert!(dst_root.join("a.txt").exists());
+        assert!(dst_root.join("d").exists());
+    }
+
+    #[test]
+    fn rename_movable_hands_back_a_directory_that_needs_merging() {
+        let root = tempfile::tempdir().unwrap();
+        let base = root.path().join("base");
+        let dst_root = root.path().join("dst");
+        fs::create_dir_all(base.join("d")).unwrap();
+        fs::create_dir_all(dst_root.join("d")).unwrap();
+        fs::File::create(base.join("d/new.txt")).unwrap();
+        fs::File::create(dst_root.join("d/old.txt")).unwrap();
+        let sources = vec![base.join("a.txt"), base.join("d")];
+        fs::File::create(&sources[0]).unwrap();
+
+        let remaining = rename_movable(&sources, &base, &dst_root).unwrap();
+
+        assert_eq!(remaining, vec![base.join("d")]);
+        assert!(dst_root.join("a.txt").exists(), "the file still moved");
+    }
+
+    #[test]
+    fn rename_movable_keeps_the_layout_below_the_base() {
+        let root = tempfile::tempdir().unwrap();
+        let base = root.path().join("base");
+        let dst_root = root.path().join("dst");
+        fs::create_dir_all(base.join("a/b")).unwrap();
+        fs::create_dir(&dst_root).unwrap();
+        let src = base.join("a/b/deep.txt");
+        fs::File::create(&src).unwrap();
+
+        let remaining = rename_movable(std::slice::from_ref(&src), &base, &dst_root).unwrap();
+
+        assert!(remaining.is_empty());
+        assert!(!src.exists());
+        assert!(dst_root.join("a/b/deep.txt").exists());
     }
 
     #[test]

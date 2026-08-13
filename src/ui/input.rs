@@ -1270,8 +1270,24 @@ impl App {
         base: PathBuf,
         dest_dir: PathBuf,
     ) {
-        if ops::total_size(&sources) > Self::ASYNC_THRESHOLD_BYTES {
-            self.start_transfer(sources, base, dest_dir, transfer.is_cut());
+        // A move within one filesystem is a rename, so take those first: they
+        // cost one syscall each and leave nothing to size up or copy. Only
+        // what `rename` cannot do — a cross-device move, a directory to merge
+        // into — reaches the walk below.
+        let sources = match self.rename_movable_sources(transfer, sources, &base, &dest_dir) {
+            Ok(remaining) => remaining,
+            Err(()) => return,
+        };
+
+        if sources.is_empty() {
+            self.panes.reload(&self.config, false);
+            self.ok_status(transfer.done_label().to_string());
+            return;
+        }
+
+        let total = ops::total_size(&sources);
+        if total > Self::ASYNC_THRESHOLD_BYTES {
+            self.start_transfer(sources, base, dest_dir, transfer.is_cut(), total);
             return;
         }
 
@@ -1289,16 +1305,42 @@ impl App {
         self.ok_status(transfer.done_label().to_string());
     }
 
+    /// Settles a move's cheap half: everything `rename` can shift on its own
+    /// goes now, and the sources that still need copying come back.
+    ///
+    /// A copy passes straight through — it has bytes to write either way.
+    /// `Err(())` means the failure has already been reported to the footer.
+    fn rename_movable_sources(
+        &mut self,
+        transfer: Transfer,
+        sources: Vec<PathBuf>,
+        base: &Path,
+        dest_dir: &Path,
+    ) -> Result<Vec<PathBuf>, ()> {
+        if !transfer.is_cut() {
+            return Ok(sources);
+        }
+
+        ops::rename_movable(&sources, base, dest_dir).map_err(|e| {
+            // Earlier sources may already have moved, so show the real state.
+            self.panes.reload(&self.config, false);
+            self.err_status(format!("Cannot {}: {e}", transfer.verb()));
+        })
+    }
+
     /// Starts a background copy (cut=false) or move (cut=true) with a progress
     /// gauge. The transfer is cancellable with Esc.
+    ///
+    /// `total` is the caller's already-walked size — walking again here would
+    /// mean a second full pass over the tree just to fill in the gauge.
     fn start_transfer(
         &mut self,
         sources: Vec<PathBuf>,
         base: PathBuf,
         dest_dir: PathBuf,
         is_cut: bool,
+        total: u64,
     ) {
-        let total = ops::total_size(&sources);
         let (rx, cancel) = ops::spawn_transfer(sources, base, dest_dir, is_cut);
         self.progress = Some(super::Progress {
             title: if is_cut {
