@@ -1,21 +1,82 @@
 # Tagged release builds.
 #
-# Triggered by pushing a version tag:
-#   git tag -a v0.1.0 -m "rodeo 0.1.0" && git push origin v0.1.0
+# Runs on a pushed version tag, or on demand from the Actions tab
+# ("Run workflow") — useful to retry a failed publish, or to re-cut assets for
+# an existing tag without moving it.
 #
-# NOTE: rodeo is developed on Codeberg. This workflow only runs on a GitHub
-# mirror; a Forgejo Actions / Woodpecker port is still open (TODO 5.2.4).
+#     git tag -a v0.1.0 -m "rodeo 0.1.0" && git push origin v0.1.0
+#
+# A manual run always builds a tag that already exists on the remote: the tag
+# is what the release is attached to, so there is nothing sensible to build
+# from a bare branch.
 name: Release
 
 on:
   push:
-    tags: ["v*"]
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build and release (e.g. v0.1.0)"
+        required: true
+        type: string
+      draft:
+        description: "Create the release as a draft"
+        required: false
+        default: false
+        type: boolean
+      dry_run:
+        description: "Build and package only — do not create or upload anything"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
+  # A tag push carries the tag in github.ref_name; a manual run carries the
+  # branch there instead, so the input wins when it is set. Everything
+  # downstream reads these outputs and never the ref, so both paths are
+  # identical from here on.
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+      draft: ${{ steps.resolve.outputs.draft }}
+      dry_run: ${{ steps.resolve.outputs.dry_run }}
+    steps:
+      - name: Resolve tag
+        id: resolve
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          REF_NAME: ${{ github.ref_name }}
+          DRAFT: ${{ inputs.draft }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -eu
+
+          TAG="${INPUT_TAG:-$REF_NAME}"
+
+          case "$TAG" in
+            v*) ;;
+            *)
+              echo "'$TAG' is not a version tag — pass one as the 'tag' input." >&2
+              exit 1
+              ;;
+          esac
+
+          {
+            echo "tag=$TAG"
+            echo "draft=${DRAFT:-false}"
+            echo "dry_run=${DRY_RUN:-false}"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "Releasing $TAG (draft=${DRAFT:-false}, dry-run=${DRY_RUN:-false})"
+
   build:
+    needs: prepare
     name: ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
     strategy:
@@ -30,7 +91,11 @@ jobs:
             os: macos-13
 
     steps:
-      - uses: actions/checkout@v4
+      # Checks out the resolved tag, not the ref the run was started from, so a
+      # manual run against an old tag builds that tag's source.
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -40,24 +105,91 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
-      - name: Build
+      - name: Show toolchain
+        run: |
+          rustc --version
+          cargo --version
+
+      - name: Run tests
+        run: cargo test --locked --all
+
+      - name: Build release
         run: cargo build --release --locked --target ${{ matrix.target }}
 
       # The themes ship next to the binary: rodeo looks for them in
       # $XDG_DATA_HOME/rodeo/themes, so the archive has to carry them.
-      - name: Package
+      - name: Package release
+        id: package
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+          TARGET: ${{ matrix.target }}
         run: |
-          staging="rodeo-${{ github.ref_name }}-${{ matrix.target }}"
-          mkdir -p "$staging/themes"
-          cp target/${{ matrix.target }}/release/rodeo "$staging/"
-          cp themes/*.toml "$staging/themes/"
-          cp README.md "$staging/"
-          tar czf "$staging.tar.gz" "$staging"
-          echo "ASSET=$staging.tar.gz" >> "$GITHUB_ENV"
+          set -eux
 
-      - name: Upload to the release
-        uses: softprops/action-gh-release@v2
+          VERSION="${TAG#v}"
+          PACKAGE="rodeo-${VERSION}-${TARGET}"
+
+          mkdir -p "$PACKAGE/themes"
+
+          cp "target/${TARGET}/release/rodeo" "$PACKAGE/"
+          cp README.md LICENSE "$PACKAGE/"
+          cp themes/*.toml "$PACKAGE/themes/"
+
+          if [ -f docs/rodeo.1 ]; then
+            cp docs/rodeo.1 "$PACKAGE/"
+          fi
+
+          # Only on ELF: plain strip corrupts a Mach-O binary's symbol table,
+          # and the Apple builds are small enough that it does not matter.
+          case "$TARGET" in
+            *-linux-*) strip "$PACKAGE/rodeo" || true ;;
+          esac
+
+          tar -czf "${PACKAGE}.tar.gz" "$PACKAGE"
+
+          # sha256sum is GNU coreutils; the macOS runners only have shasum.
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "${PACKAGE}.tar.gz" > "${PACKAGE}.tar.gz.sha256"
+          else
+            shasum -a 256 "${PACKAGE}.tar.gz" > "${PACKAGE}.tar.gz.sha256"
+          fi
+
+          echo "package=$PACKAGE" >> "$GITHUB_OUTPUT"
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v7
         with:
-          files: ${{ env.ASSET }}
-          draft: true
+          name: ${{ steps.package.outputs.package }}
+          path: |
+            ${{ steps.package.outputs.package }}.tar.gz
+            ${{ steps.package.outputs.package }}.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+  # One job publishes everything, so the three matrix legs cannot race each
+  # other to create the same release.
+  release:
+    needs: [prepare, build]
+    if: needs.prepare.outputs.dry_run != 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Collect assets
+        uses: actions/download-artifact@v8
+        with:
+          path: assets
+          merge-multiple: true
+
+      - name: List assets
+        run: ls -l assets
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ needs.prepare.outputs.tag }}
+          name: ${{ needs.prepare.outputs.tag }}
+          draft: ${{ needs.prepare.outputs.draft == 'true' }}
+          prerelease: false
           generate_release_notes: true
+          files: assets/*

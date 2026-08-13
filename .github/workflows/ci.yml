@@ -2,8 +2,16 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [master]
   pull_request:
+
+permissions:
+  contents: read
+
+# A new push to a branch or pull request makes the run in flight pointless.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:
@@ -13,7 +21,7 @@ jobs:
       matrix:
         toolchain: [stable, beta]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@master
@@ -25,10 +33,10 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Check
-        run: cargo check --all-targets
+        run: cargo check --locked --all-targets
 
       - name: Test
-        run: cargo test --all
+        run: cargo test --locked --all
 
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
@@ -40,7 +48,7 @@ jobs:
   deny:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check
@@ -50,7 +58,7 @@ jobs:
   coverage:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -72,7 +80,7 @@ jobs:
       # Uploaded as an artifact rather than pushed to a coverage service: that
       # would need an account and a token for a project that has neither.
       - name: Upload lcov
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: coverage
           path: lcov.info

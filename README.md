@@ -62,7 +62,7 @@ terminal.
 Requires a Rust toolchain (edition 2024, so **Rust 1.85+**; developed on 1.95).
 
 ```sh
-git clone https://codeberg.org/grepx/rodeo
+git clone https://github.com/lordgreg/rodeo
 cd rodeo
 cargo install --path .
 ```
@@ -262,22 +262,24 @@ one to reach for.
 
 ## Releases
 
-Pushing a `v*` tag builds and publishes a Linux x86_64 archive:
+Pushing a `v*` tag builds and publishes archives for Linux x86_64 and macOS
+(Apple silicon and Intel):
 
 ```sh
 git tag -a v0.1.0 -m "rodeo 0.1.0"
 git push origin v0.1.0
 ```
 
-`.forgejo/workflows/release.yml` runs on Codeberg (needs *Settings → Units →
-Actions* enabled); `.github/workflows/release.yml` does the same on a GitHub
-mirror. The archive carries the binary, the themes, the man page, the README
-and the licence, plus a `.sha256`.
+`.github/workflows/release.yml` does the work. Each archive carries the binary,
+the themes, the man page, the README and the licence, plus a `.sha256`. The
+same workflow can be started from the Actions tab against a tag that already
+exists, to retry a failed publish or to re-cut assets without moving the tag —
+with optional draft and dry-run.
 
 ## Dependency updates
 
 `renovate.json` drives a self-hosted [Renovate](https://docs.renovatebot.com/)
-that runs daily from `.forgejo/workflows/renovate.yml`, or on demand from the
+that runs daily from `.github/workflows/renovate.yml`, or on demand from the
 Actions tab (with optional dry-run and debug logging). It needs a
 `RENOVATE_TOKEN` secret — see the header of that workflow.
 

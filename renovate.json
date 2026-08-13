@@ -49,7 +49,7 @@
       "groupName": "ratatui"
     },
     {
-      "description": "Workflow actions, including the Forgejo ones Renovate does not look for by default.",
+      "description": "Workflow actions move together: they are small, low-risk bumps and one pull request a week is enough.",
       "matchManagers": [
         "github-actions"
       ],
@@ -58,23 +58,9 @@
   ],
   "github-actions": {
     "managerFilePatterns": [
-      "/^\\.github/workflows/[^/]+\\.ya?ml$/",
-      "/^\\.forgejo/workflows/[^/]+\\.ya?ml$/"
+      "/^\\.github/workflows/[^/]+\\.ya?ml$/"
     ]
   },
-  "customManagers": [
-    {
-      "description": "The container image the release workflow builds in. Scoped to that file so Renovate does not try to update its own image in the workflow that runs it.",
-      "customType": "regex",
-      "managerFilePatterns": [
-        "/^\\.forgejo/workflows/release\\.ya?ml$/"
-      ],
-      "matchStrings": [
-        "image:\\s*(?<depName>[^\\s:]+):(?<currentValue>[^\\s]+)"
-      ],
-      "datasourceTemplate": "docker"
-    }
-  ],
   "lockFileMaintenance": {
     "enabled": true,
     "schedule": [
