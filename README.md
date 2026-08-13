@@ -5,6 +5,8 @@ written in Rust. It pairs the classic dual-pane layout with Vim-style
 keybindings, a rich preview, and themes — with no runtime dependencies beyond a
 terminal.
 
+![rodeo](screenshots/rodeo.png)
+
 ## Features
 
 - **Dual-pane navigation** with per-pane sorting, filtering and hidden-file

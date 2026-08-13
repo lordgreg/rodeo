@@ -8,6 +8,10 @@ repository = "https://github.com/lordgreg/rodeo"
 readme = "README.md"
 keywords = ["file-manager", "tui", "terminal", "ratatui", "vim"]
 categories = ["command-line-utilities", "filesystem"]
+# The README's images are for the repository page. crates.io resolves relative
+# links against `repository`, so it renders them without the .crate carrying
+# several megabytes of PNG in every published version.
+exclude = ["screenshots"]
 
 [dependencies]
 chrono = "0.4.45"
