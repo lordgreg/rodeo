@@ -11,6 +11,15 @@
   left to copy. A `rename` failing for any other reason is now reported rather
   than silently retried as a copy.
 
+* **Git status no longer comes back empty for a pane reached through a
+  symlink.** `git rev-parse --show-toplevel` resolves symlinks before
+  reporting the repository root, but the status paths built from it were
+  then matched against the pane's own, unresolved path — a mismatch that
+  silently produced no results. macOS hits this on every session, since its
+  temp directories sit under `/var`, itself a symlink to `/private/var`.
+  Status paths are now matched against a resolved copy of the pane
+  directory, while the file listing keeps using the original path.
+
 * `--config` now holds for the whole session. `:w` wrote to
   `~/.config/rodeo/config.toml` whatever file had been loaded, so a session
   started with `--config ./rodeo.toml` silently overwrote the user's real
@@ -85,6 +94,10 @@
 * The filter bar picks the query out from its label: the pattern is drawn in
   the same colour that marks its matches in the listing, so an active filter
   reads at a glance rather than as one uniform grey line.
+* **Homebrew.** `brew install lordgreg/rodeo/rodeo` installs a prebuilt
+  binary on Apple Silicon macOS from the
+  [`lordgreg/homebrew-rodeo`](https://github.com/lordgreg/homebrew-rodeo)
+  tap, kept up to date automatically on every release.
 
 # 0.2.0
 
