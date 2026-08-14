@@ -2816,7 +2816,11 @@ mod tests {
             let path = cursor_path(&app);
             press(&mut app, 'b');
 
-            assert!(app.bookmarks.contains(&path));
+            // A bookmark is stored canonicalized (`App::normalized`), so the
+            // raw cursor path — built from the tempdir's own, possibly
+            // symlinked, spelling — has to be resolved the same way before
+            // comparing.
+            assert!(app.bookmarks.contains(&path.canonicalize().unwrap()));
         }
 
         #[test]
@@ -2887,7 +2891,8 @@ mod tests {
             );
             press(&mut app, 'b');
 
-            assert!(app.bookmarks.contains(dir.path()));
+            // See the comment above: bookmarks are stored canonicalized.
+            assert!(app.bookmarks.contains(&dir.path().canonicalize().unwrap()));
         }
 
         /// Bookmarks are not part of config.toml, so `:w` never saves them —
