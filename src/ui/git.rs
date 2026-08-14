@@ -293,11 +293,22 @@ fn parse_porcelain_z(output: &[u8], repo_root: &Path) -> Vec<(PathBuf, GitStatus
 /// beneath it; for a flat listing, whose rows are all direct children, only
 /// the last step of that walk is ever read, which is exactly the top-level
 /// fold this used to do.
+///
+/// `git` reports symlink-resolved paths (`rev-parse --show-toplevel` and the
+/// status paths built from it), but `pane_dir` is whatever the pane is
+/// currently showing, symlinks and all — e.g. macOS puts temp directories
+/// under `/var`, itself a symlink to `/private/var`. Stripping against the
+/// raw `pane_dir` would then never match, so the comparison walks the
+/// resolved side while map keys stay in `pane_dir`'s original form, which is
+/// what callers elsewhere still look rows up by.
 fn aggregate(pane_dir: &Path, statuses: Vec<(PathBuf, GitStatus)>) -> HashMap<PathBuf, GitStatus> {
     let mut map: HashMap<PathBuf, GitStatus> = HashMap::new();
+    let real_pane_dir = pane_dir
+        .canonicalize()
+        .unwrap_or_else(|_| pane_dir.to_path_buf());
 
     for (path, status) in statuses {
-        let Ok(rel) = path.strip_prefix(pane_dir) else {
+        let Ok(rel) = path.strip_prefix(&real_pane_dir) else {
             continue; // outside this pane's directory
         };
 
@@ -383,6 +394,37 @@ mod tests {
                 .get(&dir.path().join("fresh.txt"))
                 .map(|s| s.kind),
             Some(GitEntryStatus::Untracked)
+        );
+    }
+
+    /// `git rev-parse --show-toplevel` resolves symlinks, but a pane can be
+    /// showing a symlinked path (macOS routinely does this: `/var`, where
+    /// temp directories live, is itself a symlink to `/private/var`). Regression
+    /// test for a bug where `aggregate` stripped the resolved git paths
+    /// against the raw `pane_dir`, never matched, and silently produced an
+    /// empty status map.
+    #[test]
+    fn repo_info_matches_statuses_when_pane_dir_is_a_symlink() {
+        let Some(dir) = scratch_repo() else {
+            return; // No usable git on this machine.
+        };
+
+        // A nested tempdir holding just the symlink: dropping it unlinks the
+        // symlink entry without following it, leaving `dir`'s real files
+        // untouched.
+        let link_holder = tempfile::tempdir().expect("tempdir");
+        let link_path = link_holder.path().join("link");
+        std::os::unix::fs::symlink(dir.path(), &link_path).expect("symlink");
+
+        std::fs::write(dir.path().join("tracked.txt"), "changed").expect("write");
+
+        let info = repo_info(&link_path).expect("inside a worktree");
+
+        assert_eq!(
+            info.entries
+                .get(&link_path.join("tracked.txt"))
+                .map(|s| s.kind),
+            Some(GitEntryStatus::Modified)
         );
     }
 
