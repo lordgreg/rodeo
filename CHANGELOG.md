@@ -1,3 +1,16 @@
+# 0.3.1
+
+## Fixed
+
+* Two bookmark tests failed on macOS (`aarch64-apple-darwin`): a bookmark is
+  stored canonicalized (so the same directory reached two ways is one
+  bookmark), but the tests compared it against the tempdir's raw path.
+  macOS temp directories sit under `/var`, itself a symlink to
+  `/private/var`, so the two forms differed there and matched by coincidence
+  everywhere else. The tests now canonicalize the path they compare against,
+  the way the rest of the suite already does. No application behaviour
+  changed.
+
 # 0.3.0
 
 ## Fixed
