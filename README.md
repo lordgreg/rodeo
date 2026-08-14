@@ -79,11 +79,17 @@ cargo install --path .
 
 Themes are looked up in, first match wins:
 
-1. `$XDG_DATA_HOME/rodeo/themes` (usually `~/.local/share/rodeo/themes`)
+1. `$XDG_DATA_HOME/rodeo/themes` (usually `~/.local/share/rodeo/themes`) —
+   your own themes
 2. `$XDG_DATA_DIRS/rodeo/themes`, e.g. `/usr/share/rodeo/themes`
-3. `./themes`, for running from a checkout
+3. `<binary's dir>/../share/rodeo/themes` — the `bin`/`share` layout a
+   package manager installs into (Homebrew ships the bundled themes here)
+4. `<binary's dir>/themes` — running straight out of an extracted release
+   archive, without installing it
+5. `./themes`, for running from a checkout
 
-So after installing, copy them where rodeo can find them:
+`cargo install --path .` only installs the binary, so its themes are not on
+that search path automatically; copy them where rodeo can find them:
 
 ```sh
 mkdir -p ~/.local/share/rodeo/themes
@@ -91,9 +97,9 @@ cp themes/*.toml ~/.local/share/rodeo/themes/
 ```
 
 Rodeo starts even with no themes installed — it falls back to a compiled-in
-copy of the default theme. The Homebrew formula does not install the extra
-themes; grab them from [`themes/`](themes) in this repo and copy them into
-`~/.local/share/rodeo/themes` if you want them.
+copy of the default theme. Homebrew and the release archives carry the full
+set already; the copy above is only needed for a `cargo install` from
+source.
 
 A man page is checked in at `docs/rodeo.1`. Installed automatically by
 Homebrew; for a from-source install:

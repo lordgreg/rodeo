@@ -1,6 +1,6 @@
 .ie \n(.g .ds Aq \(aq
 .el .ds Aq '
-.TH rodeo 1  "rodeo 0.3.1" 
+.TH rodeo 1  "rodeo 0.3.2" 
 .SH NAME
 rodeo \- A dual\-pane terminal file manager with Vim\-style keybindings
 .SH SYNOPSIS
@@ -33,6 +33,8 @@ CONFIGURATION:
 THEMES, first match wins:
     $XDG_DATA_HOME/rodeo/themes   e.g. ~/.local/share/rodeo/themes
     $XDG_DATA_DIRS/rodeo/themes   e.g. /usr/share/rodeo/themes
+    <bin>/../share/rodeo/themes   the bin/share layout a package installs into
+    <bin>/themes                  running out of an extracted release archive
     ./themes                      when running from a source checkout
 
 KEYS:
@@ -44,4 +46,4 @@ EXAMPLES:
     rodeo \-\-theme nord                 override the configured theme for this run
     rodeo \-\-config ./rodeo.toml        use a different configuration file
 .SH VERSION
-v0.3.1
+v0.3.2

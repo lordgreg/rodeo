@@ -18,6 +18,8 @@ CONFIGURATION:
 THEMES, first match wins:
     $XDG_DATA_HOME/rodeo/themes   e.g. ~/.local/share/rodeo/themes
     $XDG_DATA_DIRS/rodeo/themes   e.g. /usr/share/rodeo/themes
+    <bin>/../share/rodeo/themes   the bin/share layout a package installs into
+    <bin>/themes                  running out of an extracted release archive
     ./themes                      when running from a source checkout
 
 KEYS:

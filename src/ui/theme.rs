@@ -36,20 +36,53 @@ const BUILTIN_DEFAULT_THEME: &str = include_str!("../../themes/default.toml");
 /// Search path for theme files, most specific first:
 /// 1. `$XDG_DATA_HOME/rodeo/themes` — the user's own themes,
 /// 2. `$XDG_DATA_DIRS/rodeo/themes` (e.g. `/usr/share/rodeo/themes`) — packaged,
-/// 3. `./themes` — running from a source checkout.
+/// 3. `<binary's dir>/../share/rodeo/themes` — the `bin`/`share` layout a
+///    package manager installs into (this is what makes Homebrew work: its
+///    prefix is not on `$XDG_DATA_DIRS`),
+/// 4. `<binary's dir>/themes` — the release tarball's own layout, for running
+///    straight out of an extracted archive without installing it,
+/// 5. `./themes` — running from a source checkout.
 pub fn theme_dirs() -> Vec<PathBuf> {
     let xdg = xdg::BaseDirectories::with_prefix(CONFIG_DIR);
-    build_theme_dirs(xdg.get_data_home(), xdg.get_data_dirs())
+    build_theme_dirs(xdg.get_data_home(), xdg.get_data_dirs(), exe_dir())
+}
+
+/// The directory the running binary lives in, when it can be determined.
+///
+/// XDG alone misses installs that do not register themselves with it —
+/// Homebrew's prefix is never on `$XDG_DATA_DIRS` — so themes shipped
+/// alongside the binary need a search path of their own.
+fn exe_dir() -> Option<PathBuf> {
+    std::env::current_exe()
+        .ok()?
+        .parent()
+        .map(Path::to_path_buf)
 }
 
 /// Pure part of [`theme_dirs`], separated so it can be tested without
 /// touching the process environment.
-fn build_theme_dirs(data_home: Option<PathBuf>, data_dirs: Vec<PathBuf>) -> Vec<PathBuf> {
+fn build_theme_dirs(
+    data_home: Option<PathBuf>,
+    data_dirs: Vec<PathBuf>,
+    exe_dir: Option<PathBuf>,
+) -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = data_home
         .into_iter()
         .chain(data_dirs)
         .map(|d| d.join(THEME_SUBDIR))
         .collect();
+
+    if let Some(exe_dir) = exe_dir {
+        dirs.push(
+            exe_dir
+                .join("..")
+                .join("share")
+                .join(CONFIG_DIR)
+                .join(THEME_SUBDIR),
+        );
+        dirs.push(exe_dir.join(THEME_SUBDIR));
+    }
+
     dirs.push(PathBuf::from(THEME_SUBDIR));
     dirs.dedup();
     dirs
@@ -440,6 +473,7 @@ mod tests {
                 PathBuf::from("/usr/local/share/rodeo"),
                 PathBuf::from("/usr/share/rodeo"),
             ],
+            None,
         );
 
         assert_eq!(
@@ -456,8 +490,48 @@ mod tests {
     #[test]
     fn theme_dirs_always_include_the_working_directory() {
         // No HOME and no XDG_DATA_DIRS: the checkout-relative path remains.
-        let dirs = build_theme_dirs(None, Vec::new());
+        let dirs = build_theme_dirs(None, Vec::new(), None);
         assert_eq!(dirs, vec![PathBuf::from("themes")]);
+    }
+
+    /// Homebrew's prefix (and most package managers' `bin`/`share` layout)
+    /// is not on `$XDG_DATA_DIRS`, so the binary's own directory has to be
+    /// searched too — otherwise a `brew install` finds nothing but the
+    /// compiled-in default.
+    #[test]
+    fn theme_dirs_include_paths_relative_to_the_binary() {
+        let dirs = build_theme_dirs(None, Vec::new(), Some(PathBuf::from("/opt/rodeo/bin")));
+
+        assert_eq!(
+            dirs,
+            vec![
+                PathBuf::from("/opt/rodeo/bin/../share/rodeo/themes"),
+                PathBuf::from("/opt/rodeo/bin/themes"),
+                PathBuf::from("themes"),
+            ]
+        );
+    }
+
+    /// The user's own themes and the packaged ones are two different
+    /// directories, and both are searched — the exe-relative path added for
+    /// package managers does not push the user's own directory out.
+    #[test]
+    fn a_users_own_theme_directory_still_wins_over_the_exe_relative_one() {
+        let dirs = build_theme_dirs(
+            Some(PathBuf::from("/home/u/.local/share/rodeo")),
+            Vec::new(),
+            Some(PathBuf::from("/opt/homebrew/bin")),
+        );
+
+        assert_eq!(
+            dirs,
+            vec![
+                PathBuf::from("/home/u/.local/share/rodeo/themes"),
+                PathBuf::from("/opt/homebrew/bin/../share/rodeo/themes"),
+                PathBuf::from("/opt/homebrew/bin/themes"),
+                PathBuf::from("themes"),
+            ]
+        );
     }
 
     #[test]
