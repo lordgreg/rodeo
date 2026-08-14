@@ -1,3 +1,19 @@
+# 0.3.2
+
+## Fixed
+
+* **Themes are found on a Homebrew install.** `brew install lordgreg/rodeo/rodeo`
+  only ever offered the compiled-in `default` theme — the release archive
+  carries the full set, but nothing installed them anywhere rodeo looked, and
+  the lookup itself only knew `$XDG_DATA_HOME`/`$XDG_DATA_DIRS`, neither of
+  which covers Homebrew's prefix on macOS. The formula now installs `themes/`
+  into `pkgshare`, and the search path gained two entries relative to the
+  running binary's own directory: `<bin>/../share/rodeo/themes` (the
+  `bin`/`share` layout Homebrew and most package managers install into) and
+  `<bin>/themes` (the release archive's own layout, for running straight out
+  of an extracted tarball). A user's own `$XDG_DATA_HOME/rodeo/themes` is
+  still searched first and still the only place a custom theme belongs.
+
 # 0.3.1
 
 ## Fixed
