@@ -73,29 +73,6 @@ brew install lordgreg/rodeo/rodeo
 curl -fsSL https://raw.githubusercontent.com/lordgreg/rodeo/master/install.sh | bash
 ```
 
-Or by hand: prebuilt `x86_64-unknown-linux-gnu` binaries are attached to each
-[release](https://github.com/lordgreg/rodeo/releases). Download, extract, and
-install the binary alongside its themes and man page:
-
-```sh
-VERSION=0.3.2
-DIR="rodeo-${VERSION}-x86_64-unknown-linux-gnu"
-
-curl -fsSL "https://github.com/lordgreg/rodeo/releases/download/v${VERSION}/${DIR}.tar.gz" | tar -xz
-
-sudo install -Dm755 "$DIR/rodeo" /usr/local/bin/rodeo
-sudo install -Dm644 "$DIR/rodeo.1" /usr/local/share/man/man1/rodeo.1
-sudo install -d /usr/local/share/rodeo/themes
-sudo install -m644 "$DIR"/themes/*.toml /usr/local/share/rodeo/themes/
-
-rm -rf "$DIR"
-```
-
-`/usr/local/bin` and `/usr/local/share` sit under the same prefix, so rodeo
-finds the bundled themes on its own — this is the
-`<binary's dir>/../share/rodeo/themes` entry in the search path below, the
-same one that makes Homebrew work.
-
 ### From source
 
 Requires a Rust toolchain (edition 2024, so **Rust 1.85+**; developed on 1.95).
@@ -136,6 +113,21 @@ Homebrew; for a from-source install:
 ```sh
 sudo install -Dm644 docs/rodeo.1 /usr/local/share/man/man1/rodeo.1
 ```
+
+### Uninstall
+
+```sh
+brew uninstall lordgreg/rodeo/rodeo                      # Homebrew
+
+sudo rm -f /usr/local/bin/rodeo /usr/local/share/man/man1/rodeo.1
+sudo rm -rf /usr/local/share/rodeo                       # install.sh (default PREFIX)
+
+cargo uninstall rodeo                                    # cargo install --path .
+```
+
+None of these touch `~/.config/rodeo` (config, bookmarks) or
+`~/.local/share/rodeo/themes` (your own themes) — remove those too for a
+clean slate.
 
 ### Usage
 
