@@ -69,7 +69,11 @@ brew install lordgreg/rodeo/rodeo
 
 ### Linux (prebuilt binary)
 
-Prebuilt `x86_64-unknown-linux-gnu` binaries are attached to each
+```sh
+curl -fsSL https://raw.githubusercontent.com/lordgreg/rodeo/master/install.sh | bash
+```
+
+Or by hand: prebuilt `x86_64-unknown-linux-gnu` binaries are attached to each
 [release](https://github.com/lordgreg/rodeo/releases). Download, extract, and
 install the binary alongside its themes and man page:
 
