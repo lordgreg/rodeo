@@ -72,6 +72,9 @@ fn default_editor() -> String {
         .filter(|v| !v.is_empty())
         .unwrap_or_else(|| "vi".to_string())
 }
+fn default_auto_update() -> bool {
+    true
+}
 
 #[derive(Serialize, Deserialize, Debug)]
 /// User configuration, read from `config.toml`.
@@ -96,6 +99,8 @@ pub struct Config {
     pub active_pane: ActivePane,
     #[serde(default = "default_editor")]
     pub editor: String,
+    #[serde(default = "default_auto_update")]
+    pub auto_update: bool,
     /// Show a file-type glyph before each name. Off by default: the glyphs
     /// come from a Nerd Font, and without one they render as tofu.
     #[serde(default)]

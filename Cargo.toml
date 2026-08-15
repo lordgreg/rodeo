@@ -35,7 +35,9 @@ pdf-extract = "0.12.0"
 ratatui = { version = "0.30.2", features = ["unstable-rendered-line-info"] }
 ratatui-image = { version = "11.0.6", default-features = false, features = ["image-defaults", "crossterm"] }
 regex = "1.13.1"
+reqwest = { version = "0.13.4", features = ["json"] }
 serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
 # Only the pieces rodeo actually uses: bundled syntax definitions loaded from
 # the binary dump, plus the fancy-regex engine (pure Rust, no onig C library).
 # Dropping yaml-load also drops yaml-rust, which is unmaintained
@@ -46,6 +48,7 @@ syntect = { version = "5.3.0", default-features = false, features = [
     "regex-fancy",
 ] }
 tar = "0.4.46"
+tokio = { version = "1.53.1", features = ["full"] }
 toml = "1.1.4"
 trash = "5.2.6"
 xdg = "3.0.0"
