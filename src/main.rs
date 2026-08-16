@@ -1,8 +1,11 @@
+use std::thread;
+
 use clap::Parser;
 use log::info;
 use rodeo::config::Config;
 use rodeo::ui::App;
 use rodeo::ui::theme::Theme;
+use rodeo::updater::Updater;
 
 fn main() -> color_eyre::Result<()> {
     color_eyre::install()?;
@@ -21,6 +24,14 @@ fn main() -> color_eyre::Result<()> {
     }
 
     log::debug!("Config: {:?}", config);
+
+    if Updater::is_update_pending() {
+        Updater::apply_update();
+    } else {
+        thread::spawn(move || {
+            Updater::update_check(config.auto_update);
+        });
+    }
 
     let theme_name = args.theme.as_deref().or(Some(config.theme.as_str()));
     // A malformed theme must not stop rodeo from starting. The TUI is not up
