@@ -1,7 +1,13 @@
 use serde::{Deserialize, Serialize};
 
 use crate::config::CONFIG_DIR;
-use std::{env, io, path::PathBuf, process::Command};
+use std::{
+    env,
+    fs::File,
+    io::{self, Write},
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 ///! Auto updater
 
@@ -40,19 +46,62 @@ pub struct GithubAsset {
 }
 
 impl CacheFileInfo {
-    fn get_cache_file() -> io::Result<PathBuf> {
-        let xdg_dirs = xdg::BaseDirectories::with_prefix(CONFIG_DIR);
+    /// Resolve the cache file path, regardless of whether it exists yet.
+    /// Use this when the file is about to be created/overwritten (e.g. `save_info`).
+    fn cache_file_path() -> io::Result<PathBuf> {
+        xdg::BaseDirectories::with_prefix(CONFIG_DIR)
+            .get_cache_file(CACHE_FILE)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidFilename,
+                    format!("Cannot read cache file {}", CACHE_FILE),
+                )
+            })
+    }
 
-        xdg_dirs.get_cache_file(CACHE_FILE).ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidFilename,
-                format!("Cannot read cache file {}", CACHE_FILE),
-            )
-        })
+    /// Resolve the cache file path and require that it already exists.
+    /// Use this when reading (e.g. `load_info`, `is_update_pending`).
+    fn get_cache_file() -> io::Result<PathBuf> {
+        let cache_file_path = Self::cache_file_path()?;
+
+        if Path::new(cache_file_path.as_path()).exists() {
+            Ok(cache_file_path)
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("Cache file {:?} doesnt exist.", cache_file_path),
+            ))
+        }
+    }
+
+    fn cleanup_cache_directory() -> io::Result<()> {
+        let cache_path = xdg::BaseDirectories::with_prefix(CONFIG_DIR).get_cache_home();
+
+        if let Some(path) = cache_path {
+            let cache_path = path.clone();
+            log::debug!("cache dir found {:?}", cache_path);
+
+            for entry in std::fs::read_dir(path)? {
+                let entry = entry?;
+                let entry_path = entry.path();
+
+                if entry_path.is_file() {
+                    log::debug!(
+                        "Removing {:?} in cache dir {:?}",
+                        entry_path.to_str(),
+                        cache_path,
+                    );
+
+                    std::fs::remove_file(entry_path)?
+                }
+            }
+        }
+
+        Ok(())
     }
 
     pub fn save_info(&self, cache_file_info: &CacheFileInfo) -> io::Result<()> {
-        let cache_file = Self::get_cache_file()?;
+        let cache_file = Self::cache_file_path()?;
 
         let file_info_to_str = serde_json::to_string(&cache_file_info).map_err(|e| {
             io::Error::new(
@@ -88,6 +137,8 @@ impl CacheFileInfo {
             Err(err) => {
                 log::debug!("Updater: Cannot fetch data from cache file: {}", err);
 
+                let _ = CacheFileInfo::cleanup_cache_directory();
+
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     "Cache file data corrupted.",
@@ -96,6 +147,27 @@ impl CacheFileInfo {
         };
 
         return Ok(info);
+    }
+
+    pub fn asset_shasum_check(asset: &PathBuf, digest: &String) -> Result<bool, io::Error> {
+        let sha256_file = Command::new("sha256sum").arg(asset).output()?;
+
+        if sha256_file.status.success() {
+            let stdout = String::from_utf8_lossy(&sha256_file.stdout);
+            let only_sha = stdout.split_whitespace().next().unwrap();
+            let mut cleaned_digest = digest.clone();
+
+            if let Some(stripped) = cleaned_digest.strip_prefix("sha256:") {
+                cleaned_digest = stripped.to_string()
+            }
+
+            return Ok(only_sha == cleaned_digest.to_string());
+        }
+
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            format!("Incompatible shasum check!"),
+        ));
     }
 }
 
@@ -145,31 +217,70 @@ impl Updater {
                 )));
             }
 
-            // let cache_info = cache_file.ok()?;
+            let cache_info = cache_file.ok()?;
+            let xdg_dirs = xdg::BaseDirectories::with_prefix(CONFIG_DIR);
 
-            // const DOWNLOAD_URL =
+            let asset_file = xdg_dirs.get_cache_file(&cache_info.asset.name)?;
 
-            // read cache file info regarding new version
-            // let cache_file
+            // if asset file doesnt exist yet
+            if asset_file.exists() {
+                log::debug!(
+                    "Asset file {} already exists. Skipping re-download.",
+                    asset_file.display()
+                )
+            } else {
+                let client = reqwest::Client::builder()
+                    .user_agent(format!("rodeo/{}", env!("CARGO_PKG_VERSION")))
+                    .build()
+                    .ok()?;
 
-            // xdg::BaseDirectories::get_cache_file(&self, "test")
+                let response = client
+                    .get(&cache_info.asset.browser_download_url)
+                    .send()
+                    .await
+                    .ok()?;
 
-            // if let Some(filename) = filename {
-            //     // downloading tar.gz file
+                if !response.status().is_success() {
+                    log::debug!(
+                        "Updater: could not download asset: {}",
+                        response.status().as_str()
+                    );
+                    return Some(UpdateCheckResult::Failed(format!(
+                        "asset download error: {}",
+                        response.status().as_str()
+                    )));
+                }
 
-            //     return Some(UpdateCheckResult::Updated(format!(
-            //         "trying to download file {}",
-            //         filename
-            //     )));
-            // } else {
-            //     return Some(UpdateCheckResult::Failed(format!(
-            //         "failed finding asset name from github api {} (containing x64 and linux)",
-            //         GIT_RELEASE_API
-            //     )));
-            // }
+                let content = response.bytes().await.ok()?;
 
-            // TODO: Fix this
-            return Some(UpdateCheckResult::NoUpdate);
+                log::debug!(
+                    "Saving downloaded asset '{}' to {:?}",
+                    cache_info.asset.name,
+                    asset_file
+                );
+
+                let mut dest = File::create(&asset_file).ok()?;
+                dest.write_all(&content).ok()?;
+            }
+
+            log::debug!("checking shasum...");
+
+            match CacheFileInfo::asset_shasum_check(&asset_file, &cache_info.asset.digest) {
+                Ok(true) => {}
+                Ok(false) => {
+                    return Some(UpdateCheckResult::Failed(format!("Shasum check failed!")));
+                }
+                Err(e) => {
+                    return Some(UpdateCheckResult::Failed(format!(
+                        "Critical shasum error: {}",
+                        e
+                    )));
+                }
+            };
+
+            // TODO: untar etc.
+
+            return Some(UpdateCheckResult::Updated("Done".to_string()));
         }
 
         Some(UpdateCheckResult::Updated(String::from("ok")))
@@ -293,7 +404,6 @@ impl Updater {
 
     pub fn is_update_pending() -> bool {
         if CacheFileInfo::get_cache_file().is_ok() {
-            log::debug!("Found cache file, seems we are in upgrade process..");
             return true;
         }
 

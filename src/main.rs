@@ -26,10 +26,11 @@ fn main() -> color_eyre::Result<()> {
     log::debug!("Config: {:?}", config);
 
     if Updater::is_update_pending() {
-        Updater::apply_update();
+        Updater::apply_update().map(|out| log::debug!("got info from updater:\n{:?}", out));
     } else {
         thread::spawn(move || {
-            Updater::update_check(config.auto_update);
+            Updater::update_check(config.auto_update)
+                .map(|out| log::debug!("got info from updater:\n{:?}", out));
         });
     }
 
