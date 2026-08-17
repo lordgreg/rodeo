@@ -25,12 +25,31 @@ fn main() -> color_eyre::Result<()> {
 
     log::debug!("Config: {:?}", config);
 
+    let mut startup_notice: Option<(String, bool)> = None;
+
     if Updater::is_update_pending() {
-        Updater::apply_update().map(|out| log::debug!("got info from updater:\n{:?}", out));
+        match Updater::apply_update() {
+            Some(rodeo::updater::UpdateCheckResult::Updated(msg)) => {
+                log::debug!("Apply update completed");
+                eprintln!("rodeo: updated successfully.");
+                Updater::cleanup_everything();
+
+                startup_notice = Some((format!("Update ({}) applied 🤠", msg), false));
+            }
+            Some(result) => {
+                log::debug!("Apply update yielded:\n {:?}", result);
+
+                startup_notice = Some((
+                    "Update failed (~/.local/state/rodeo/rodeo.log)".to_string(),
+                    true,
+                ));
+            }
+            None => {}
+        }
     } else {
         thread::spawn(move || {
             Updater::update_check(config.auto_update)
-                .map(|out| log::debug!("got info from updater:\n{:?}", out));
+                .map(|out| log::debug!("Update check completed:\n{:?}", out));
         });
     }
 
@@ -49,6 +68,6 @@ fn main() -> color_eyre::Result<()> {
     };
 
     info!("Starting UI");
-    ratatui::run(|terminal| App::new(theme, config, &config_path).run(terminal))?;
+    ratatui::run(|terminal| App::new(theme, config, &config_path, startup_notice).run(terminal))?;
     Ok(())
 }

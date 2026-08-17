@@ -268,7 +268,12 @@ pub struct App {
 impl App {
     /// `config_path` is the file `config` was read from: `:w` writes it, `:so`
     /// re-reads it, and bookmarks are stored beside it.
-    pub fn new(theme: Theme, config: Config, config_path: &Path) -> Self {
+    pub fn new(
+        theme: Theme,
+        config: Config,
+        config_path: &Path,
+        startup_notice: Option<(String, bool)>,
+    ) -> Self {
         let panes = Panes::new(&config);
         let bookmarks_path = Bookmarks::beside(config_path);
         let bookmarks = Bookmarks::load(&bookmarks_path);
@@ -320,6 +325,12 @@ impl App {
             bookmarks_path,
             config_path: config_path.to_path_buf(),
         };
+
+        match startup_notice {
+            Some((msg, false)) => app.ok_status(msg),
+            Some((msg, true)) => app.err_status(msg),
+            None => {}
+        }
 
         app.footer.update_hints(&app.keymap);
         // Points the header at the starting directory. The branch and counts

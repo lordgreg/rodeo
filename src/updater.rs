@@ -3,8 +3,8 @@ use serde::{Deserialize, Serialize};
 use crate::config::CONFIG_DIR;
 use std::{
     env,
-    fs::File,
-    io::{self, Write},
+    fs::{self, File},
+    io::{self, Read, Write},
     path::{Path, PathBuf},
     process::Command,
 };
@@ -169,6 +169,14 @@ impl CacheFileInfo {
             format!("Incompatible shasum check!"),
         ));
     }
+
+    pub fn package_name(&self) -> String {
+        self.asset
+            .name
+            .strip_suffix(".tar.gz")
+            .unwrap_or(&self.asset.name)
+            .to_string()
+    }
 }
 
 pub struct OsInfo {}
@@ -220,13 +228,13 @@ impl Updater {
             let cache_info = cache_file.ok()?;
             let xdg_dirs = xdg::BaseDirectories::with_prefix(CONFIG_DIR);
 
-            let asset_file = xdg_dirs.get_cache_file(&cache_info.asset.name)?;
+            let release_file_archived = xdg_dirs.get_cache_file(&cache_info.asset.name)?;
 
             // if asset file doesnt exist yet
-            if asset_file.exists() {
+            if release_file_archived.exists() {
                 log::debug!(
                     "Asset file {} already exists. Skipping re-download.",
-                    asset_file.display()
+                    release_file_archived.display()
                 )
             } else {
                 let client = reqwest::Client::builder()
@@ -256,16 +264,17 @@ impl Updater {
                 log::debug!(
                     "Saving downloaded asset '{}' to {:?}",
                     cache_info.asset.name,
-                    asset_file
+                    release_file_archived
                 );
 
-                let mut dest = File::create(&asset_file).ok()?;
+                let mut dest = File::create(&release_file_archived).ok()?;
                 dest.write_all(&content).ok()?;
             }
 
-            log::debug!("checking shasum...");
-
-            match CacheFileInfo::asset_shasum_check(&asset_file, &cache_info.asset.digest) {
+            match CacheFileInfo::asset_shasum_check(
+                &release_file_archived,
+                &cache_info.asset.digest,
+            ) {
                 Ok(true) => {}
                 Ok(false) => {
                     return Some(UpdateCheckResult::Failed(format!("Shasum check failed!")));
@@ -278,12 +287,122 @@ impl Updater {
                 }
             };
 
-            // TODO: untar etc.
+            let file = match File::open(release_file_archived) {
+                Ok(f) => f,
+                Err(e) => {
+                    return Some(UpdateCheckResult::Failed(format!(
+                        "Cannot open tar file: {}",
+                        e
+                    )));
+                }
+            };
 
-            return Some(UpdateCheckResult::Updated("Done".to_string()));
+            // create tempdir
+            let tmp_dir = match tempfile::tempdir() {
+                Ok(dir) => dir,
+                Err(e) => {
+                    return Some(UpdateCheckResult::Failed(format!(
+                        "Failed to create temp directory: {}",
+                        e
+                    )));
+                }
+            };
+
+            let gzipped: bool = cache_info.asset.name.ends_with("tar.gz");
+
+            let reader: Box<dyn Read> = if gzipped {
+                Box::new(flate2::read::GzDecoder::new(file))
+            } else {
+                Box::new(file)
+            };
+            let mut ar = tar::Archive::new(reader);
+
+            if let Err(e) = ar.unpack(&tmp_dir) {
+                return Some(UpdateCheckResult::Failed(format!(
+                    "Failed unpacking archive file into temp directory: {:?}",
+                    e
+                )));
+            }
+
+            if !Path::new(&xdg_dirs.get_data_home()?.join("themes/")).exists() {
+                log::debug!(
+                    "Creating XDG_DATA_HOME/rodeo/themes directory {:?}",
+                    &xdg_dirs.get_data_home().unwrap().join("themes/")
+                );
+                match xdg_dirs.create_data_directory(Path::new("themes/")) {
+                    Ok(_) => {}
+                    Err(e) => {
+                        return Some(UpdateCheckResult::Failed(format!(
+                            "Cannot create data directory for themes ({:?}): {}",
+                            xdg_dirs.get_data_home(),
+                            e,
+                        )));
+                    }
+                }
+            }
+
+            let bin_current = std::env::current_exe().ok()?;
+            let bin_dir = match bin_current.parent() {
+                Some(dir) => dir,
+                None => {
+                    return Some(UpdateCheckResult::Failed(
+                        "Current binary parent should be a directory!".to_string(),
+                    ));
+                }
+            };
+            let package_name = cache_info.package_name();
+
+            let themes_dir = tmp_dir.path().join(&package_name).join("themes");
+            let themes_dest = xdg_dirs.get_data_home()?.join("themes");
+
+            let mut read_dir = match std::fs::read_dir(&themes_dir) {
+                Ok(rd) => rd,
+                Err(e) => {
+                    return Some(UpdateCheckResult::Failed(format!(
+                        "Couldn't open themes dir {:?}: {}",
+                        themes_dir, e
+                    )));
+                }
+            };
+
+            let result = read_dir.try_for_each(|entry| -> io::Result<()> {
+                let entry = entry?;
+                std::fs::copy(entry.path(), themes_dest.join(entry.file_name()))?;
+                Ok(())
+            });
+
+            if let Err(e) = result {
+                return Some(UpdateCheckResult::Failed(format!(
+                    "Failed copying theme file: {}",
+                    e
+                )));
+            }
+
+            // move binary only when not in debug mode
+            if !cfg!(debug_assertions) {
+                let bin_new = tmp_dir.path().join(&package_name).join("rodeo");
+                let bin_tmp = bin_dir.join(".rodeo.update.tmp");
+
+                if let Err(e) = fs::copy(&bin_new, &bin_tmp) {
+                    return Some(UpdateCheckResult::Failed(format!(
+                        "Couldnt copy binary: {:?}",
+                        e
+                    )));
+                }
+
+                if let Err(e) = fs::rename(&bin_tmp, &bin_current) {
+                    let _ = fs::remove_file(&bin_tmp);
+                    return Some(UpdateCheckResult::Failed(format!(
+                        "Couldnt overwrite tmp bin with current bin: {}",
+                        e
+                    )));
+                }
+            }
+
+            return Some(UpdateCheckResult::Updated(cache_info.version));
         }
 
-        Some(UpdateCheckResult::Updated(String::from("ok")))
+        Some(UpdateCheckResult::Incompatible)
     }
 
     #[tokio::main]
@@ -396,10 +515,6 @@ impl Updater {
         }
 
         return Some(UpdateCheckResult::Incompatible);
-
-        // check version
-
-        // notify
     }
 
     pub fn is_update_pending() -> bool {
@@ -408,5 +523,21 @@ impl Updater {
         }
 
         false
+    }
+
+    pub fn cleanup_everything() {
+        if cfg!(debug_assertions) {
+            log::debug!("Cleanup everything skipped while in debug mode.");
+            return;
+        }
+        let xdg_dirs = xdg::BaseDirectories::with_prefix(CONFIG_DIR);
+
+        let cache_home = match xdg_dirs.get_cache_home() {
+            Some(cache_dir) => cache_dir,
+            None => return,
+        };
+
+        log::debug!("Removing cache dir {:?}", cache_home);
+        let _ = fs::remove_dir_all(cache_home);
     }
 }

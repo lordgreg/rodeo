@@ -48,6 +48,7 @@ syntect = { version = "5.3.0", default-features = false, features = [
     "regex-fancy",
 ] }
 tar = "0.4.46"
+tempfile = "3.27.0"
 tokio = { version = "1.53.1", features = ["full"] }
 toml = "1.1.4"
 trash = "5.2.6"
@@ -56,4 +57,3 @@ zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 clap_mangen = "0.3.1"
-tempfile = "3.27.0"
