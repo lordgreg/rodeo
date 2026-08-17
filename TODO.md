@@ -39,8 +39,8 @@ runtime dependencies or a scripting layer.
    and transfer to a remote host. Highest effort of the list; only worth it
    if remote workflows matter to users.
 
-*Archive VFS, the permissions/ownership editor and the directory tree panel
-were #1, #4 and #6 here — done, see Completed below.*
+_Archive VFS, the permissions/ownership editor and the directory tree panel
+were #1, #4 and #6 here — done, see Completed below._
 
 ---
 
@@ -54,12 +54,12 @@ were #1, #4 and #6 here — done, see Completed below.*
   Expansion is lazy (one `read_dir` per opened node, never a recursive walk)
   and remembered by path, so the reload a filesystem event triggers does not
   collapse it. Two subsystems had assumptions that had to go first. `git.rs`
-  keyed its status map by *direct child name*, folding everything nested into
+  keyed its status map by _direct child name_, folding everything nested into
   the top-level directory — fine for a flat listing, useless for rows at
   arbitrary depth, and ambiguous between two `config.rs` in different
   directories; `aggregate` now keys by absolute path and records each status
   against every level up to the pane root, which is also what makes a
-  *collapsed* directory show the worst thing beneath it. And every two-pane
+  _collapsed_ directory show the worst thing beneath it. And every two-pane
   operation read `Pane::path` as "the directory the cursor is in", which stops
   being true the moment the cursor is three levels down; `cursor_dir()` answers
   that question instead and is identical to `path` in a flat listing.
@@ -70,7 +70,7 @@ were #1, #4 and #6 here — done, see Completed below.*
   best-first, which would separate children from their parents. The third
   listing mode is also what turned `Option<ArchiveView>` into a
   `ListingSource` enum: two `Option`s would have made an
-  archive-*and*-tree state representable, and an exhaustive match is what stops
+  archive-_and_-tree state representable, and an exhaustive match is what stops
   a fourth mode from quietly missing a branch. Refused inside an archive.
 - **Archive VFS.** `Enter` on a `.zip`/`.tar`/`.tar.gz` now switches the pane
   into a read-only virtual listing of its contents instead of opening it in
@@ -87,7 +87,7 @@ were #1, #4 and #6 here — done, see Completed below.*
   so navigation always has a full breadcrumb even for a zip built file-by-
   file. It is a new, separate module rather than a reuse of
   `popup_preview.rs`'s existing `zip_listing`/`tar_listing`: those produce a
-  flat "name  size" text block for a human to read, the VFS needs a real
+  flat "name size" text block for a human to read, the VFS needs a real
   is-a-directory hierarchy to walk — sharing one function would have forced
   an awkward shape onto one side or the other. Nested archives and opening
   a file from inside one are explicitly out of scope.
@@ -104,7 +104,7 @@ were #1, #4 and #6 here — done, see Completed below.*
   chmod is pure `std`; chown is a new `libc::chown` FFI call (the first
   besides `header.rs`'s `statvfs`) — both follow a symlink to its target,
   matching plain `chmod`/`chown` in a shell, which is also why `Entry`'s new
-  raw mode/uid/gid fields are read from the *target*'s stat for a symlink,
+  raw mode/uid/gid fields are read from the _target_'s stat for a symlink,
   unlike the link's-own-stat the `permissions`/`owner` display columns
   already used. `fs/passwd.rs` is `panes.rs`'s old `/etc/passwd` uid→name
   lookup pulled out and extended with the reverse direction and `/etc/group`,
@@ -119,7 +119,7 @@ were #1, #4 and #6 here — done, see Completed below.*
   the preview popup's file-type probe and loader spawn, and both search
   popups' preview builds, all used to run inside the `terminal.draw` closure.
   Image previews were the worst case — the file was re-read and re-decoded on
-  *every frame*, and `Picker::from_query_stdio` (which spawns `tmux` and
+  _every frame_, and `Picker::from_query_stdio` (which spawns `tmux` and
   blocks reading stdin) ran with it. Images decode once on a worker thread,
   the terminal is probed once behind a `OnceLock`, and the protocol is cached
   per area, failures included.
