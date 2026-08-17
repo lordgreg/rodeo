@@ -31,18 +31,17 @@ fn main() -> color_eyre::Result<()> {
         match Updater::apply_update() {
             Some(rodeo::updater::UpdateCheckResult::Updated(msg)) => {
                 log::debug!("Apply update completed");
-                eprintln!("rodeo: updated successfully.");
                 Updater::cleanup_everything();
 
                 startup_notice = Some((format!("Update ({}) applied 🤠", msg), false));
             }
-            Some(result) => {
-                log::debug!("Apply update yielded:\n {:?}", result);
+            Some(rodeo::updater::UpdateCheckResult::Failed(result)) => {
+                log::debug!("Apply update failed:\n {:?}", result);
 
-                startup_notice = Some((
-                    "Update failed (~/.local/state/rodeo/rodeo.log)".to_string(),
-                    true,
-                ));
+                startup_notice = Some((format!("Update failed ({:?})", result), true));
+            }
+            Some(result) => {
+                log::debug!("Apply update returned something else:\n{:?}", result)
             }
             None => {}
         }

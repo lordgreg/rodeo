@@ -308,7 +308,7 @@ impl Updater {
                 }
             };
 
-            let gzipped: bool = cache_info.asset.name.ends_with("tar.gz");
+            let gzipped: bool = cache_info.asset.name.ends_with(".tar.gz");
 
             let reader: Box<dyn Read> = if gzipped {
                 Box::new(flate2::read::GzDecoder::new(file))
@@ -324,24 +324,14 @@ impl Updater {
                 )));
             }
 
-            if !Path::new(&xdg_dirs.get_data_home()?.join("themes/")).exists() {
-                log::debug!(
-                    "Creating XDG_DATA_HOME/rodeo/themes directory {:?}",
-                    &xdg_dirs.get_data_home().unwrap().join("themes/")
-                );
-                match xdg_dirs.create_data_directory(Path::new("themes/")) {
-                    Ok(_) => {}
-                    Err(e) => {
-                        return Some(UpdateCheckResult::Failed(format!(
-                            "Cannot create data directory for themes ({:?}): {}",
-                            xdg_dirs.get_data_home(),
-                            e,
-                        )));
-                    }
-                }
+            if let Err(e) = xdg_dirs.create_data_directory("themes") {
+                return Some(UpdateCheckResult::Failed(format!(
+                    "Cannot create themes data directory: {}",
+                    e
+                )));
             }
 
-            let bin_current = std::env::current_exe().ok()?;
+            let bin_current = std::env::current_exe().ok()?.canonicalize().ok()?;
             let bin_dir = match bin_current.parent() {
                 Some(dir) => dir,
                 None => {
@@ -537,7 +527,9 @@ impl Updater {
             None => return,
         };
 
-        log::debug!("Removing cache dir {:?}", cache_home);
-        let _ = fs::remove_dir_all(cache_home);
+        match fs::remove_dir_all(cache_home) {
+            Ok(_) => log::debug!("Cache dir deleted."),
+            Err(err) => log::debug!("Cache dir could not be deleted: {}", err),
+        }
     }
 }

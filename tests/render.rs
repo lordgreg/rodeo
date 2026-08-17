@@ -20,6 +20,7 @@ fn app_in(dir: &std::path::Path) -> App {
         Theme::builtin().expect("built-in theme"),
         config,
         &dir.join("config.toml"),
+        None,
     )
 }
 
@@ -107,6 +108,7 @@ fn renders_with_icons_enabled() {
         Theme::builtin().unwrap(),
         config,
         &dir.path().join("config.toml"),
+        None,
     );
 
     draw(&mut app, 120, 30);

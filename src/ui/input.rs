@@ -2242,7 +2242,7 @@ mod tests {
             ..Default::default()
         };
         let theme = Theme::load_theme(None).expect("default theme in themes/");
-        App::new(theme, config, &dir.join("config.toml"))
+        App::new(theme, config, &dir.join("config.toml"), None)
     }
 
     fn key(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
@@ -2305,7 +2305,7 @@ mod tests {
                 ..Default::default()
             };
             let theme = Theme::load_theme(None).expect("default theme in themes/");
-            let mut app = App::new(theme, config, &dir.path().join("config.toml"));
+            let mut app = App::new(theme, config, &dir.path().join("config.toml"), None);
 
             app.dispatch_key(&key(KeyCode::Char('t'), KeyModifiers::NONE));
             app.dispatch_key(&key(KeyCode::Right, KeyModifiers::NONE));
@@ -2676,6 +2676,7 @@ mod tests {
             Theme::builtin().expect("built-in theme"),
             config,
             &dir.join("config.toml"),
+            None,
         )
     }
 
@@ -3102,7 +3103,7 @@ mod tests {
                 ..Default::default()
             };
             let theme = Theme::load_theme(None).expect("default theme in themes/");
-            let mut app = App::new(theme, config, &dir.path().join("config.toml"));
+            let mut app = App::new(theme, config, &dir.path().join("config.toml"), None);
 
             press(&mut app, 'b');
 
@@ -3198,7 +3199,7 @@ mod tests {
                 ..Default::default()
             };
             let theme = Theme::load_theme(None).expect("default theme in themes/");
-            let mut app = App::new(theme, config, &locked.join("config.toml"));
+            let mut app = App::new(theme, config, &locked.join("config.toml"), None);
 
             std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o500)).unwrap();
 
@@ -3616,7 +3617,7 @@ mod tests {
                 ..Default::default()
             };
             let theme = Theme::load_theme(None).expect("default theme in themes/");
-            App::new(theme, config, &left.join("config.toml"))
+            App::new(theme, config, &left.join("config.toml"), None)
         }
 
         fn enter_archive(app: &mut App, zip: &Path) {
@@ -3803,7 +3804,7 @@ mod tests {
                 ..Default::default()
             };
             let theme = Theme::load_theme(None).expect("default theme in themes/");
-            App::new(theme, config, &left.join("config.toml"))
+            App::new(theme, config, &left.join("config.toml"), None)
         }
 
         #[cfg(unix)]
