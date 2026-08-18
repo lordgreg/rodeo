@@ -7,6 +7,11 @@
   should complete without the user noticing or waiting. If you wish to disable
   the updater, you can set the `auto_update` to false in config.toml.
 
+## Changed
+
+- **Installer** on linux, the default prefix is $HOME/.local/bin. No need to
+  mess with sudo.
+
 # 0.3.2
 
 ## Fixed

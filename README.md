@@ -119,8 +119,12 @@ sudo install -Dm644 docs/rodeo.1 /usr/local/share/man/man1/rodeo.1
 ```sh
 brew uninstall lordgreg/rodeo/rodeo                      # Homebrew
 
+rm -f ~/.local/bin/rodeo ~/.local/share/man/man1/rodeo.1
+rm -rf ~/.local/share/rodeo                              # install.sh (default PREFIX)
+
+# if installed with PREFIX=/usr/local instead:
 sudo rm -f /usr/local/bin/rodeo /usr/local/share/man/man1/rodeo.1
-sudo rm -rf /usr/local/share/rodeo                       # install.sh (default PREFIX)
+sudo rm -rf /usr/local/share/rodeo
 
 cargo uninstall rodeo                                    # cargo install --path .
 ```

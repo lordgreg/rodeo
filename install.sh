@@ -15,12 +15,13 @@
 #
 # Env vars:
 #   VERSION   Release to install, without the "v" prefix (default: latest)
-#   PREFIX    Install prefix (default: /usr/local; ignored on macOS)
+#   PREFIX    Install prefix (default: $HOME/.local; ignored on macOS).
+#             Use PREFIX=/usr/local for a system-wide, sudo install.
 
 set -euo pipefail
 
 REPO="lordgreg/rodeo"
-PREFIX="${PREFIX:-/usr/local}"
+PREFIX="${PREFIX:-$HOME/.local}"
 VERSION="${VERSION:-}"
 TARGET="x86_64-unknown-linux-gnu"
 
