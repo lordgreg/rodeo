@@ -1,8 +1,8 @@
-# 0.3.3
+# Unreleased
 
 ## Added
 
-- **Updater!** Based on the system your are currently executing from, updater
+- **Updater** Based on the system your are currently executing from, updater
   will try to fetch the last version from official github repo. The update
   should complete without the user noticing or waiting. If you wish to disable
   the updater, you can set the `auto_update` to false in config.toml.

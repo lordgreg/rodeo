@@ -42,6 +42,7 @@ fn main() -> color_eyre::Result<()> {
                 log::debug!("Apply update failed:\n {:?}", result);
 
                 let _ = update_notice_tx.send((format!("Update failed ({:?})", result), true));
+                Updater::cleanup_everything();
             }
             Some(result) => {
                 log::debug!("Apply update returned something else:\n{:?}", result)

@@ -1,3 +1,9 @@
+//! Auto updater
+//!
+//! Auto updater will try to fetch the latest version, based on the OS
+//! you are running the app from. Currently, linux x86_64 and mac aarch64
+//! are supported. Notifier will appear in the footer if update fails
+//! or update is available. Brew is used on mac.
 use serde::{Deserialize, Serialize};
 
 use crate::config::CONFIG_DIR;
@@ -8,8 +14,6 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
 };
-
-///! Auto updater
 
 const CACHE_FILE: &str = "update";
 const BREW_FORMULA_NAME: &str = "lordgreg/rodeo";
@@ -100,15 +104,11 @@ impl CacheFileInfo {
         Ok(())
     }
 
-    pub fn save_info(&self, cache_file_info: &CacheFileInfo) -> io::Result<()> {
+    pub fn save_info(&self) -> io::Result<()> {
         let cache_file = Self::cache_file_path()?;
 
-        let file_info_to_str = serde_json::to_string(&cache_file_info).map_err(|e| {
-            io::Error::new(
-                io::ErrorKind::Other,
-                format!("Failed do serialize json content: {}", e),
-            )
-        })?;
+        let file_info_to_str = serde_json::to_string(&self)
+            .map_err(|e| io::Error::other(format!("Failed do serialize json content: {}", e)))?;
 
         let parent_dir = cache_file.parent().ok_or_else(|| {
             io::Error::new(
@@ -146,28 +146,25 @@ impl CacheFileInfo {
             }
         };
 
-        return Ok(info);
+        Ok(info)
     }
 
-    pub fn asset_shasum_check(asset: &PathBuf, digest: &String) -> Result<bool, io::Error> {
+    pub fn asset_shasum_check(asset: &PathBuf, digest: &str) -> Result<bool, io::Error> {
+        // TODO: this only works on linux, mac doesnt have sha256sum!
         let sha256_file = Command::new("sha256sum").arg(asset).output()?;
 
         if sha256_file.status.success() {
             let stdout = String::from_utf8_lossy(&sha256_file.stdout);
-            let only_sha = stdout.split_whitespace().next().unwrap();
-            let mut cleaned_digest = digest.clone();
+            let only_sha = stdout
+                .split_whitespace()
+                .next()
+                .ok_or_else(|| io::Error::other("sha256sum produced no output."))?;
+            let cleaned_digest = digest.strip_prefix("sha256:").unwrap_or(digest);
 
-            if let Some(stripped) = cleaned_digest.strip_prefix("sha256:") {
-                cleaned_digest = stripped.to_string()
-            }
-
-            return Ok(only_sha == cleaned_digest.to_string());
+            return Ok(only_sha == cleaned_digest);
         }
 
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            format!("Incompatible shasum check!"),
-        ));
+        Err(io::Error::other("Incompatible shasum check!".to_string()))
     }
 
     pub fn package_name(&self) -> String {
@@ -187,7 +184,7 @@ impl OsInfo {
     }
 
     pub fn is_mac() -> bool {
-        env::consts::OS == "macos" && env::consts::ARCH == "arm"
+        env::consts::OS == "macos" && env::consts::ARCH == "aarch64"
     }
 }
 
@@ -220,9 +217,9 @@ impl Updater {
             let cache_file = CacheFileInfo::load_info();
 
             if cache_file.is_err() {
-                return Some(UpdateCheckResult::Failed(format!(
-                    "Failed to get cache file"
-                )));
+                return Some(UpdateCheckResult::Failed(
+                    "Failed to get cache file".to_string(),
+                ));
             }
 
             let cache_info = cache_file.ok()?;
@@ -277,7 +274,9 @@ impl Updater {
             ) {
                 Ok(true) => {}
                 Ok(false) => {
-                    return Some(UpdateCheckResult::Failed(format!("Shasum check failed!")));
+                    return Some(UpdateCheckResult::Failed(
+                        "Shasum check failed!".to_string(),
+                    ));
                 }
                 Err(e) => {
                     return Some(UpdateCheckResult::Failed(format!(
@@ -423,7 +422,7 @@ impl Updater {
             }
 
             let cache_file_info = CacheFileInfo {
-                version: String::from("aaa"),
+                version: String::from(":latest (brew)"),
                 asset: GithubAsset {
                     name: env!("CARGO_PKG_NAME").to_string(),
                     browser_download_url: env!("CARGO_PKG_REPOSITORY").to_string(),
@@ -432,7 +431,7 @@ impl Updater {
                 },
             };
 
-            return match cache_file_info.save_info(&cache_file_info) {
+            return match cache_file_info.save_info() {
                 Ok(_) => Some(UpdateCheckResult::Available(
                     cache_file_info.version,
                     cache_file_info.asset.browser_download_url,
@@ -479,9 +478,9 @@ impl Updater {
                 .find(|asset| asset.name.contains("x86_64") && asset.name.contains("linux"));
 
             if asset.is_none() {
-                return Some(UpdateCheckResult::Failed(format!(
-                    "Last version not found using github api."
-                )));
+                return Some(UpdateCheckResult::Failed(
+                    "Last version not found using github api.".to_string(),
+                ));
             }
 
             let cache_file_info = CacheFileInfo {
@@ -489,7 +488,7 @@ impl Updater {
                 asset: asset.expect("Asset is expected, but not found.").clone(),
             };
 
-            return match cache_file_info.save_info(&cache_file_info) {
+            return match cache_file_info.save_info() {
                 Ok(_) => Some(UpdateCheckResult::Available(
                     cache_file_info.version,
                     cache_file_info.asset.browser_download_url,
@@ -531,5 +530,28 @@ impl Updater {
             Ok(_) => log::debug!("Cache dir deleted."),
             Err(err) => log::debug!("Cache dir could not be deleted: {}", err),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    // sha256("abc") — computed once via `printf 'abc' | sha256sum`
+    const ABC_SHA256: &str = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+
+    fn hello_file() -> NamedTempFile {
+        let mut f = NamedTempFile::new().expect("create temp file");
+        f.write_all(b"abc").expect("write temp file");
+        f
+    }
+
+    #[test]
+    fn matching_digest_returns_true() {
+        let f = hello_file();
+        let result = CacheFileInfo::asset_shasum_check(&f.path().to_path_buf(), ABC_SHA256);
+        assert!(matches!(result, Ok(true)));
     }
 }
