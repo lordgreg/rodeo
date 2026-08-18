@@ -263,17 +263,15 @@ pub struct App {
     /// `:so` re-reads. Both used to resolve the default location afresh and so
     /// ignored `--config`.
     pub(crate) config_path: PathBuf,
+    /// This is the update_notice transmission that is being triggered from
+    /// updater in main.rs
+    update_notice_rx: Option<mpsc::Receiver<(String, bool)>>,
 }
 
 impl App {
     /// `config_path` is the file `config` was read from: `:w` writes it, `:so`
     /// re-reads it, and bookmarks are stored beside it.
-    pub fn new(
-        theme: Theme,
-        config: Config,
-        config_path: &Path,
-        startup_notice: Option<(String, bool)>,
-    ) -> Self {
+    pub fn new(theme: Theme, config: Config, config_path: &Path) -> Self {
         let panes = Panes::new(&config);
         let bookmarks_path = Bookmarks::beside(config_path);
         let bookmarks = Bookmarks::load(&bookmarks_path);
@@ -324,13 +322,8 @@ impl App {
             bookmarks,
             bookmarks_path,
             config_path: config_path.to_path_buf(),
+            update_notice_rx: None,
         };
-
-        match startup_notice {
-            Some((msg, false)) => app.ok_status(msg),
-            Some((msg, true)) => app.err_status(msg),
-            None => {}
-        }
 
         app.footer.update_hints(&app.keymap);
         // Points the header at the starting directory. The branch and counts
@@ -339,6 +332,36 @@ impl App {
         app.sync_header();
         app.report_keymap_warnings();
         app
+    }
+
+    /// Hands over the receiving end of an update-notice channel, so a result
+    /// that only becomes known after the TUI is already running — the
+    /// background `update_check` in `main` — can still be shown once it
+    /// arrives. See [`App::poll_update_notice`].
+    pub fn set_update_notice_rx(&mut self, rx: mpsc::Receiver<(String, bool)>) {
+        self.update_notice_rx = Some(rx);
+    }
+
+    /// Drains a pending update notice, if one has arrived.
+    fn poll_update_notice(&mut self) {
+        let Some(rx) = &self.update_notice_rx else {
+            return;
+        };
+
+        match rx.try_recv() {
+            Ok((msg, true)) => {
+                self.err_status(msg);
+                self.update_notice_rx = None;
+            }
+            Ok((msg, false)) => {
+                self.ok_status(msg);
+                self.update_notice_rx = None;
+            }
+            Err(mpsc::TryRecvError::Empty) => {}
+            Err(mpsc::TryRecvError::Disconnected) => {
+                self.update_notice_rx = None;
+            }
+        }
     }
 
     /// Puts keybinding problems in front of the user instead of only in the
@@ -379,6 +402,7 @@ impl App {
         while !self.exit {
             self.draw_frame(terminal)?;
             self.absorb_filesystem_events();
+            self.poll_update_notice();
             self.wait_for_input()?;
             // Navigation may have changed which directories matter.
             self.refresh_fs_watches();
@@ -434,13 +458,15 @@ impl App {
     /// Waits for the user, blocking only when nothing else needs attention.
     ///
     /// Anything with a deadline — a running transfer, a loading preview, a
-    /// pending debounce, a background `git status` — forces a short poll
-    /// instead, so those finish on their own rather than on the next keypress.
+    /// pending debounce, a background `git status`, an update notice not yet
+    /// delivered — forces a short poll instead, so those finish on their own
+    /// rather than on the next keypress.
     fn wait_for_input(&mut self) -> std::io::Result<()> {
         let needs_tick = self.progress.is_some()
             || self.preview().is_some_and(|p| p.is_loading())
             || self.fs_debounce.is_some()
-            || self.panes.git_pending();
+            || self.panes.git_pending()
+            || self.update_notice_rx.is_some();
 
         if !needs_tick {
             return self.handle_input();

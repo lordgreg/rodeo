@@ -1,3 +1,4 @@
+use std::sync::mpsc;
 use std::thread;
 
 use clap::Parser;
@@ -25,7 +26,9 @@ fn main() -> color_eyre::Result<()> {
 
     log::debug!("Config: {:?}", config);
 
-    let mut startup_notice: Option<(String, bool)> = None;
+    // Event emitter which will listen on changes after we already start the
+    // TUI. No need to block and await for Updater to finish.
+    let (update_notice_tx, update_notice_rx) = mpsc::channel::<(String, bool)>();
 
     if Updater::is_update_pending() {
         match Updater::apply_update() {
@@ -33,12 +36,12 @@ fn main() -> color_eyre::Result<()> {
                 log::debug!("Apply update completed");
                 Updater::cleanup_everything();
 
-                startup_notice = Some((format!("Update ({}) applied 🤠", msg), false));
+                let _ = update_notice_tx.send((format!("Update ({}) applied 🤠", msg), false));
             }
             Some(rodeo::updater::UpdateCheckResult::Failed(result)) => {
                 log::debug!("Apply update failed:\n {:?}", result);
 
-                startup_notice = Some((format!("Update failed ({:?})", result), true));
+                let _ = update_notice_tx.send((format!("Update failed ({:?})", result), true));
             }
             Some(result) => {
                 log::debug!("Apply update returned something else:\n{:?}", result)
@@ -46,9 +49,13 @@ fn main() -> color_eyre::Result<()> {
             None => {}
         }
     } else {
-        thread::spawn(move || {
-            Updater::update_check(config.auto_update)
-                .map(|out| log::debug!("Update check completed:\n{:?}", out));
+        thread::spawn(move || match Updater::update_check(config.auto_update) {
+            Some(rodeo::updater::UpdateCheckResult::Available(version, _)) => {
+                log::debug!("Update check completed: v{version} available");
+                let _ = update_notice_tx.send((format!("Update available: v{version}"), false));
+            }
+            Some(result) => log::debug!("Update check completed:\n{:?}", result),
+            None => {}
         });
     }
 
@@ -67,6 +74,10 @@ fn main() -> color_eyre::Result<()> {
     };
 
     info!("Starting UI");
-    ratatui::run(|terminal| App::new(theme, config, &config_path, startup_notice).run(terminal))?;
+    ratatui::run(|terminal| {
+        let mut app = App::new(theme, config, &config_path);
+        app.set_update_notice_rx(update_notice_rx);
+        app.run(terminal)
+    })?;
     Ok(())
 }
