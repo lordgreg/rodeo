@@ -342,6 +342,18 @@ cargo deny check                  # licences and security advisories
 cargo run --example gen_man       # regenerate docs/rodeo.1 after CLI changes
 ```
 
+One-time per clone, enable the repo's git hooks:
+
+```sh
+git config core.hooksPath scripts/git-hooks
+```
+
+- `pre-commit` — when `Cargo.toml`/`src/cli.rs` are staged, checks
+  `docs/rodeo.1` hasn't drifted from the CLI definition; when any `.rs` or
+  `Cargo.toml`/`Cargo.lock` is staged, runs clippy.
+- `pre-push` — when pushing a `vX.Y.Z` tag, checks it matches the
+  `Cargo.toml` version and runs the full test suite.
+
 The crate is a library (`src/lib.rs`) with a thin binary, so integration tests
 can reach the internals.
 

@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+status=0
+tag_pushed=0
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+    case "$local_ref" in
+        refs/tags/v*) ;;
+        *) continue ;;
+    esac
+
+    tag_pushed=1
+    tag_name="${local_ref#refs/tags/}"
+    tag_version="${tag_name#v}"
+
+    crate_version="$(cargo pkgid | sed -E 's/.*[@#]//')"
+
+    if [[ "$tag_version" != "$crate_version" ]]; then
+        echo "error: tag '$tag_name' does not match Cargo.toml version '$crate_version'." >&2
+        echo "       update Cargo.toml, or re-tag as 'v$crate_version'." >&2
+        status=1
+    fi
+done
+
+if [[ "$tag_pushed" -eq 1 && "$status" -eq 0 ]]; then
+    echo "pre-push: version tag detected, running test suite..." >&2
+    if ! cargo test --locked --all; then
+        echo "error: test suite failed — refusing to push version tag(s)." >&2
+        status=1
+    fi
+fi
+
+exit "$status"

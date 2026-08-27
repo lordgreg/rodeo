@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+staged="$(git diff --cached --name-only --diff-filter=ACMR)"
+status=0
+
+# man pages
+if grep -qE '^(Cargo\.toml|src/cli\.rs)$' <<<"$staged"; then
+    echo "pre-commit: checking docs/rodeo.1 is in sync with the CLI definition..." >&2
+    cargo run --quiet --example gen_man >/dev/null
+
+    if ! git diff --exit-code --quiet -- docs/rodeo.1; then
+        echo "error: docs/rodeo.1 was out of date and has been regenerated in your working tree." >&2
+        echo "       review the diff, then 'git add docs/rodeo.1' and commit again." >&2
+        status=1
+    fi
+fi
+
+# clippy
+if grep -qE '\.rs$|^Cargo\.(toml|lock)$' <<<"$staged"; then
+    echo "pre-commit: running clippy..." >&2
+    if ! cargo clippy --all-targets -- -D warnings; then
+        status=1
+    fi
+fi
+
+exit "$status"
