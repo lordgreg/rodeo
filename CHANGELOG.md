@@ -1,3 +1,11 @@
+# Unreleased
+
+## Updated
+
+- MacOS brew version check checks again brew json output and validates the
+  returned object's version with the current. This way we always get version
+  information back. Oh, I've added tests to, which is crazy!
+
 # 0.4.0
 
 ## Added
