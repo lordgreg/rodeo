@@ -35,21 +35,6 @@ pub struct CacheFileInfo {
     asset: GithubAsset,
 }
 
-// {
-//   "formulae": [
-//     {
-//       "name": "lordgreg/rodeo/rodeo",
-//       "installed_versions": [
-//         "0.3.2"
-//       ],
-//       "current_version": "0.4.0",
-//       "pinned": false,
-//       "pinned_version": null
-//     }
-//   ],
-//   "casks": []
-// }
-
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
 pub struct BrewFormula {
     name: String,
