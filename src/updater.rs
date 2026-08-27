@@ -19,7 +19,7 @@ const CACHE_FILE: &str = "update";
 const BREW_FORMULA_NAME: &str = "lordgreg/rodeo";
 const GIT_RELEASE_API: &str = "https://api.github.com/repos/lordgreg/rodeo/releases/latest";
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
 pub enum UpdateCheckResult {
     NoUpdate,
     Available(String, String),
@@ -33,6 +33,34 @@ pub enum UpdateCheckResult {
 pub struct CacheFileInfo {
     version: String,
     asset: GithubAsset,
+}
+
+// {
+//   "formulae": [
+//     {
+//       "name": "lordgreg/rodeo/rodeo",
+//       "installed_versions": [
+//         "0.3.2"
+//       ],
+//       "current_version": "0.4.0",
+//       "pinned": false,
+//       "pinned_version": null
+//     }
+//   ],
+//   "casks": []
+// }
+
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
+pub struct BrewFormula {
+    name: String,
+    installed_versions: Vec<String>,
+    current_version: String,
+    pinned: bool,
+}
+
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
+pub struct BrewOutdated {
+    formulae: Vec<BrewFormula>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -394,6 +422,47 @@ impl Updater {
         Some(UpdateCheckResult::Incompatible)
     }
 
+    fn validate_brew_outdated(stdout: &str) -> Option<UpdateCheckResult> {
+        let brew_outdated: BrewOutdated = match serde_json::from_str(stdout) {
+            Ok(brew) => brew,
+            Err(e) => {
+                return Some(UpdateCheckResult::Failed(format!(
+                    "Cannot get info from brew outdated command: {}",
+                    e
+                )));
+            }
+        };
+
+        let Some(formula) = brew_outdated.formulae.first() else {
+            log::debug!("Updater: No new version available.");
+            return Some(UpdateCheckResult::NoUpdate);
+        };
+
+        let new_version = &formula.current_version;
+        if new_version == env!("CARGO_PKG_VERSION") {
+            log::debug!("Updater: No new version available.");
+            return Some(UpdateCheckResult::NoUpdate);
+        }
+
+        let cache_file_info = CacheFileInfo {
+            version: new_version.to_string(),
+            asset: GithubAsset {
+                name: env!("CARGO_PKG_NAME").to_string(),
+                browser_download_url: env!("CARGO_PKG_REPOSITORY").to_string(),
+                content_type: String::from("n/a"),
+                digest: String::from("n/a"),
+            },
+        };
+
+        match cache_file_info.save_info() {
+            Ok(_) => Some(UpdateCheckResult::Available(
+                cache_file_info.version,
+                cache_file_info.asset.browser_download_url,
+            )),
+            Err(err) => Some(UpdateCheckResult::Failed(format!("err {}", err))),
+        }
+    }
+
     #[tokio::main]
     pub async fn update_check(allow_to_update: bool) -> Option<UpdateCheckResult> {
         if !allow_to_update {
@@ -402,7 +471,7 @@ impl Updater {
 
         if OsInfo::is_mac() {
             let output = Command::new("brew")
-                .args(["outdated", BREW_FORMULA_NAME])
+                .args(["outdated", BREW_FORMULA_NAME, "-json=v2"])
                 .output()
                 .ok()?;
 
@@ -416,28 +485,7 @@ impl Updater {
             }
 
             let stdout = String::from_utf8_lossy(&output.stdout);
-            if !stdout.contains("out of date") {
-                log::debug!("Updater: No new version available.");
-                return Some(UpdateCheckResult::NoUpdate);
-            }
-
-            let cache_file_info = CacheFileInfo {
-                version: String::from(":latest (brew)"),
-                asset: GithubAsset {
-                    name: env!("CARGO_PKG_NAME").to_string(),
-                    browser_download_url: env!("CARGO_PKG_REPOSITORY").to_string(),
-                    content_type: String::from("n/a"),
-                    digest: String::from("n/a"),
-                },
-            };
-
-            return match cache_file_info.save_info() {
-                Ok(_) => Some(UpdateCheckResult::Available(
-                    cache_file_info.version,
-                    cache_file_info.asset.browser_download_url,
-                )),
-                Err(err) => Some(UpdateCheckResult::Failed(format!("err {}", err))),
-            };
+            return Self::validate_brew_outdated(&stdout);
         } else if OsInfo::is_linux() {
             let current = env!("CARGO_PKG_VERSION");
 
@@ -553,5 +601,62 @@ mod tests {
         let f = hello_file();
         let result = CacheFileInfo::asset_shasum_check(&f.path().to_path_buf(), ABC_SHA256);
         assert!(matches!(result, Ok(true)));
+    }
+
+    const BREW_OUTPUT: &str = r#"
+    {
+    "formulae": [
+        {
+        "name": "lordgreg/rodeo/rodeo",
+        "installed_versions": [
+            "0.3.2"
+        ],
+        "current_version": "99.0.0",
+        "pinned": false,
+        "pinned_version": null
+        }
+    ],
+    "casks": []
+    }
+    "#;
+
+    #[test]
+    fn macos_brew_outdated_parses_into_expected_object() {
+        let brew_outdated: BrewOutdated =
+            serde_json::from_str(BREW_OUTPUT).expect("valid brew outdated json");
+
+        assert_eq!(
+            brew_outdated,
+            BrewOutdated {
+                formulae: vec![BrewFormula {
+                    name: "lordgreg/rodeo/rodeo".to_string(),
+                    installed_versions: vec!["0.3.2".to_string()],
+                    current_version: "99.0.0".to_string(),
+                    pinned: false,
+                }],
+            }
+        );
+    }
+
+    #[test]
+    fn macos_new_version_available() {
+        let result = Updater::validate_brew_outdated(BREW_OUTPUT);
+
+        assert_eq!(
+            result,
+            Some(UpdateCheckResult::Available(
+                "99.0.0".to_string(),
+                env!("CARGO_PKG_REPOSITORY").to_string(),
+            ))
+        );
+    }
+
+    #[test]
+    fn macos_no_new_version_available() {
+        let brew_output = BREW_OUTPUT.replace("99.0.0", env!("CARGO_PKG_VERSION"));
+
+        let result = Updater::validate_brew_outdated(&brew_output);
+
+        assert_eq!(result, Some(UpdateCheckResult::NoUpdate));
     }
 }
