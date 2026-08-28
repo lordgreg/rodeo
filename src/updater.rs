@@ -456,7 +456,7 @@ impl Updater {
 
         if OsInfo::is_mac() {
             let output = Command::new("brew")
-                .args(["outdated", BREW_FORMULA_NAME, "-json=v2"])
+                .args(["outdated", BREW_FORMULA_NAME, "--json=v2"])
                 .output()
                 .ok()?;
 
