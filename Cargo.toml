@@ -1,6 +1,6 @@
 [package]
 name = "rodeo"
-version = "0.4.1"
+version = "0.4.2"
 edition = "2024"
 license = "Apache-2.0"
 description = "A dual-pane terminal file manager with Vim-style keybindings"

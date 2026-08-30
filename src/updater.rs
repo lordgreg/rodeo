@@ -13,6 +13,7 @@ use std::{
     io::{self, Read, Write},
     path::{Path, PathBuf},
     process::Command,
+    sync::mpsc,
 };
 
 const CACHE_FILE: &str = "update";
@@ -537,6 +538,30 @@ impl Updater {
         }
 
         return Some(UpdateCheckResult::Incompatible);
+    }
+
+    /// Apply a pending update and notify the UI of the outcome, cleaning up
+    /// the cache directory regardless of whether it succeeded or failed.
+    pub fn apply_update_and_notify(tx: &mpsc::Sender<(String, bool)>) {
+        match Self::apply_update() {
+            Some(UpdateCheckResult::Updated(version)) => {
+                log::debug!("Apply update completed");
+                let _ = tx.send((
+                    format!("Update ({}) completed 🤠. Restart to complete.", version),
+                    false,
+                ));
+            }
+            Some(UpdateCheckResult::Failed(reason)) => {
+                log::debug!("Apply update failed:\n{}", reason);
+                let _ = tx.send((format!("Update failed ({})", reason), true));
+            }
+            Some(result) => {
+                log::debug!("Apply update returned something else:\n{:?}", result)
+            }
+            None => {}
+        }
+
+        Self::cleanup_everything();
     }
 
     pub fn is_update_pending() -> bool {
