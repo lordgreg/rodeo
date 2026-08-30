@@ -31,29 +31,12 @@ fn main() -> color_eyre::Result<()> {
     let (update_notice_tx, update_notice_rx) = mpsc::channel::<(String, bool)>();
 
     if Updater::is_update_pending() {
-        match Updater::apply_update() {
-            Some(rodeo::updater::UpdateCheckResult::Updated(msg)) => {
-                log::debug!("Apply update completed");
-                Updater::cleanup_everything();
-
-                let _ = update_notice_tx.send((format!("Update ({}) applied 🤠", msg), false));
-            }
-            Some(rodeo::updater::UpdateCheckResult::Failed(result)) => {
-                log::debug!("Apply update failed:\n {:?}", result);
-
-                let _ = update_notice_tx.send((format!("Update failed ({:?})", result), true));
-                Updater::cleanup_everything();
-            }
-            Some(result) => {
-                log::debug!("Apply update returned something else:\n{:?}", result)
-            }
-            None => {}
-        }
+        Updater::apply_update_and_notify(&update_notice_tx);
     } else {
         thread::spawn(move || match Updater::update_check(config.auto_update) {
             Some(rodeo::updater::UpdateCheckResult::Available(version, _)) => {
                 log::debug!("Update check completed: v{version} available");
-                let _ = update_notice_tx.send((format!("Update available: v{version}"), false));
+                Updater::apply_update_and_notify(&update_notice_tx);
             }
             Some(result) => log::debug!("Update check completed:\n{:?}", result),
             None => {}

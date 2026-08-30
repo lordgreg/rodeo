@@ -1,4 +1,11 @@
-# Unreleased
+# 0.4.2
+
+## Updated
+
+- Updater will immediatelly apply update if it finds new version and prompt
+  the user to restart the client.
+
+# 0.4.1
 
 ## Updated
 
