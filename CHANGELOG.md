@@ -1,3 +1,9 @@
+# Unreleased
+
+## Fixed
+
+- Fix wrong brew formula name as const
+
 # 0.4.2
 
 ## Updated

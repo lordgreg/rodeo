@@ -17,7 +17,7 @@ use std::{
 };
 
 const CACHE_FILE: &str = "update";
-const BREW_FORMULA_NAME: &str = "lordgreg/rodeo";
+const BREW_FORMULA_NAME: &str = "lordgreg/rodeo/rodeo";
 const GIT_RELEASE_API: &str = "https://api.github.com/repos/lordgreg/rodeo/releases/latest";
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
