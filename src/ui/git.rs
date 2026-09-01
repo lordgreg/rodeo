@@ -314,7 +314,21 @@ fn aggregate(pane_dir: &Path, statuses: Vec<(PathBuf, GitStatus)>) -> HashMap<Pa
 
         // `ancestors` ends at the empty path, which is `pane_dir` itself: a
         // pane never shows a row for its own directory, so stop before it.
-        for level in rel.ancestors().take_while(|p| !p.as_os_str().is_empty()) {
+        //
+        // Ignored is the exception to the propagation: it describes the
+        // matched path itself, not a "worst status beneath" worth surfacing.
+        // Letting it climb would grey out an ordinary, fully tracked
+        // directory just because a `target/` or `node_modules/` sits
+        // somewhere underneath it. Everything else still climbs, since those
+        // are real work-in-progress a collapsed folder should surface.
+        for (depth, level) in rel
+            .ancestors()
+            .take_while(|p| !p.as_os_str().is_empty())
+            .enumerate()
+        {
+            if depth > 0 && status.kind == GitEntryStatus::Ignored {
+                continue;
+            }
             map.entry(pane_dir.join(level))
                 .and_modify(|s| *s = s.merge(status))
                 .or_insert(status);
@@ -611,6 +625,59 @@ mod tests {
         // Each leaf keeps its own status, which is what an expanded tree shows.
         assert_eq!(
             map.get(Path::new("/repo/a/b/x.rs")).map(|s| s.kind),
+            Some(GitEntryStatus::Ignored)
+        );
+    }
+
+    /// A directory that merely contains a gitignored child (e.g. `target/`)
+    /// must not itself render as ignored/grey: only the ignored path itself
+    /// should carry that status. Regression test for a bug where `Ignored`
+    /// climbed the ancestor chain like every other status.
+    #[test]
+    fn aggregate_does_not_mark_ancestors_of_an_ignored_only_child_as_ignored() {
+        let pane = PathBuf::from("/repo");
+        let statuses = vec![(
+            PathBuf::from("/repo/a/b/target"),
+            status(GitEntryStatus::Ignored),
+        )];
+
+        let map = aggregate(&pane, statuses);
+
+        // The ignored path itself still shows as ignored.
+        assert_eq!(
+            map.get(Path::new("/repo/a/b/target")).map(|s| s.kind),
+            Some(GitEntryStatus::Ignored)
+        );
+        // Its ancestors are ordinary, tracked directories and carry no
+        // status at all.
+        assert!(!map.contains_key(Path::new("/repo/a/b")));
+        assert!(!map.contains_key(Path::new("/repo/a")));
+    }
+
+    /// A real change elsewhere still has to surface through an ancestor even
+    /// when an ignored sibling also sits beneath it.
+    #[test]
+    fn aggregate_still_surfaces_real_changes_past_an_ignored_sibling() {
+        let pane = PathBuf::from("/repo");
+        let statuses = vec![
+            (
+                PathBuf::from("/repo/a/target"),
+                status(GitEntryStatus::Ignored),
+            ),
+            (
+                PathBuf::from("/repo/a/b/main.rs"),
+                status(GitEntryStatus::Modified),
+            ),
+        ];
+
+        let map = aggregate(&pane, statuses);
+
+        assert_eq!(
+            map.get(Path::new("/repo/a")).map(|s| s.kind),
+            Some(GitEntryStatus::Modified)
+        );
+        assert_eq!(
+            map.get(Path::new("/repo/a/target")).map(|s| s.kind),
             Some(GitEntryStatus::Ignored)
         );
     }

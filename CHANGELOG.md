@@ -2,6 +2,10 @@
 
 ## Fixed
 
+- .gitignore Entry in subdirectory propagates to each parent directory, thus
+  showing parent directories as Ignored items too. This should not be the 
+  case
+
 - Fix wrong brew formula name as const
 
 # 0.4.2
