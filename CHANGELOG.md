@@ -1,3 +1,12 @@
+# Unreleased
+
+## Fixed
+
+- .gitignore Entry in subdirectory propagates to each parent directory, thus
+  showing parent directories as Ignored items too. This should not be the 
+  case
+
+
 # 0.4.2
 
 ## Updated
