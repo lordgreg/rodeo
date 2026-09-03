@@ -50,8 +50,8 @@ syntect = { version = "5.3.0", default-features = false, features = [
 tar = "0.4.46"
 tempfile = "3.27.0"
 tokio = { version = "1.53.1", features = ["full"] }
-toml = "1.1.4"
-trash = "5.2.6"
+toml = "1.1.5"
+trash = "5.2.7"
 xdg = "3.0.0"
 zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
 
