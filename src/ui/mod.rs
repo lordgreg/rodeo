@@ -266,6 +266,10 @@ pub struct App {
     /// This is the update_notice transmission that is being triggered from
     /// updater in main.rs
     update_notice_rx: Option<mpsc::Receiver<(String, bool)>>,
+    /// The theme in force before a `:theme` picker started live-previewing
+    /// candidates, so `Esc` (or abandoning the line) can restore it. `None`
+    /// outside of a preview.
+    theme_preview: Option<String>,
 }
 
 impl App {
@@ -323,6 +327,7 @@ impl App {
             bookmarks_path,
             config_path: config_path.to_path_buf(),
             update_notice_rx: None,
+            theme_preview: None,
         };
 
         app.footer.update_hints(&app.keymap);
@@ -816,6 +821,23 @@ impl App {
             Err(e) => {
                 let path = self.bookmarks_path.display().to_string();
                 self.err_status(format!("Cannot write {path}: {e}"));
+                false
+            }
+        }
+    }
+
+    /// Persists the configuration. `false` when the write failed.
+    ///
+    /// Called after every runtime change that a session should not lose on
+    /// restart (hidden files, sort, theme…), the same way [`App::save_bookmarks`]
+    /// covers bookmarks — so `:w` stays for the rare case of hand-editing
+    /// `config.toml` and wanting to keep those edits, not for everyday toggles.
+    #[must_use]
+    pub(crate) fn persist_config(&mut self) -> bool {
+        match Config::save_config(&self.config, &self.config_path) {
+            Ok(()) => true,
+            Err(e) => {
+                self.err_status(format!("Cannot save config: {e}"));
                 false
             }
         }
