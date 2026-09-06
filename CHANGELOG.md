@@ -1,3 +1,10 @@
+# Unreleased
+
+## Fixed
+
+- Shasum check failed on linux when update available. Hardened and check 
+  exactly if shasum was produced. Add tests.
+
 # 0.4.3
 
 ## Fixed
