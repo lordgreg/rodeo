@@ -28,6 +28,7 @@ use super::{
 use crate::config::Config;
 use crate::fs::{archive, filter::SearchFilter, ops};
 use crate::types::{ActivePane, SortOrder, SortType};
+use crate::ui::command::{self, ArgKind};
 use crate::ui::theme::Theme;
 
 /// A copy or a move.
@@ -1561,6 +1562,10 @@ impl App {
 
         match key.code {
             KeyCode::Enter => {
+                // A theme cycled into view with Tab is only "live" until now:
+                // revert first, then the command itself (if it is `:theme`)
+                // re-applies and persists the confirmed one for real.
+                self.revert_theme_preview();
                 if let Some(InputMode::Command(input)) = self.input_mode.take() {
                     self.completion = Completion::default();
                     self.run_command(&input.value.clone());
@@ -1568,6 +1573,7 @@ impl App {
                 return;
             }
             KeyCode::Esc => {
+                self.revert_theme_preview();
                 self.input_mode = None;
                 self.completion = Completion::default();
                 return;
@@ -1576,10 +1582,11 @@ impl App {
             KeyCode::Tab | KeyCode::BackTab => {
                 let forward = key.code == KeyCode::Tab;
                 let line = input.value.clone();
-                if let Some(completed) = self.completion.cycle(&line, forward)
-                    && let Some(input) = self.command_mut()
-                {
-                    *input = TextInput::new(completed);
+                if let Some(completed) = self.completion.cycle(&line, forward) {
+                    if let Some(input) = self.command_mut() {
+                        *input = TextInput::new(completed.clone());
+                    }
+                    self.preview_theme_candidate(&completed);
                 }
                 return;
             }
@@ -1747,11 +1754,44 @@ impl App {
             Ok(theme) => {
                 self.set_theme(theme);
                 self.config.theme = name.to_string();
+                let _ = self.persist_config();
                 self.ok_status(format!("Theme: {name}"));
             }
             Err(e) => {
                 self.err_status(format!("Cannot load theme '{name}': {e}"));
             }
+        }
+    }
+
+    /// While Tab-cycling `:theme <name>` candidates, applies each one live —
+    /// so the effect is visible before it is confirmed — without touching
+    /// `config.theme`. A no-op for any other command.
+    fn preview_theme_candidate(&mut self, line: &str) {
+        let Some((cmd, name)) = line.split_once(char::is_whitespace) else {
+            return;
+        };
+        let name = name.trim();
+        if name.is_empty() || command::find(cmd).map(|s| s.arg_kind) != Some(ArgKind::Theme) {
+            return;
+        }
+
+        let Ok(theme) = Theme::load_theme(Some(name)) else {
+            return;
+        };
+        if self.theme_preview.is_none() {
+            self.theme_preview = Some(self.config.theme.clone());
+        }
+        self.set_theme(theme);
+    }
+
+    /// Restores the theme active before a `:theme` preview started, if one
+    /// is in progress. No-op otherwise.
+    fn revert_theme_preview(&mut self) {
+        let Some(name) = self.theme_preview.take() else {
+            return;
+        };
+        if let Ok(theme) = Theme::load_theme(Some(&name)) {
+            self.set_theme(theme);
         }
     }
 
@@ -2195,16 +2235,19 @@ impl App {
     fn toggle_hidden(&mut self) {
         self.config.show_hidden = !self.config.show_hidden;
         self.panes.reload(&self.config, false);
+        let _ = self.persist_config();
     }
 
     fn set_sort_type(&mut self, sort_type: SortType) {
         self.config.sort_type = sort_type;
         self.panes.reload(&self.config, false);
+        let _ = self.persist_config();
     }
 
     fn set_sort_order(&mut self, sort_order: SortOrder) {
         self.config.sort_order = sort_order;
         self.panes.reload(&self.config, false);
+        let _ = self.persist_config();
     }
 
     /// The universal dismiss chain: back out of the innermost thing first.
@@ -2772,6 +2815,144 @@ mod tests {
             app.run_command("so");
 
             assert!(app.config.show_hidden);
+        }
+    }
+
+    /// `show_hidden`, sort and the theme all change how the current session
+    /// behaves — losing them on restart would be surprising — so each is
+    /// written to disk the moment it changes, without a `:w`.
+    mod auto_saves_on_change {
+        use super::*;
+
+        fn read_back(path: &Path) -> Config {
+            let saved = std::fs::read_to_string(path).expect("auto-save did not write the file");
+            toml::from_str(&saved).expect("auto-saved config is not valid TOML")
+        }
+
+        #[test]
+        fn toggling_hidden_files_persists() {
+            let dir = tempfile::tempdir().unwrap();
+            let mut app = test_app(dir.path());
+
+            app.dispatch_key(&key(KeyCode::Char('h'), KeyModifiers::CONTROL));
+
+            assert!(app.config.show_hidden);
+            assert!(read_back(&app.config_path).show_hidden);
+        }
+
+        #[test]
+        fn cycling_sort_persists() {
+            let dir = tempfile::tempdir().unwrap();
+            let mut app = test_app(dir.path());
+
+            app.dispatch_key(&key(KeyCode::Right, KeyModifiers::SHIFT));
+
+            assert_eq!(read_back(&app.config_path).sort_type, app.config.sort_type);
+        }
+
+        #[test]
+        fn reversing_sort_order_persists() {
+            let dir = tempfile::tempdir().unwrap();
+            let mut app = test_app(dir.path());
+
+            app.dispatch_key(&key(KeyCode::Char('O'), KeyModifiers::SHIFT));
+
+            assert_eq!(
+                read_back(&app.config_path).sort_order,
+                app.config.sort_order
+            );
+        }
+
+        #[test]
+        fn switching_theme_persists() {
+            let dir = tempfile::tempdir().unwrap();
+            let mut app = test_app(dir.path());
+
+            app.run_command("theme dracula");
+
+            assert_eq!(app.config.theme, "dracula");
+            assert_eq!(read_back(&app.config_path).theme, "dracula");
+        }
+    }
+
+    /// `:theme` cycled with Tab: each candidate is applied live, Enter keeps
+    /// it and saves, Esc reverts.
+    mod theme_picker {
+        use super::*;
+
+        #[test]
+        fn tab_previews_the_candidate_without_saving_it() {
+            let dir = tempfile::tempdir().unwrap();
+            let mut app = test_app(dir.path());
+            let original = app.theme.name.clone();
+
+            app.dispatch_key(&key(KeyCode::Char(':'), KeyModifiers::NONE));
+            type_pattern(&mut app, "theme dracula");
+            app.dispatch_key(&key(KeyCode::Tab, KeyModifiers::NONE));
+
+            assert_eq!(app.theme.name, "Dracula", "the candidate was not previewed");
+            assert_ne!(app.theme.name, original);
+            // Nothing is committed yet: neither the in-memory config nor the
+            // file on disk changed.
+            assert_eq!(app.config.theme, "default");
+            assert!(!app.config_path.exists());
+        }
+
+        #[test]
+        fn enter_confirms_the_previewed_theme_and_saves_it() {
+            let dir = tempfile::tempdir().unwrap();
+            let mut app = test_app(dir.path());
+
+            app.dispatch_key(&key(KeyCode::Char(':'), KeyModifiers::NONE));
+            type_pattern(&mut app, "theme dracula");
+            app.dispatch_key(&key(KeyCode::Tab, KeyModifiers::NONE));
+            app.dispatch_key(&key(KeyCode::Enter, KeyModifiers::NONE));
+
+            assert_eq!(app.theme.name, "Dracula");
+            assert_eq!(app.config.theme, "dracula");
+            let saved = std::fs::read_to_string(&app.config_path).unwrap();
+            let reloaded: Config = toml::from_str(&saved).unwrap();
+            assert_eq!(reloaded.theme, "dracula");
+        }
+
+        #[test]
+        fn esc_reverts_the_preview_and_saves_nothing() {
+            let dir = tempfile::tempdir().unwrap();
+            let mut app = test_app(dir.path());
+            let original = app.theme.name.clone();
+
+            app.dispatch_key(&key(KeyCode::Char(':'), KeyModifiers::NONE));
+            type_pattern(&mut app, "theme dracula");
+            app.dispatch_key(&key(KeyCode::Tab, KeyModifiers::NONE));
+            assert_eq!(app.theme.name, "Dracula");
+
+            app.dispatch_key(&key(KeyCode::Esc, KeyModifiers::NONE));
+
+            assert_eq!(app.theme.name, original, "the preview was not reverted");
+            assert_eq!(app.config.theme, "default");
+            assert!(!app.config_path.exists());
+        }
+
+        #[test]
+        fn cycling_further_previews_each_candidate_in_turn() {
+            let dir = tempfile::tempdir().unwrap();
+            let mut app = test_app(dir.path());
+
+            app.dispatch_key(&key(KeyCode::Char(':'), KeyModifiers::NONE));
+            type_pattern(&mut app, "theme nord");
+            app.dispatch_key(&key(KeyCode::Tab, KeyModifiers::NONE));
+            assert_eq!(app.theme.name, "Nord");
+
+            // Backspace off "nord" and cycle onto a different theme: the
+            // preview follows, it does not stay stuck on the first one.
+            for _ in 0..4 {
+                app.dispatch_key(&key(KeyCode::Backspace, KeyModifiers::NONE));
+            }
+            type_pattern(&mut app, "dracula");
+            app.dispatch_key(&key(KeyCode::Tab, KeyModifiers::NONE));
+
+            assert_eq!(app.theme.name, "Dracula");
+            app.dispatch_key(&key(KeyCode::Esc, KeyModifiers::NONE));
         }
     }
 
