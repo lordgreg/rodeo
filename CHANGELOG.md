@@ -1,3 +1,10 @@
+## Unreleased
+
+## Added
+
+- Sort change, theme change, toggle hidden etc. will now automatically 
+  get saved into your config.toml file.
+
 # 0.4.3
 
 ## Fixed
