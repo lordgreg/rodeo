@@ -1,9 +1,14 @@
-# Unreleased
+# 0.4.4
 
 ## Fixed
 
 - Shasum check failed on linux when update available. Hardened and check 
   exactly if shasum was produced. Add tests.
+
+## Added
+
+- Sort change, theme change, toggle hidden etc. will now automatically 
+  get saved into your config.toml file.
 
 # 0.4.3
 
