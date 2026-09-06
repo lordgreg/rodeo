@@ -33,7 +33,7 @@ pdf-extract = "0.12.0"
 # correct way to bound scrolling of wrapped text (a hand-rolled estimate
 # under-counts word wrapping and makes the last lines unreachable).
 ratatui = { version = "0.30.2", features = ["unstable-rendered-line-info"] }
-ratatui-image = { version = "11.0.7", default-features = false, features = ["image-defaults", "crossterm"] }
+ratatui-image = { version = "11.0.8", default-features = false, features = ["image-defaults", "crossterm"] }
 regex = "1.13.1"
 reqwest = { version = "0.13.4", features = ["blocking", "json"] }
 serde = { version = "1.0.229", features = ["derive"] }
