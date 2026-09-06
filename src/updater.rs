@@ -163,6 +163,18 @@ impl CacheFileInfo {
         Ok(info)
     }
 
+    /// Rejects anything that isn't a real `sha256:<64 hex chars>` digest.
+    /// A malformed/placeholder digest (e.g. `"n/a"`, left behind by a test
+    /// or otherwise corrupted) can never pass `asset_shasum_check`, so
+    /// there's no point downloading the asset just to fail — treat it as
+    /// no trustworthy cache entry instead.
+    pub fn has_valid_digest(&self) -> bool {
+        match self.asset.digest.strip_prefix("sha256:") {
+            Some(hex) => hex.len() == 64 && hex.chars().all(|c| c.is_ascii_hexdigit()),
+            None => false,
+        }
+    }
+
     pub fn asset_shasum_check(asset: &PathBuf, digest: &str) -> Result<bool, io::Error> {
         // TODO: this only works on linux, mac doesnt have sha256sum!
         let sha256_file = Command::new("sha256sum").arg(asset).output()?;
@@ -237,6 +249,17 @@ impl Updater {
             }
 
             let cache_info = cache_file.ok()?;
+
+            if !cache_info.has_valid_digest() {
+                log::debug!(
+                    "Updater: cached asset digest {:?} is not a valid sha256 digest, ignoring stale cache.",
+                    cache_info.asset.digest
+                );
+                return Some(UpdateCheckResult::Failed(
+                    "Cached update info is invalid.".to_string(),
+                ));
+            }
+
             let xdg_dirs = xdg::BaseDirectories::with_prefix(CONFIG_DIR);
 
             let release_file_archived = xdg_dirs.get_cache_file(&cache_info.asset.name)?;
@@ -613,6 +636,46 @@ mod tests {
         assert!(matches!(result, Ok(true)));
     }
 
+    fn cache_info_with_digest(digest: &str) -> CacheFileInfo {
+        CacheFileInfo {
+            version: "1.0.0".to_string(),
+            asset: GithubAsset {
+                name: "rodeo-1.0.0-x86_64-unknown-linux-gnu.tar.gz".to_string(),
+                browser_download_url: "https://example.invalid/asset".to_string(),
+                content_type: "application/gzip".to_string(),
+                digest: digest.to_string(),
+            },
+        }
+    }
+
+    #[test]
+    fn real_sha256_digest_is_valid() {
+        let info = cache_info_with_digest(&format!("sha256:{ABC_SHA256}"));
+        assert!(info.has_valid_digest());
+    }
+
+    #[test]
+    fn placeholder_digest_is_invalid() {
+        // What the buggy macOS-stub cache entry used to leave behind.
+        assert!(!cache_info_with_digest("n/a").has_valid_digest());
+    }
+
+    #[test]
+    fn digest_without_sha256_prefix_is_invalid() {
+        assert!(!cache_info_with_digest(ABC_SHA256).has_valid_digest());
+    }
+
+    #[test]
+    fn digest_with_wrong_length_is_invalid() {
+        assert!(!cache_info_with_digest("sha256:abcd").has_valid_digest());
+    }
+
+    #[test]
+    fn digest_with_non_hex_chars_is_invalid() {
+        let bogus = format!("sha256:{}", "z".repeat(64));
+        assert!(!cache_info_with_digest(&bogus).has_valid_digest());
+    }
+
     const BREW_OUTPUT: &str = r#"
     {
     "formulae": [
@@ -650,7 +713,23 @@ mod tests {
 
     #[test]
     fn macos_new_version_available() {
+        // `validate_brew_outdated` writes the pending update to the real
+        // XDG cache dir as a side effect (`CacheFileInfo::save_info`). Point
+        // it at a throwaway directory instead of polluting the real
+        // `$HOME/.cache/rodeo` — a leftover cache file there makes the real
+        // `rodeo` binary try to "update" using this test's bogus asset info
+        // on its next run, always failing with "Shasum check failed!".
+        let cache_dir = tempfile::tempdir().expect("create temp cache dir");
+        // Safety: no other test reads or writes XDG_CACHE_HOME.
+        unsafe {
+            std::env::set_var("XDG_CACHE_HOME", cache_dir.path());
+        }
+
         let result = Updater::validate_brew_outdated(BREW_OUTPUT);
+
+        unsafe {
+            std::env::remove_var("XDG_CACHE_HOME");
+        }
 
         assert_eq!(
             result,
