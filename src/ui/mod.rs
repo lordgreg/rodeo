@@ -523,9 +523,13 @@ impl App {
         let Some(command) = self.pending_terminal_command.take() else {
             return Ok(());
         };
+        let pane_dir = self.panes.get_active_pane().path.clone();
 
         let status = suspended(terminal, || {
-            let status = Command::new("sh").args(["-c", &command]).status();
+            let status = Command::new("sh")
+                .args(["-c", &command])
+                .current_dir(&pane_dir)
+                .status();
 
             // The child owned the screen; pause so its output can be read
             // before rodeo paints over it again.

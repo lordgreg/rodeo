@@ -1823,12 +1823,21 @@ impl App {
         let cmd = self.expand_targets(cmd);
         let cmd = cmd.as_str();
 
+        // Captured up front so a later change to this function can't
+        // accidentally read the pane's path after something else in this
+        // function has mutated pane state.
+        let active_pane_dir = self.panes.get_active_pane().path.clone();
+
         // Whatever it does, assume it touched the screen: a program that wants
         // a terminal opens /dev/tty and draws there even though its stdout is
         // a pipe, which is why `:!lazygit` used to come back to a broken UI.
         self.pending_redraw = true;
 
-        match std::process::Command::new("sh").args(["-c", cmd]).output() {
+        match std::process::Command::new("sh")
+            .args(["-c", cmd])
+            .current_dir(&active_pane_dir)
+            .output()
+        {
             Ok(out) => {
                 let mut text = String::from_utf8_lossy(&out.stdout).to_string();
                 if !out.stderr.is_empty() {
@@ -2292,6 +2301,19 @@ mod tests {
         KeyEvent::new(code, modifiers)
     }
 
+    /// Two independent panes rooted in distinct temporary directories, used
+    /// to prove commands run against whichever pane is active rather than a
+    /// fixed side or rodeo's own launch directory.
+    fn test_app_two_dirs(left: &Path, right: &Path) -> App {
+        let config = Config {
+            initial_directory_left: left.to_string_lossy().to_string(),
+            initial_directory_right: right.to_string_lossy().to_string(),
+            ..Default::default()
+        };
+        let theme = Theme::load_theme(None).expect("default theme in themes/");
+        App::new(theme, config, &left.join("config.toml"))
+    }
+
     mod tree_view {
         use super::*;
 
@@ -2650,6 +2672,72 @@ mod tests {
         // rodeo cannot tell whether the child drew on the terminal through
         // /dev/tty, so it must assume it did.
         assert!(app.pending_redraw);
+    }
+
+    /// #20: `:!cmd` must run in the *active* pane's directory rather than
+    /// rodeo's own launch directory. `pwd`'s stdout is redirected to a marker
+    /// file instead of relying on the popup/footer capture path, which is
+    /// exercised (and trimmed) separately above.
+    #[test]
+    fn shell_capture_runs_in_the_right_panes_directory_when_right_is_active() {
+        let left = tempfile::tempdir().unwrap();
+        let right = tempfile::tempdir().unwrap();
+        let marker = right.path().join("pwd.out");
+        let mut app = test_app_two_dirs(left.path(), right.path());
+        app.panes.set_active_pane(ActivePane::Right);
+
+        app.run_command(&format!("!pwd > '{}'", marker.display()));
+
+        // `sh`'s `pwd` resolves via `getcwd()`, a physical path, so it can
+        // differ from the tempdir's own, possibly symlinked, spelling (e.g.
+        // macOS's `/var` -> `/private/var`). Canonicalize before comparing.
+        let output = std::fs::read_to_string(&marker).unwrap();
+        assert_eq!(
+            output.trim(),
+            right.path().canonicalize().unwrap().to_string_lossy()
+        );
+    }
+
+    #[test]
+    fn shell_capture_runs_in_the_left_panes_directory_by_default() {
+        let left = tempfile::tempdir().unwrap();
+        let right = tempfile::tempdir().unwrap();
+        let marker = left.path().join("pwd.out");
+        let mut app = test_app_two_dirs(left.path(), right.path());
+
+        app.run_command(&format!("!pwd > '{}'", marker.display()));
+
+        // See the comment above: `pwd` returns a physical path, so the
+        // tempdir path has to be canonicalized before comparing.
+        let output = std::fs::read_to_string(&marker).unwrap();
+        assert_eq!(
+            output.trim(),
+            left.path().canonicalize().unwrap().to_string_lossy()
+        );
+    }
+
+    #[test]
+    fn shell_capture_follows_active_pane_switches_mid_session() {
+        let left = tempfile::tempdir().unwrap();
+        let right = tempfile::tempdir().unwrap();
+        let left_marker = left.path().join("pwd.out");
+        let right_marker = right.path().join("pwd.out");
+        let mut app = test_app_two_dirs(left.path(), right.path());
+
+        app.run_command(&format!("!pwd > '{}'", left_marker.display()));
+        app.panes.set_active_pane(ActivePane::Right);
+        app.run_command(&format!("!pwd > '{}'", right_marker.display()));
+
+        // See the comment above: `pwd` returns a physical path, so the
+        // tempdir paths have to be canonicalized before comparing.
+        assert_eq!(
+            std::fs::read_to_string(&left_marker).unwrap().trim(),
+            left.path().canonicalize().unwrap().to_string_lossy()
+        );
+        assert_eq!(
+            std::fs::read_to_string(&right_marker).unwrap().trim(),
+            right.path().canonicalize().unwrap().to_string_lossy()
+        );
     }
 
     #[test]

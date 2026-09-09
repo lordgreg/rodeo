@@ -1,6 +1,11 @@
-# Unreleased
+# 0.4.5
 
 ## Fixed
+
+- `:!` and `:term` shell commands now run in the active pane's directory
+  instead of inheriting rodeo's own working directory — e.g. `:!pwd` with
+  the right pane active used to print rodeo's launch directory rather than
+  the right pane's directory. (#20)
 
 - MacOS updater incorrectly reported "brew update failed" whenever a new
   version of rodeo was actually available. `brew outdated <formula>` exits
