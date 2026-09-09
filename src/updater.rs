@@ -472,6 +472,28 @@ impl Updater {
         }
     }
 
+    /// Interprets the output of `brew outdated <formula> --json=v2`.
+    ///
+    /// `brew outdated <formula>` intentionally exits with a non-zero status
+    /// when the *named* formula is outdated (see Homebrew's
+    /// `Homebrew.failed = args.named.present? && outdated.present?`). That's
+    /// brew's way of signalling "yes, this formula is outdated" for
+    /// scripting purposes - it is not an execution failure. So we must not
+    /// bail out based on the process exit status; instead we always try to
+    /// parse stdout and only treat it as a real failure if there's nothing
+    /// to parse.
+    fn handle_brew_outdated_output(stdout: &str, stderr: &str) -> Option<UpdateCheckResult> {
+        if stdout.trim().is_empty() {
+            log::debug!("Updater: brew execution failed: {:?}", stderr);
+            return Some(UpdateCheckResult::Failed(format!(
+                "brew update failed: {}",
+                stderr,
+            )));
+        }
+
+        Self::validate_brew_outdated(stdout)
+    }
+
     #[tokio::main]
     pub async fn update_check(allow_to_update: bool) -> Option<UpdateCheckResult> {
         if !allow_to_update {
@@ -484,17 +506,10 @@ impl Updater {
                 .output()
                 .ok()?;
 
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                log::debug!("Updater: brew execution failed: {:?}", stderr);
-                return Some(UpdateCheckResult::Failed(format!(
-                    "brew update failed: {}",
-                    stderr,
-                )));
-            }
-
             let stdout = String::from_utf8_lossy(&output.stdout);
-            return Self::validate_brew_outdated(&stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+
+            return Self::handle_brew_outdated_output(&stdout, &stderr);
         } else if OsInfo::is_linux() {
             let current = env!("CARGO_PKG_VERSION");
 
@@ -747,5 +762,48 @@ mod tests {
         let result = Updater::validate_brew_outdated(&brew_output);
 
         assert_eq!(result, Some(UpdateCheckResult::NoUpdate));
+    }
+
+    // Realistic stderr noise brew prints on auto-update; contains no actual
+    // error, just informational hints.
+    const BREW_AUTO_UPDATE_NOISE: &str = "==> Auto-updating Homebrew...\n\
+        Adjust how often this is run with `$HOMEBREW_AUTO_UPDATE_SECS` or disable with\n\
+        `$HOMEBREW_NO_AUTO_UPDATE=1`. Hide these hints with `$HOMEBREW_NO_ENV_HINTS=1` (see `man brew`).\n\
+        ==> Auto-updated Homebrew!\n\
+        You have 8 outdated formulae and 6 outdated casks installed.\n";
+
+    #[test]
+    fn brew_outdated_with_valid_stdout_is_available_even_if_process_reported_failure() {
+        // `brew outdated <formula>` exits non-zero when the named formula
+        // *is* outdated. That's brew's convention for signalling "this is
+        // outdated", not an execution failure, so as long as stdout has
+        // parseable JSON we must still surface the available update instead
+        // of reporting a failure.
+        let cache_dir = tempfile::tempdir().expect("create temp cache dir");
+        // Safety: no other test reads or writes XDG_CACHE_HOME.
+        unsafe {
+            std::env::set_var("XDG_CACHE_HOME", cache_dir.path());
+        }
+
+        let result = Updater::handle_brew_outdated_output(BREW_OUTPUT, BREW_AUTO_UPDATE_NOISE);
+
+        unsafe {
+            std::env::remove_var("XDG_CACHE_HOME");
+        }
+
+        assert_eq!(
+            result,
+            Some(UpdateCheckResult::Available(
+                "99.0.0".to_string(),
+                env!("CARGO_PKG_REPOSITORY").to_string(),
+            ))
+        );
+    }
+
+    #[test]
+    fn brew_outdated_with_empty_stdout_is_failed() {
+        let result = Updater::handle_brew_outdated_output("", BREW_AUTO_UPDATE_NOISE);
+
+        assert!(matches!(result, Some(UpdateCheckResult::Failed(_))));
     }
 }

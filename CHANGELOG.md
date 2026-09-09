@@ -1,4 +1,4 @@
-# Unreleased
+# 0.4.5
 
 ## Fixed
 
@@ -6,6 +6,13 @@
   instead of inheriting rodeo's own working directory — e.g. `:!pwd` with
   the right pane active used to print rodeo's launch directory rather than
   the right pane's directory. (#20)
+
+- MacOS updater incorrectly reported "brew update failed" whenever a new
+  version of rodeo was actually available. `brew outdated <formula>` exits
+  with a non-zero status precisely when the named formula *is* outdated -
+  that's brew's convention for scripting, not an execution failure. The
+  updater now inspects `stdout` instead of the process exit status to
+  decide whether the check truly failed.
 
 # 0.4.4
 
