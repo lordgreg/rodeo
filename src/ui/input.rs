@@ -396,7 +396,9 @@ impl App {
             }
         };
 
-        self.panes.get_active_pane_mut().path = dir.to_string_lossy().to_string();
+        self.panes
+            .get_active_pane_mut()
+            .navigate_to_path(dir.to_string_lossy().to_string());
         self.panes.reload(&self.config, false);
         if let Some(path) = select {
             self.panes.get_active_pane_mut().select_by_path(&path);
@@ -1714,7 +1716,9 @@ impl App {
 
         match PathBuf::from(arg).canonicalize() {
             Ok(p) if p.is_dir() => {
-                self.panes.get_active_pane_mut().path = p.to_string_lossy().to_string();
+                self.panes
+                    .get_active_pane_mut()
+                    .navigate_to_path(p.to_string_lossy().to_string());
                 self.panes.reload(&self.config, true);
                 self.sync_header();
             }
@@ -3855,6 +3859,58 @@ mod tests {
             app.panes.get_active_pane().filter(),
             Some(FilterSpec::Fuzzy(_))
         ));
+    }
+
+    /// An active filter narrows *this* listing. Carrying it into a new one
+    /// would silently hide entries with nothing on screen to explain why.
+    #[test]
+    fn navigating_into_a_directory_clears_a_filter_left_active_from_search() {
+        let dir = dir_with_contents();
+        let mut app = test_app(dir.path());
+
+        // Ctrl+F, narrow down to "sub", Enter closes the bar but leaves the
+        // filter itself in force — exactly the state the bug report starts
+        // from.
+        app.dispatch_key(&key(KeyCode::Char('f'), KeyModifiers::CONTROL));
+        type_pattern(&mut app, "sub");
+        app.dispatch_key(&key(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(app.search().is_none());
+        assert!(app.panes.get_active_pane().filter().is_some());
+        assert_eq!(
+            app.panes
+                .get_active_pane()
+                .get_selected_entry()
+                .map(|e| e.name),
+            Some("sub".to_string())
+        );
+
+        // Enter again opens the highlighted "sub" directory.
+        app.dispatch_key(&key(KeyCode::Enter, KeyModifiers::NONE));
+
+        assert!(app.panes.get_active_pane().path.ends_with("sub"));
+        assert!(
+            app.panes.get_active_pane().filter().is_none(),
+            "the old filter must not silently narrow the new directory"
+        );
+    }
+
+    #[test]
+    fn cd_command_clears_a_filter_left_active_from_search() {
+        let dir = dir_with_contents();
+        let mut app = test_app(dir.path());
+
+        app.dispatch_key(&key(KeyCode::Char('f'), KeyModifiers::CONTROL));
+        type_pattern(&mut app, "top");
+        app.dispatch_key(&key(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(app.panes.get_active_pane().filter().is_some());
+
+        app.run_command(&format!("cd {}", dir.path().join("sub").display()));
+
+        assert!(app.panes.get_active_pane().path.ends_with("sub"));
+        assert!(
+            app.panes.get_active_pane().filter().is_none(),
+            "the old filter must not silently narrow the new directory"
+        );
     }
 
     /// `Enter` on a zip/tar/tar.gz switches the pane into a read-only virtual

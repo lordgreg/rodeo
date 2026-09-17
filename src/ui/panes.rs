@@ -760,6 +760,19 @@ impl Pane {
         self.state.select(Some(0));
     }
 
+    /// Points this pane at `path`, discarding any active filter.
+    ///
+    /// A filter is scoped to the listing it was typed against; carrying it
+    /// over to a new location would silently narrow the new listing with no
+    /// visual trace of why entries are missing. Every real navigation — not
+    /// an in-place reload of the same location — goes through here (or
+    /// clears the filter itself, for the cases that do not change `path`,
+    /// such as archive browsing).
+    pub fn navigate_to_path(&mut self, path: String) {
+        self.path = path;
+        self.clear_filter();
+    }
+
     /// Rebuilds the visible list, keeping entries the rank function scores
     /// `Some` and ordering them best-first (stable).
     fn apply_rank(&mut self, mut rank: impl FnMut(&str) -> Option<u32>) {
@@ -1213,6 +1226,10 @@ impl Pane {
                     .map(|(parent, _)| parent.to_string())
                     .unwrap_or_default();
             }
+            // The location changed — either leaving the archive or stepping
+            // up inside it — so a filter scoped to the old listing must not
+            // silently narrow the new one.
+            self.clear_filter();
             return OpenAction::DirectoryOpened;
         }
 
@@ -1229,7 +1246,7 @@ impl Pane {
                 self.expand(&child);
             }
 
-            self.path = resolved.to_string_lossy().to_string();
+            self.navigate_to_path(resolved.to_string_lossy().to_string());
 
             OpenAction::DirectoryOpened
         } else {
@@ -1258,6 +1275,7 @@ impl Pane {
                 EntryKind::Directory => {
                     // Unwrap: guarded by the `is_some()` check above.
                     self.source.archive_mut().unwrap().internal_dir = name;
+                    self.clear_filter();
                     OpenAction::Reload
                 }
                 // Files inside an archive are not openable, and nested
@@ -1288,7 +1306,7 @@ impl Pane {
             }
             EntryKind::Directory => match entry.path.canonicalize() {
                 Ok(p) => {
-                    self.path = p.to_string_lossy().to_string();
+                    self.navigate_to_path(p.to_string_lossy().to_string());
                     OpenAction::Reload
                 }
                 Err(e) => {
@@ -1380,6 +1398,10 @@ impl Pane {
                 // Not applicable inside an archive; a stale summary from
                 // before entering must not linger in the header.
                 self.git_summary = None;
+                // Entering the archive VFS is a location change: a filter
+                // scoped to the real directory it was opened from must not
+                // carry over and silently narrow the archive listing.
+                self.clear_filter();
                 OpenAction::Reload
             }
             Err(e) => {
@@ -3144,6 +3166,70 @@ mod tests {
             pane.reload(&Config::default(), false);
 
             assert_eq!(names(&pane), vec!["..", "a.rs", "ab.rs", "ax.rs"]);
+        }
+
+        /// A filter narrowing the old listing has no business narrowing the
+        /// new one — and with no visual trace of it left, that would just be
+        /// confusing.
+        #[test]
+        fn opening_a_subdirectory_clears_an_active_filter() {
+            let (dir, mut pane) = test_pane();
+            pane.set_filter(FilterSpec::Fuzzy("sub".to_string()))
+                .unwrap();
+            pane.select_by_path(&dir.path().join("sub"));
+
+            let action = pane.open();
+
+            assert!(matches!(action, OpenAction::Reload));
+            assert_eq!(pane.filter(), None);
+        }
+
+        #[test]
+        fn going_to_the_parent_directory_clears_an_active_filter() {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::create_dir(dir.path().join("sub")).unwrap();
+            std::fs::File::create(dir.path().join("sub").join("inner.rs")).unwrap();
+
+            let mut pane = Pane::new(&Config::default(), dir.path().join("sub").to_str().unwrap());
+            pane.set_filter(FilterSpec::Fuzzy("inner".to_string()))
+                .unwrap();
+
+            let here = pane.path.clone();
+            let action = pane.go_to_parent(&here);
+
+            assert!(matches!(action, OpenAction::DirectoryOpened));
+            assert_eq!(pane.filter(), None);
+        }
+
+        #[test]
+        fn entering_and_leaving_an_archive_clears_an_active_filter() {
+            let dir = tempfile::tempdir().unwrap();
+            super::archive_pane::zip_with(dir.path(), "a.zip", &[("f.txt", b"x")]);
+            let mut pane = Pane::new(&Config::default(), dir.path().to_str().unwrap());
+            pane.set_filter(FilterSpec::Fuzzy("zip".to_string()))
+                .unwrap();
+            pane.select_by_path(&dir.path().join("a.zip"));
+
+            let action = pane.open();
+            assert!(matches!(action, OpenAction::Reload));
+            assert_eq!(
+                pane.filter(),
+                None,
+                "entering the archive must clear the filter"
+            );
+            pane.reload(&Config::default(), true);
+
+            pane.set_filter(FilterSpec::Fuzzy("f".to_string())).unwrap();
+
+            // ".." (always the first row) leaves the archive.
+            pane.state.select(Some(0));
+            let action = pane.open();
+            assert!(matches!(action, OpenAction::DirectoryOpened));
+            assert_eq!(
+                pane.filter(),
+                None,
+                "leaving the archive must clear the filter"
+            );
         }
 
         #[test]
