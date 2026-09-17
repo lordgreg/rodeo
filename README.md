@@ -180,12 +180,33 @@ Overriding a key rodeo already uses is allowed, but it says so on startup —
 and warns loudly if an action is left with no key at all. `:so` reloads the
 bindings without restarting.
 
+```toml
+# Optional. An ordered "open with" list: opening a file runs the command from
+# the first entry whose glob matches its name, instead of `editor`. File order
+# is precedence, so put more specific patterns first.
+[[actions]]
+glob = "*.pdf"
+command = "zathura %f"
+
+[[actions]]
+glob = "*.md"
+command = "glow %f"
+```
+
+`%f` expands the same way it already does for `:!`/`:term`, and the command
+runs in the foreground, suspending rodeo just like `editor` does. If no rule
+matches, the file opens in `editor` as before. Files rodeo already recognizes
+as archives (`.zip`/`.tar`/`.tar.gz`/`.tgz`) never reach this: `Enter` routes
+those into the archive browser first, so an `[[actions]]` rule for `*.zip`
+will never fire.
+
 Action names: `open` `parent` `first` `last` `select`
 `select_all` `glob` `sizes` `quit` `left` `right` `switch` `help`
 `preview` `search` `filter` `find` `palette` `rename` `create` `yank` `paste`
 `paste_move` `delete_chord` `copy` `move` `delete` `down` `up` `hidden`
 `refresh` `sort_next` `sort_prev` `sort_reverse` `bulk_rename` `bookmark`
-`bookmarks` `permissions` `symlink` `tree` `tree_expand` `tree_collapse`
+`bookmarks` `permissions` `symlink` `archive_create` `tree` `tree_expand`
+`tree_collapse`
 
 `:so` reloads the config at runtime, `:w` writes the current settings back.
 
@@ -230,6 +251,7 @@ actually bound — rebind something and the bar says so.
 | `r` | Rename |
 | `R` | Bulk rename (2+ selected) |
 | `C` | Permissions/ownership (chmod/chown) |
+| `c` | Create archive (zip/tar.gz) from the selection |
 | `b` / `B` | Bookmark the entry (or the pane's directory on `..`) / list bookmarks |
 | `a` | Create file, or directory with a `/` suffix |
 | `dd`, `Del` | Move to trash |
