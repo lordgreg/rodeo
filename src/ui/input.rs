@@ -133,6 +133,12 @@ fn elide(text: &str, width: usize) -> String {
     format!("{kept}…")
 }
 
+/// Single-quotes `path` for interpolation into a `sh -c` command line.
+fn quote_path(path: &Path) -> String {
+    let path = path.to_string_lossy();
+    format!("'{}'", path.replace('\'', "'\\''"))
+}
+
 impl App {
     pub(crate) fn handle_input(&mut self) -> std::io::Result<()> {
         if let Event::Key(key_event) = event::read()?
@@ -1809,14 +1815,28 @@ impl App {
         let quoted = self
             .op_targets()
             .iter()
-            .map(|path| {
-                let path = path.to_string_lossy();
-                format!("'{}'", path.replace('\'', "'\\''"))
-            })
+            .map(|path| quote_path(path))
             .collect::<Vec<_>>()
             .join(" ");
 
         cmd.replace("%f", &quoted)
+    }
+
+    /// Expands `%f` to the shell-quoted `path`, ignoring the active pane's
+    /// selection/cursor entirely.
+    ///
+    /// Used for the "open the file that was actually opened" path
+    /// (`App::open_with`), where the `[[actions]]` command was matched
+    /// against a specific [`EditorTarget`] — not necessarily anything marked
+    /// or highlighted in the active pane — so `%f` must bind to that same
+    /// path. Using [`Self::expand_targets`] there would let `%f` resolve to
+    /// an unrelated marked selection, or nothing at all.
+    pub(crate) fn expand_target_path(cmd: &str, path: &Path) -> String {
+        if !cmd.contains("%f") {
+            return cmd.to_string();
+        }
+
+        cmd.replace("%f", &quote_path(path))
     }
 
     fn run_shell_capture(&mut self, cmd: &str) {
