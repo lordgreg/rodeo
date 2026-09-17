@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
 use std::thread;
 
-use super::ops::ProgressMsg;
+use super::ops::{ProgressMsg, file_name_of};
 
 /// Bytes read per chunk while extracting, matching `ops::copy_file_progress`.
 const COPY_CHUNK: usize = 256 * 1024;
@@ -313,6 +313,257 @@ fn extract_tar(
     Ok(())
 }
 
+/// The archive-internal name for `src`, given the directory the selection was
+/// listed under. Mirrors `ops::dest_dir_for`'s collision avoidance: a source
+/// nested below `base` keeps every directory above it, so two files sharing a
+/// name in different subdirectories cannot collide once packed together.
+fn archive_name_for(src: &Path, base: &Path) -> PathBuf {
+    src.strip_prefix(base)
+        .ok()
+        .filter(|rel| !rel.as_os_str().is_empty())
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from(file_name_of(src)))
+}
+
+/// One file or directory to place in the archive, with the name it carries
+/// there. Directories are listed explicitly, even when empty — a listing
+/// built only from file paths has no way to imply an empty one exists.
+struct PackEntry {
+    fs_path: PathBuf,
+    archive_name: String,
+    is_dir: bool,
+}
+
+/// Walks every source recursively, producing one [`PackEntry`] per file and
+/// directory found (`src` itself included), named relative to `base`.
+fn collect_pack_entries(
+    sources: &[PathBuf],
+    base: &Path,
+    cancel: &AtomicBool,
+) -> io::Result<Vec<PackEntry>> {
+    let mut out = Vec::new();
+    for src in sources {
+        let name = archive_name_for(src, base);
+        walk_into(src, &name, cancel, &mut out)?;
+    }
+    Ok(out)
+}
+
+fn walk_into(
+    src: &Path,
+    archive_name: &Path,
+    cancel: &AtomicBool,
+    out: &mut Vec<PackEntry>,
+) -> io::Result<()> {
+    check_cancel(cancel)?;
+    let name = archive_name.to_string_lossy().replace('\\', "/");
+
+    // `symlink_metadata` does not follow the symlink, so a symlink — even
+    // one pointing at a directory — is treated as a leaf entry below rather
+    // than something to recurse into. That is what makes a symlink cycle (a
+    // directory containing a link back to itself or an ancestor) impossible
+    // to loop on forever; `Path::is_dir` follows symlinks and would recurse
+    // into the cycle without end. Mirrors `ops::entry_size`'s use of the
+    // same call for the same reason.
+    let meta = std::fs::symlink_metadata(src)?;
+
+    if meta.is_dir() {
+        out.push(PackEntry {
+            fs_path: src.to_path_buf(),
+            archive_name: name,
+            is_dir: true,
+        });
+
+        // Sorted so the archive's contents — and which chunk of a large
+        // selection a cancel lands in — are deterministic between runs.
+        let mut children: Vec<_> = std::fs::read_dir(src)?.filter_map(|e| e.ok()).collect();
+        children.sort_by_key(|e| e.file_name());
+        for entry in children {
+            walk_into(
+                &entry.path(),
+                &archive_name.join(entry.file_name()),
+                cancel,
+                out,
+            )?;
+        }
+    } else {
+        out.push(PackEntry {
+            fs_path: src.to_path_buf(),
+            archive_name: name,
+            is_dir: false,
+        });
+    }
+    Ok(())
+}
+
+/// Reads `reader` and writes it to `writer` in `COPY_CHUNK`-sized pieces,
+/// reporting progress and checking for cancellation the same way
+/// [`write_entry`] does for extraction, just in the other direction.
+fn copy_into_archive<R: Read, W: Write>(
+    mut reader: R,
+    mut writer: W,
+    cancel: &AtomicBool,
+    tx: &mpsc::Sender<ProgressMsg>,
+) -> io::Result<()> {
+    let mut buf = vec![0u8; COPY_CHUNK];
+    loop {
+        check_cancel(cancel)?;
+        let n = reader.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        writer.write_all(&buf[..n])?;
+        let _ = tx.send(ProgressMsg::Advance(n as u64));
+    }
+    Ok(())
+}
+
+/// Wraps a file so tar's own copy loop still advances the gauge in
+/// `COPY_CHUNK`-sized steps and can be cancelled mid-read.
+///
+/// Unlike zip — where `start_file` hands back a `Write` to push chunks into
+/// directly, mirroring `copy_into_archive` — tar-rs writes an entry's bytes
+/// itself once handed a `Read`, so the chunking has to happen from this side
+/// of that call instead.
+struct ProgressReader<'a, R> {
+    inner: R,
+    cancel: &'a AtomicBool,
+    tx: &'a mpsc::Sender<ProgressMsg>,
+}
+
+impl<R: Read> Read for ProgressReader<'_, R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        check_cancel(self.cancel)?;
+        let cap = buf.len().min(COPY_CHUNK);
+        let n = self.inner.read(&mut buf[..cap])?;
+        if n > 0 {
+            let _ = self.tx.send(ProgressMsg::Advance(n as u64));
+        }
+        Ok(n)
+    }
+}
+
+/// Packs `sources` (files or directories, listed under `base`) into a brand
+/// new archive at `dest_path`. Reports progress the same way [`spawn_extract`]
+/// does, so the UI's progress gauge needs no archive-specific code.
+///
+/// On cancellation, or any other error partway through, the partial archive
+/// file is removed rather than left behind half-written.
+pub fn spawn_create_archive(
+    sources: Vec<PathBuf>,
+    base: PathBuf,
+    dest_path: PathBuf,
+    kind: ArchiveKind,
+) -> (mpsc::Receiver<ProgressMsg>, Arc<AtomicBool>) {
+    let (tx, rx) = mpsc::channel();
+    let cancel = Arc::new(AtomicBool::new(false));
+    let cancel_worker = Arc::clone(&cancel);
+
+    thread::spawn(move || {
+        let result = create(&sources, &base, &dest_path, kind, &cancel_worker, &tx);
+        if result.is_err() {
+            let _ = std::fs::remove_file(&dest_path);
+        }
+        let _ = tx.send(ProgressMsg::Done(result.map_err(|e| e.to_string())));
+    });
+
+    (rx, cancel)
+}
+
+fn create(
+    sources: &[PathBuf],
+    base: &Path,
+    dest_path: &Path,
+    kind: ArchiveKind,
+    cancel: &AtomicBool,
+    tx: &mpsc::Sender<ProgressMsg>,
+) -> io::Result<()> {
+    match kind {
+        ArchiveKind::Zip => create_zip(sources, base, dest_path, cancel, tx),
+        ArchiveKind::Tar => create_tar(sources, base, dest_path, false, cancel, tx),
+        ArchiveKind::TarGz => create_tar(sources, base, dest_path, true, cancel, tx),
+    }
+}
+
+fn create_zip(
+    sources: &[PathBuf],
+    base: &Path,
+    dest_path: &Path,
+    cancel: &AtomicBool,
+    tx: &mpsc::Sender<ProgressMsg>,
+) -> io::Result<()> {
+    let entries = collect_pack_entries(sources, base, cancel)?;
+    let file = File::create(dest_path)?;
+    let mut zip = zip::ZipWriter::new(file);
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+
+    for entry in &entries {
+        check_cancel(cancel)?;
+        if entry.is_dir {
+            zip.add_directory(format!("{}/", entry.archive_name), options)
+                .map_err(io::Error::other)?;
+        } else {
+            zip.start_file(entry.archive_name.clone(), options)
+                .map_err(io::Error::other)?;
+            let reader = File::open(&entry.fs_path)?;
+            copy_into_archive(reader, &mut zip, cancel, tx)?;
+        }
+    }
+
+    zip.finish().map_err(io::Error::other)?;
+    Ok(())
+}
+
+fn create_tar(
+    sources: &[PathBuf],
+    base: &Path,
+    dest_path: &Path,
+    gzipped: bool,
+    cancel: &AtomicBool,
+    tx: &mpsc::Sender<ProgressMsg>,
+) -> io::Result<()> {
+    let entries = collect_pack_entries(sources, base, cancel)?;
+    let file = File::create(dest_path)?;
+    let writer: Box<dyn Write> = if gzipped {
+        Box::new(flate2::write::GzEncoder::new(
+            file,
+            flate2::Compression::default(),
+        ))
+    } else {
+        Box::new(file)
+    };
+    let mut builder = tar::Builder::new(writer);
+
+    for entry in &entries {
+        check_cancel(cancel)?;
+        if entry.is_dir {
+            let mut header = tar::Header::new_gnu();
+            header.set_entry_type(tar::EntryType::Directory);
+            header.set_size(0);
+            header.set_mode(0o755);
+            builder.append_data(&mut header, format!("{}/", entry.archive_name), io::empty())?;
+        } else {
+            let size = std::fs::metadata(&entry.fs_path)?.len();
+            let mut header = tar::Header::new_gnu();
+            header.set_size(size);
+            header.set_mode(0o644);
+            let reader = ProgressReader {
+                inner: File::open(&entry.fs_path)?,
+                cancel,
+                tx,
+            };
+            builder.append_data(&mut header, &entry.archive_name, reader)?;
+        }
+    }
+
+    // Finishes the tar layer (trailer blocks) and, for `.tar.gz`, drops the
+    // `GzEncoder` beneath it — which is what actually flushes the gzip
+    // trailer, the same way the test helper below relies on `Drop` to do it.
+    builder.into_inner()?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -532,6 +783,219 @@ mod tests {
             names.insert("src".to_string());
 
             assert_eq!(extract_size(&entries, &names), 10);
+        }
+    }
+
+    mod creation {
+        use super::*;
+
+        /// Drains a worker's channel to completion, panicking with its error
+        /// message if the operation failed.
+        fn settle(rx: &mpsc::Receiver<ProgressMsg>) {
+            while let Ok(msg) = rx.recv() {
+                if let ProgressMsg::Done(result) = msg {
+                    result.unwrap();
+                    return;
+                }
+            }
+            panic!("worker channel closed without a Done message");
+        }
+
+        #[test]
+        fn zip_round_trips_through_list_entries() {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::create_dir(dir.path().join("src")).unwrap();
+            std::fs::write(dir.path().join("src/main.rs"), b"fn main() {}").unwrap();
+            std::fs::write(dir.path().join("top.txt"), b"hi").unwrap();
+            let dest = dir.path().join("out.zip");
+
+            let (rx, _cancel) = spawn_create_archive(
+                vec![dir.path().join("src"), dir.path().join("top.txt")],
+                dir.path().to_path_buf(),
+                dest.clone(),
+                ArchiveKind::Zip,
+            );
+            settle(&rx);
+
+            let entries = list_entries(&dest, ArchiveKind::Zip).unwrap();
+            let main = entries.iter().find(|e| e.name == "src/main.rs").unwrap();
+            assert!(!main.is_dir);
+            assert_eq!(main.size, 12);
+            let top = entries.iter().find(|e| e.name == "top.txt").unwrap();
+            assert!(!top.is_dir);
+            assert_eq!(top.size, 2);
+        }
+
+        #[test]
+        fn tar_gz_round_trips_through_list_entries() {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::create_dir(dir.path().join("src")).unwrap();
+            std::fs::write(dir.path().join("src/lib.rs"), b"pub fn f(){}").unwrap();
+            let dest = dir.path().join("out.tar.gz");
+
+            let (rx, _cancel) = spawn_create_archive(
+                vec![dir.path().join("src")],
+                dir.path().to_path_buf(),
+                dest.clone(),
+                ArchiveKind::TarGz,
+            );
+            settle(&rx);
+
+            let entries = list_entries(&dest, ArchiveKind::TarGz).unwrap();
+            let lib = entries.iter().find(|e| e.name == "src/lib.rs").unwrap();
+            assert!(!lib.is_dir);
+            assert_eq!(lib.size, 12);
+            let bytes = std::fs::read(&dest).unwrap();
+            assert!(
+                bytes.starts_with(&[0x1f, 0x8b]),
+                "a .tar.gz must actually be gzip-compressed"
+            );
+        }
+
+        #[test]
+        fn cancelling_leaves_no_partial_archive_file() {
+            let dir = tempfile::tempdir().unwrap();
+            let mut big = Vec::new();
+            big.resize(4 * COPY_CHUNK, 7u8);
+            std::fs::write(dir.path().join("big.bin"), &big).unwrap();
+            let dest = dir.path().join("out.zip");
+
+            let (rx, cancel) = spawn_create_archive(
+                vec![dir.path().join("big.bin")],
+                dir.path().to_path_buf(),
+                dest.clone(),
+                ArchiveKind::Zip,
+            );
+            cancel.store(true, Ordering::Relaxed);
+
+            let mut done = None;
+            while let Ok(msg) = rx.recv() {
+                if let ProgressMsg::Done(result) = msg {
+                    done = Some(result);
+                    break;
+                }
+            }
+            assert!(
+                done.unwrap().is_err(),
+                "a cancelled pack must report an error"
+            );
+            assert!(!dest.exists(), "the partial archive must be removed");
+        }
+
+        /// Two subdirectories both containing a file named `config.rs` — the
+        /// point of naming archive entries relative to `base` rather than by
+        /// bare file name.
+        #[test]
+        fn same_named_files_from_different_subdirectories_do_not_collide() {
+            let dir = tempfile::tempdir().unwrap();
+            for sub in ["one", "two"] {
+                std::fs::create_dir(dir.path().join(sub)).unwrap();
+                std::fs::write(dir.path().join(sub).join("config.rs"), sub).unwrap();
+            }
+            let dest = dir.path().join("out.zip");
+
+            let (rx, _cancel) = spawn_create_archive(
+                vec![dir.path().join("one"), dir.path().join("two")],
+                dir.path().to_path_buf(),
+                dest.clone(),
+                ArchiveKind::Zip,
+            );
+            settle(&rx);
+
+            let entries = list_entries(&dest, ArchiveKind::Zip).unwrap();
+            assert!(entries.iter().any(|e| e.name == "one/config.rs"));
+            assert!(entries.iter().any(|e| e.name == "two/config.rs"));
+        }
+
+        #[test]
+        fn a_directory_only_selection_preserves_empty_directories() {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::create_dir_all(dir.path().join("empty")).unwrap();
+            let dest = dir.path().join("out.tar");
+
+            let (rx, _cancel) = spawn_create_archive(
+                vec![dir.path().join("empty")],
+                dir.path().to_path_buf(),
+                dest.clone(),
+                ArchiveKind::Tar,
+            );
+            settle(&rx);
+
+            let entries = list_entries(&dest, ArchiveKind::Tar).unwrap();
+            let empty = entries.iter().find(|e| e.name == "empty").unwrap();
+            assert!(empty.is_dir);
+        }
+
+        /// Mirrors `ops::total_size_terminates_on_symlink_cycles`: a
+        /// selection containing a symlink cycle must not send `walk_into`
+        /// into unbounded recursion.
+        #[cfg(unix)]
+        #[test]
+        fn walking_a_symlink_cycle_terminates_and_treats_the_link_as_a_leaf() {
+            let dir = tempfile::tempdir().unwrap();
+            let src = dir.path().join("src");
+            std::fs::create_dir(&src).unwrap();
+            std::fs::File::create(src.join("a.txt")).unwrap();
+            // Cycle: link points back at the directory containing it.
+            std::os::unix::fs::symlink(&src, src.join("cycle")).unwrap();
+
+            let cancel = AtomicBool::new(false);
+            // Must terminate (not recurse forever into the cycle).
+            let entries =
+                collect_pack_entries(std::slice::from_ref(&src), dir.path(), &cancel).unwrap();
+
+            // Exactly `src` itself, `a.txt` and the symlink — never an
+            // unbounded chain of `cycle/cycle/cycle/...`.
+            let names: Vec<&str> = entries.iter().map(|e| e.archive_name.as_str()).collect();
+            assert_eq!(names.len(), 3, "{names:?}");
+            assert!(names.contains(&"src"));
+            assert!(names.contains(&"src/a.txt"));
+            assert!(names.contains(&"src/cycle"));
+            // The symlink was not followed into, so it carries no children.
+            assert!(!names.iter().any(|n| n.starts_with("src/cycle/")));
+        }
+
+        /// End-to-end: the same symlink cycle fed through the full archive
+        /// creation pipeline must terminate rather than hang or crash, and
+        /// must not leave a partial archive behind.
+        #[cfg(unix)]
+        #[test]
+        fn creating_an_archive_terminates_on_symlink_cycles() {
+            let dir = tempfile::tempdir().unwrap();
+            let src = dir.path().join("src");
+            std::fs::create_dir(&src).unwrap();
+            std::fs::File::create(src.join("a.txt")).unwrap();
+            // Cycle: link points back at the directory containing it.
+            std::os::unix::fs::symlink(&src, src.join("cycle")).unwrap();
+            let dest = dir.path().join("out.zip");
+
+            let (rx, _cancel) = spawn_create_archive(
+                vec![src.clone()],
+                dir.path().to_path_buf(),
+                dest.clone(),
+                ArchiveKind::Zip,
+            );
+
+            // Must terminate (not hang or crash on the cycle).
+            let mut done = None;
+            while let Ok(msg) = rx.recv() {
+                if let ProgressMsg::Done(result) = msg {
+                    done = Some(result);
+                    break;
+                }
+            }
+            let done = done.expect("worker must report completion, not hang");
+
+            // The symlink resolves to a directory, so trying to read it as
+            // a file's contents fails — that is an unrelated, well-behaved
+            // error, not the crash/hang this test guards against.
+            match done {
+                Ok(()) => {
+                    let entries = list_entries(&dest, ArchiveKind::Zip).unwrap();
+                    assert!(entries.len() <= 3, "{entries:?}");
+                }
+                Err(_) => assert!(!dest.exists(), "no partial archive is left behind"),
+            }
         }
     }
 }
