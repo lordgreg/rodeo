@@ -116,13 +116,33 @@ pub struct Config {
     /// (`*.lock`), or a sub-path (`src/generated`).
     #[serde(default)]
     pub filter_entries: Vec<String>,
+    /// Ordered "open with" rules: opening a file runs the command from the
+    /// first entry whose `glob` matches its name, instead of `editor`. See
+    /// [`ActionRule`] and [`Config::action_for`].
+    ///
+    /// Must stay near the end of the struct, alongside `keybindings`: TOML
+    /// requires every scalar value to be emitted before any table (`[[actions]]`
+    /// is an array of tables), and serialization follows declaration order.
+    #[serde(default)]
+    pub actions: Vec<ActionRule>,
     /// Optional keybinding overrides: action name → key name (single,
     /// unmodified keys only). See `ui::keymap` for valid names.
     ///
-    /// Must stay the last field: TOML requires every scalar value to be
-    /// emitted before any table, and serialization follows declaration order.
+    /// Must stay the last field, for the same reason as `actions` above.
     #[serde(default)]
     pub keybindings: HashMap<String, String>,
+}
+
+/// One `[[actions]]` entry: files whose name matches `glob` open with
+/// `command` instead of `editor`. See [`Config::action_for`].
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct ActionRule {
+    /// A shell-style wildcard (`*`, `?`) matched against the file's basename,
+    /// via [`crate::glob::wildcard_match`].
+    pub glob: String,
+    /// The shell command to run. `%f` expands to the opened file's path, the
+    /// same as it does for `:!` and `:term`.
+    pub command: String,
 }
 
 impl Default for Config {
@@ -156,6 +176,23 @@ impl Config {
         } else {
             &self.initial_directory_right
         }
+    }
+
+    /// The command to open `path` with, from the first `[[actions]]` rule
+    /// whose glob matches its basename — `None` if nothing matches (or the
+    /// list is empty), in which case the caller should fall back to `editor`.
+    ///
+    /// First match wins rather than most-specific-wins: order in the config
+    /// file is the precedence the user chose, which is also why `actions` is
+    /// a list rather than a `glob -> command` table — TOML map key order is
+    /// not guaranteed, which would make overlapping globs (`*.tar.gz` vs
+    /// `*.gz`) unpredictable.
+    pub fn action_for(&self, path: &Path) -> Option<&str> {
+        let name = path.file_name()?.to_str()?;
+        self.actions
+            .iter()
+            .find(|rule| crate::glob::wildcard_match(&rule.glob, name))
+            .map(|rule| rule.command.as_str())
     }
 
     /// Replaces start directories that no longer exist with the home directory.
@@ -286,6 +323,7 @@ mod tests {
         assert!(config.filter_hidden);
         assert!(config.filter_entries.is_empty());
         assert!(config.keybindings.is_empty());
+        assert!(config.actions.is_empty());
     }
 
     #[test]
@@ -333,6 +371,7 @@ mod tests {
         assert_eq!(config.theme, "default");
         assert_eq!(config.sort_type, SortType::Name);
         assert_eq!(config.sort_order, SortOrder::Ascending);
+        assert!(config.actions.is_empty());
     }
 
     /// `Config::default` deserializes an empty document, so a field added
@@ -379,6 +418,10 @@ filter_gitignore = false
 filter_hidden = false
 filter_entries = ["target", "*.lock"]
 
+[[actions]]
+glob = "*.pdf"
+command = "zathura %f"
+
 [keybindings]
 quit = "Q"
 help = "H"
@@ -396,7 +439,71 @@ help = "H"
         assert!(!config.filter_gitignore);
         assert!(!config.filter_hidden);
         assert_eq!(config.filter_entries, vec!["target", "*.lock"]);
+        assert_eq!(
+            config.actions,
+            vec![ActionRule {
+                glob: "*.pdf".to_string(),
+                command: "zathura %f".to_string(),
+            }]
+        );
         assert_eq!(config.keybindings.get("quit"), Some(&"Q".to_string()));
+    }
+
+    mod actions {
+        use super::*;
+
+        #[test]
+        fn first_match_wins_when_two_rules_could_both_match() {
+            let toml_str = r#"
+[[actions]]
+glob = "*.tar.gz"
+command = "tar1 %f"
+
+[[actions]]
+glob = "*.gz"
+command = "gzip1 %f"
+"#;
+            let config: Config = toml::from_str(toml_str).unwrap();
+            assert_eq!(
+                config.action_for(Path::new("archive.tar.gz")),
+                Some("tar1 %f")
+            );
+            // Only the second rule matches this one.
+            assert_eq!(config.action_for(Path::new("plain.gz")), Some("gzip1 %f"));
+        }
+
+        #[test]
+        fn no_rule_matching_returns_none() {
+            let config = Config {
+                actions: vec![ActionRule {
+                    glob: "*.pdf".to_string(),
+                    command: "zathura %f".to_string(),
+                }],
+                ..Default::default()
+            };
+            assert_eq!(config.action_for(Path::new("notes.txt")), None);
+        }
+
+        #[test]
+        fn an_empty_action_list_matches_nothing() {
+            let config = Config::default();
+            assert_eq!(config.action_for(Path::new("anything.pdf")), None);
+        }
+
+        #[test]
+        fn matches_against_the_basename_not_the_full_path() {
+            let config = Config {
+                actions: vec![ActionRule {
+                    glob: "*.pdf".to_string(),
+                    command: "zathura %f".to_string(),
+                }],
+                ..Default::default()
+            };
+            assert_eq!(
+                config.action_for(Path::new("/home/user/docs/report.pdf")),
+                Some("zathura %f")
+            );
+        }
     }
 
     /// `--config` has to hold for the whole session. These pin the three

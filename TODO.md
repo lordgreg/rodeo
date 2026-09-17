@@ -14,33 +14,29 @@ ranked roughly by fit/impact. Kept lean and MC-inspired: prefer extending
 existing subsystems and shelling out to external tools over adding heavy
 runtime dependencies or a scripting layer.
 
-1. **Archive creation.** The inverse of the archive VFS below — pack a
-   pane's selection into a zip/tar.gz. Same deps (`zip`, `tar`, `flate2`),
-   closes the asymmetry.
-2. **Directory compare & sync.** Diff two dirs (name/size/mtime, optionally
+1. **Directory compare & sync.** Diff two dirs (name/size/mtime, optionally
    content hash), highlight differences pane-to-pane, offer bulk
    copy/sync — a classic MC feature that maps directly onto the dual-pane
    model and the existing diff-coloring used for git status.
-3. **Undo/redo for destructive ops.** An in-session journal of the last N
+2. **Undo/redo for destructive ops.** An in-session journal of the last N
    copy/move/delete/rename operations with `u` to reverse. Delete already
    routes through `trash`, so this is mostly bookkeeping plus reversing
    copy/move/rename.
-4. **Duplicate-file / hash finder.** Background-thread scan (same spawn
+3. **Duplicate-file / hash finder.** Background-thread scan (same spawn
    pattern as git status / `notify`) that hashes files under a pane and
    flags content duplicates, not just name matches.
-5. **Per-extension user actions.** Config-driven "open with," e.g. an
-   `[actions]` table mapping globs to shell commands (`*.pdf = "zathura %f"`).
-   Reuses the `%f` expansion already implemented for `:!`/`:term`.
-6. **Act on find-files / find-in-files results.** Multi-select hits in the
+4. **Act on find-files / find-in-files results.** Multi-select hits in the
    Telescope-style popups and batch-delete/copy/move them through the
    existing `fs/ops.rs` worker, instead of only navigate/open-in-`$EDITOR`.
-7. **Remote panel via SSH tooling.** Shell out to `ssh`/`sftp`/`rsync` (same
+5. **Remote panel via SSH tooling.** Shell out to `ssh`/`sftp`/`rsync` (same
    philosophy as shelling to `git` rather than linking `libgit2`) to browse
    and transfer to a remote host. Highest effort of the list; only worth it
    if remote workflows matter to users.
 
 _Archive VFS, the permissions/ownership editor and the directory tree panel
-were #1, #4 and #6 here — done, see Completed below._
+were #1, #4 and #6 here — done, see Completed below. Archive creation and
+per-extension user actions (formerly #1 and #5, after that first renumbering)
+are done too, for the same reason._
 
 ---
 
@@ -111,6 +107,60 @@ were #1, #4 and #6 here — done, see Completed below._
   so the popup can resolve what someone types either way. Both actions are
   refused inside an archive pane, alongside the rest of the write-blocked
   set.
+- **Archive creation.** `c` packs the active pane's selection into a new
+  `.zip`/`.tar`/`.tar.gz`, created in the pane's own directory — the inverse
+  of the archive VFS's extraction, and deliberately built to reuse it rather
+  than stand next to it: `archive::spawn_create_archive` reports progress
+  over the same `ProgressMsg` channel `spawn_extract` does, so the progress
+  gauge and its cancellation needed no new code, and on cancellation (or any
+  other error partway through) the half-written file is removed instead of
+  left behind. There is no separate format picker; the extension typed at
+  the "Archive name" prompt (`backup.zip`, `backup.tar.gz`) is resolved
+  through the same `ArchiveKind::of` the VFS already uses to recognize an
+  archive on `Enter`, which is what keeps "what rodeo can open as an
+  archive" and "what `c` can create" from drifting into two lists someone
+  has to remember to update together. A directory in the selection is
+  walked and its contents packed under it, recreating the layout the
+  sources were listed under exactly the way a copy/move onto a real
+  directory already does for a scattered multi-selection — a plain flat
+  packing would let two same-named files from different source directories
+  silently collide inside the archive. An existing name at the destination
+  asks to overwrite rather than failing outright. Refused, like every other
+  write, inside an archive-browsing pane: there is no real filesystem source
+  there to pack, only entries that already live inside someone else's
+  archive.
+- **Per-extension user actions.** An ordered `[[actions]]` array of
+  `{ glob, command }` tables in `config.toml`; opening a file runs the first
+  entry whose `glob` matches its basename through `sh -c`, in the foreground
+  exactly the way `editor` already blocks the TUI, with the same `%f`
+  expansion `:!`/`:term` use. A list rather than a `glob -> command` map on
+  purpose — first match wins, so a config author controls precedence for
+  overlapping patterns (`*.tar.gz` before `*.gz`) by ordering, which a TOML
+  table cannot promise since its key order is not guaranteed to round-trip.
+  `Config::action_for` is the single place that decides, so it has its own
+  focused tests rather than exercising the choice only through `App`. The
+  glob matcher itself moved out of `ui/panes.rs` (where it backed `*` /
+  `:select`) into a new leaf module, `src/glob.rs`, with no dependencies of
+  its own — `config` needed it too, and giving `config` a dependency on `ui`
+  just to reuse one function would have gone against the one-way dependency
+  the two already keep. Files rodeo recognizes as archives
+  (`.zip`/`.tar`/`.tar.gz`/`.tgz`) never reach this dispatch at all:
+  `Pane::open` already routes them into the archive VFS before `editor` or
+  `[[actions]]` ever enter the picture, so a rule written for `*.zip` is
+  silently unreachable — worth knowing before writing one.
+
+### Other fixes
+
+- **A pane filter surviving navigation.** `Ctrl+f`'s filter is scoped to the
+  listing it was typed against, but nothing cleared it when the pane moved to
+  a new one: opening a subdirectory, going to the parent, stepping into or
+  out of an archive's virtual listing, and `:cd`/reveal all carried the old
+  query along, silently narrowing whatever showed up next with no sign of why
+  entries were missing. Every real navigation now goes through a new
+  `Pane::navigate_to_path`, which clears the filter as it changes `path`; the
+  archive transitions that step into or out of a VFS view without changing
+  `path` (`go_to_parent` at an archive's root or one level up, entering a
+  directory inside an archive) call `clear_filter()` directly instead.
 
 ### 0.2.0 — the seven priority items
 

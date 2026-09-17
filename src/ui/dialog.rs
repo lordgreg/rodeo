@@ -83,6 +83,24 @@ pub enum DialogAction {
         dest_dir: PathBuf,
         total: u64,
     },
+    /// Initial name prompt for packing the active pane's selection into a new
+    /// archive, created in the pane's own directory. There is no separate
+    /// format picker: the extension typed here (`.zip`, `.tar`, `.tar.gz`)
+    /// decides the format, resolved via `ArchiveKind::of`.
+    CreateArchive {
+        sources: Vec<PathBuf>,
+        /// Directory the sources are listed under; used to compute each
+        /// source's in-archive name. See `fs::ops::dest_dir_for`.
+        base: PathBuf,
+        dest_dir: PathBuf,
+    },
+    /// The typed archive name collided with an existing file. Mirrors
+    /// `TouchOverwrite`.
+    CreateArchiveOverwrite {
+        sources: Vec<PathBuf>,
+        base: PathBuf,
+        dest_path: PathBuf,
+    },
     /// `(target, link)` pairs, same shape as `Copy`/`Move`'s batch: one
     /// confirm approves overwriting every conflicting name at once.
     CreateSymlink {

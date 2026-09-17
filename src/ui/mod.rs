@@ -99,6 +99,18 @@ impl EditorTarget {
     }
 }
 
+/// How a pending [`EditorTarget`] will actually be launched: the mapped
+/// `[[actions]]` command (already `%f`-expanded), or `$EDITOR` with its args.
+/// See [`App::open_with`].
+#[derive(Debug, PartialEq)]
+enum OpenWith {
+    Action(String),
+    Editor {
+        editor: String,
+        args: Vec<std::ffi::OsString>,
+    },
+}
+
 /// Whether `editor` opens `+N file` at line N.
 ///
 /// Matched on the program name so a path or a wrapper (`/usr/bin/vim`) still
@@ -484,8 +496,9 @@ impl App {
         Ok(())
     }
 
-    /// Hands the terminal to `$EDITOR` if something asked for it, and reports
-    /// whether the file came back changed.
+    /// Hands the terminal to `$EDITOR` (or a matching `[[actions]]` command)
+    /// if something asked for it, and reports whether the file came back
+    /// changed.
     fn run_pending_editor(&mut self, terminal: &mut DefaultTerminal) -> std::io::Result<()> {
         let Some(target) = self.pending_editor_file.take() else {
             return Ok(());
@@ -494,11 +507,22 @@ impl App {
         let path = target.path.clone();
         let mtime_before = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
 
-        let editor = self.config.editor.clone();
-        let args = target.args(&editor);
-        suspended(terminal, || {
-            let _ = Command::new(&editor).args(&args).status();
-        })?;
+        match self.open_with(&target) {
+            OpenWith::Action(command) => {
+                let pane_dir = self.panes.get_active_pane().path.clone();
+                suspended(terminal, || {
+                    let _ = Command::new("sh")
+                        .args(["-c", &command])
+                        .current_dir(&pane_dir)
+                        .status();
+                })?;
+            }
+            OpenWith::Editor { editor, args } => {
+                suspended(terminal, || {
+                    let _ = Command::new(&editor).args(&args).status();
+                })?;
+            }
+        }
         self.after_external_program();
 
         let mtime_after = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
@@ -506,6 +530,23 @@ impl App {
             self.ok_status(format!("Modified: {}", path.display()));
         }
         Ok(())
+    }
+
+    /// Decides how `target` should be opened: a config-mapped `[[actions]]`
+    /// command if its `glob` matches, `$EDITOR` otherwise.
+    ///
+    /// Split out from `run_pending_editor` so the decision is testable
+    /// without a real terminal — the run loop only has a `DefaultTerminal` to
+    /// offer, and there is no such thing as one of those in a unit test.
+    fn open_with(&mut self, target: &EditorTarget) -> OpenWith {
+        match self.config.action_for(&target.path).map(str::to_string) {
+            Some(command) => OpenWith::Action(Self::expand_target_path(&command, &target.path)),
+            None => {
+                let editor = self.config.editor.clone();
+                let args = target.args(&editor);
+                OpenWith::Editor { editor, args }
+            }
+        }
     }
 
     /// Runs a `:term` command with the screen to itself, and reports how it
@@ -1284,6 +1325,191 @@ mod tests {
     #[test]
     fn without_a_line_nothing_changes() {
         assert_eq!(args_for("vim", None), vec!["/tmp/a.rs"]);
+    }
+
+    mod open_dispatch {
+        use super::*;
+        use crate::config::ActionRule;
+
+        /// A throwaway app rooted in a temporary directory, matching the
+        /// helper of the same name in `ui::input`'s tests.
+        fn test_app(dir: &Path, config: Config) -> App {
+            let config = Config {
+                initial_directory_left: dir.to_string_lossy().to_string(),
+                initial_directory_right: dir.to_string_lossy().to_string(),
+                ..config
+            };
+            let theme = Theme::load_theme(None).expect("default theme in themes/");
+            App::new(theme, config, &dir.join("config.toml"))
+        }
+
+        /// Flags `name` as the pane's selection, so `expand_targets` (which
+        /// reads the active pane's selection/cursor) resolves `%f` to it —
+        /// the same thing `open_entry` leaves behind before queuing
+        /// `pending_editor_file`.
+        fn select(app: &mut App, name: &str) {
+            let matched = app.panes.get_active_pane_mut().select_matching(name);
+            assert_eq!(matched, 1, "expected exactly one entry named {name}");
+        }
+
+        #[test]
+        fn a_matching_glob_runs_the_mapped_command_instead_of_the_editor() {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(dir.path().join("notes.pdf"), "").unwrap();
+
+            let config = Config {
+                editor: "vi".to_string(),
+                actions: vec![ActionRule {
+                    glob: "*.pdf".to_string(),
+                    command: "zathura %f".to_string(),
+                }],
+                ..Default::default()
+            };
+            let mut app = test_app(dir.path(), config);
+            select(&mut app, "*.pdf");
+
+            let target = EditorTarget::new(dir.path().join("notes.pdf"));
+            match app.open_with(&target) {
+                OpenWith::Action(command) => {
+                    assert!(command.starts_with("zathura "), "command was {command:?}");
+                }
+                OpenWith::Editor { .. } => panic!("expected the mapped action, not $EDITOR"),
+            }
+        }
+
+        #[test]
+        fn a_non_matching_file_falls_back_to_the_editor() {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(dir.path().join("notes.txt"), "").unwrap();
+
+            let config = Config {
+                editor: "vi".to_string(),
+                actions: vec![ActionRule {
+                    glob: "*.pdf".to_string(),
+                    command: "zathura %f".to_string(),
+                }],
+                ..Default::default()
+            };
+            let mut app = test_app(dir.path(), config);
+            select(&mut app, "*.txt");
+
+            let target = EditorTarget::new(dir.path().join("notes.txt"));
+            match app.open_with(&target) {
+                OpenWith::Editor { editor, args } => {
+                    assert_eq!(editor, "vi");
+                    assert_eq!(
+                        args,
+                        vec![std::ffi::OsString::from(dir.path().join("notes.txt"))]
+                    );
+                }
+                OpenWith::Action(command) => {
+                    panic!("expected $EDITOR fallback, got action {command:?}")
+                }
+            }
+        }
+
+        #[test]
+        fn percent_f_expands_to_the_opened_files_path() {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(dir.path().join("report.pdf"), "").unwrap();
+
+            let config = Config {
+                actions: vec![ActionRule {
+                    glob: "*.pdf".to_string(),
+                    command: "zathura %f".to_string(),
+                }],
+                ..Default::default()
+            };
+            let mut app = test_app(dir.path(), config);
+            select(&mut app, "*.pdf");
+
+            let target = EditorTarget::new(dir.path().join("report.pdf"));
+            let OpenWith::Action(command) = app.open_with(&target) else {
+                panic!("expected the mapped action");
+            };
+
+            let expected_path = dir.path().join("report.pdf");
+            let quoted = format!("'{}'", expected_path.to_string_lossy());
+            assert_eq!(command, format!("zathura {quoted}"));
+        }
+
+        /// Regression test: opening an unmarked file while other files are
+        /// marked must expand `%f` to the file actually being opened, not
+        /// the pane's marked selection — see `App::open_with`'s doc comment.
+        #[test]
+        fn percent_f_binds_to_the_opened_file_even_when_other_files_are_marked() {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(dir.path().join("a.pdf"), "").unwrap();
+            std::fs::write(dir.path().join("b.pdf"), "").unwrap();
+            std::fs::write(dir.path().join("report.pdf"), "").unwrap();
+
+            let config = Config {
+                actions: vec![ActionRule {
+                    glob: "*.pdf".to_string(),
+                    command: "zathura %f".to_string(),
+                }],
+                ..Default::default()
+            };
+            let mut app = test_app(dir.path(), config);
+            // Mark two files unrelated to the one about to be opened.
+            select(&mut app, "a.pdf");
+            select(&mut app, "b.pdf");
+            app.panes
+                .get_active_pane_mut()
+                .select_by_path(&dir.path().join("report.pdf"));
+
+            let target = EditorTarget::new(dir.path().join("report.pdf"));
+            let OpenWith::Action(command) = app.open_with(&target) else {
+                panic!("expected the mapped action");
+            };
+
+            let expected = format!(
+                "zathura '{}'",
+                dir.path().join("report.pdf").to_string_lossy()
+            );
+            assert_eq!(
+                command, expected,
+                "the marked a.pdf/b.pdf must not leak into %f"
+            );
+        }
+
+        /// Regression test: a find-in-files/find-files hit is opened via
+        /// `pending_editor_file`, entirely independent of whatever the active
+        /// pane's cursor happens to be sitting on. `%f` must still expand to
+        /// the hit, not the pane's unrelated cursor position.
+        #[test]
+        fn percent_f_binds_to_a_find_hit_regardless_of_the_panes_cursor() {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::create_dir(dir.path().join("docs")).unwrap();
+            std::fs::write(dir.path().join("docs/notes.pdf"), "").unwrap();
+
+            let config = Config {
+                actions: vec![ActionRule {
+                    glob: "*.pdf".to_string(),
+                    command: "zathura %f".to_string(),
+                }],
+                ..Default::default()
+            };
+            let mut app = test_app(dir.path(), config);
+            // Nothing marked; the cursor sits on an unrelated directory, as
+            // it would after browsing to launch a find-in-files search.
+            app.panes
+                .get_active_pane_mut()
+                .select_by_path(&dir.path().join("docs"));
+            assert!(!app.panes.get_active_pane().has_selections());
+
+            let hit = dir.path().join("docs/notes.pdf");
+            let target = EditorTarget::at_line(hit.clone(), 3);
+            let OpenWith::Action(command) = app.open_with(&target) else {
+                panic!("expected the mapped action");
+            };
+
+            let expected = format!("zathura '{}'", hit.to_string_lossy());
+            assert_eq!(
+                command, expected,
+                "the pane's cursor (on 'docs') must not leak into %f"
+            );
+        }
     }
 
     fn colors() -> Colors {

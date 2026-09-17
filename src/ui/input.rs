@@ -133,6 +133,12 @@ fn elide(text: &str, width: usize) -> String {
     format!("{kept}…")
 }
 
+/// Single-quotes `path` for interpolation into a `sh -c` command line.
+fn quote_path(path: &Path) -> String {
+    let path = path.to_string_lossy();
+    format!("'{}'", path.replace('\'', "'\\''"))
+}
+
 impl App {
     pub(crate) fn handle_input(&mut self) -> std::io::Result<()> {
         if let Event::Key(key_event) = event::read()?
@@ -396,7 +402,9 @@ impl App {
             }
         };
 
-        self.panes.get_active_pane_mut().path = dir.to_string_lossy().to_string();
+        self.panes
+            .get_active_pane_mut()
+            .navigate_to_path(dir.to_string_lossy().to_string());
         self.panes.reload(&self.config, false);
         if let Some(path) = select {
             self.panes.get_active_pane_mut().select_by_path(&path);
@@ -998,6 +1006,29 @@ impl App {
             (DialogAction::CreateSymlink { pairs }, DialogResult::Confirmed) => {
                 self.create_symlinks(pairs);
             }
+            (
+                DialogAction::CreateArchive {
+                    sources,
+                    base,
+                    dest_dir,
+                },
+                DialogResult::Submitted(name),
+            ) => {
+                self.create_archive_named(sources, base, dest_dir, name);
+            }
+            (
+                DialogAction::CreateArchiveOverwrite {
+                    sources,
+                    base,
+                    dest_path,
+                },
+                DialogResult::Confirmed,
+            ) => {
+                // The name was already validated before this dialog opened.
+                if let Some(kind) = archive::ArchiveKind::of(&dest_path) {
+                    self.run_create_archive(sources, base, dest_path, kind);
+                }
+            }
             _ => {}
         }
     }
@@ -1489,6 +1520,94 @@ impl App {
         });
     }
 
+    /// Packs the active pane's selection (or highlighted entry) into a new
+    /// archive, created in the pane's own directory — the inverse of
+    /// extracting one. There is no separate format picker: the extension
+    /// typed in the prompt (`.zip`, `.tar`, `.tar.gz`) decides the format.
+    fn prompt_create_archive(&mut self) {
+        if self.archive_write_blocked() {
+            return;
+        }
+
+        let sources = self.op_targets();
+        if sources.is_empty() {
+            return;
+        }
+
+        let pane = self.panes.get_active_pane();
+        let base = PathBuf::from(&pane.path);
+        let dest_dir = pane.cursor_dir();
+
+        self.open_dialog(Dialog::input(
+            "Create archive",
+            "Archive name (e.g. backup.zip or backup.tar.gz):",
+            "",
+            DialogAction::CreateArchive {
+                sources,
+                base,
+                dest_dir,
+            },
+        ));
+    }
+
+    /// Resolves the typed archive name into a format and destination path,
+    /// then either asks about an overwrite or gets on with packing.
+    fn create_archive_named(
+        &mut self,
+        sources: Vec<PathBuf>,
+        base: PathBuf,
+        dest_dir: PathBuf,
+        name: String,
+    ) {
+        let name = name.trim();
+        if name.is_empty() {
+            return;
+        }
+
+        let dest_path = dest_dir.join(name);
+        let Some(kind) = archive::ArchiveKind::of(&dest_path) else {
+            self.err_status(format!(
+                "Unrecognized archive extension in '{name}' (try .zip or .tar.gz)"
+            ));
+            return;
+        };
+
+        if dest_path.exists() {
+            self.open_dialog(Dialog::confirm(
+                "Overwrite?",
+                format!("'{name}' already exists. Overwrite?"),
+                DialogAction::CreateArchiveOverwrite {
+                    sources,
+                    base,
+                    dest_path,
+                },
+            ));
+        } else {
+            self.run_create_archive(sources, base, dest_path, kind);
+        }
+    }
+
+    /// Starts the background packing worker and shows the same progress
+    /// gauge a regular transfer or extraction uses.
+    fn run_create_archive(
+        &mut self,
+        sources: Vec<PathBuf>,
+        base: PathBuf,
+        dest_path: PathBuf,
+        kind: archive::ArchiveKind,
+    ) {
+        let total = ops::total_size(&sources);
+        let (rx, cancel) = archive::spawn_create_archive(sources, base, dest_path, kind);
+        self.progress = Some(super::Progress {
+            title: "Archiving…".to_string(),
+            total_bytes: total,
+            done_bytes: 0,
+            rx,
+            cancel,
+            is_cut: false,
+        });
+    }
+
     /// Yanks the operation targets (selection or highlighted entry) into the
     /// internal clipboard as a copy.
     fn yank(&mut self) {
@@ -1714,7 +1833,9 @@ impl App {
 
         match PathBuf::from(arg).canonicalize() {
             Ok(p) if p.is_dir() => {
-                self.panes.get_active_pane_mut().path = p.to_string_lossy().to_string();
+                self.panes
+                    .get_active_pane_mut()
+                    .navigate_to_path(p.to_string_lossy().to_string());
                 self.panes.reload(&self.config, true);
                 self.sync_header();
             }
@@ -1805,14 +1926,28 @@ impl App {
         let quoted = self
             .op_targets()
             .iter()
-            .map(|path| {
-                let path = path.to_string_lossy();
-                format!("'{}'", path.replace('\'', "'\\''"))
-            })
+            .map(|path| quote_path(path))
             .collect::<Vec<_>>()
             .join(" ");
 
         cmd.replace("%f", &quoted)
+    }
+
+    /// Expands `%f` to the shell-quoted `path`, ignoring the active pane's
+    /// selection/cursor entirely.
+    ///
+    /// Used for the "open the file that was actually opened" path
+    /// (`App::open_with`), where the `[[actions]]` command was matched
+    /// against a specific [`EditorTarget`] — not necessarily anything marked
+    /// or highlighted in the active pane — so `%f` must bind to that same
+    /// path. Using [`Self::expand_targets`] there would let `%f` resolve to
+    /// an unrelated marked selection, or nothing at all.
+    pub(crate) fn expand_target_path(cmd: &str, path: &Path) -> String {
+        if !cmd.contains("%f") {
+            return cmd.to_string();
+        }
+
+        cmd.replace("%f", &quote_path(path))
     }
 
     fn run_shell_capture(&mut self, cmd: &str) {
@@ -2012,6 +2147,7 @@ impl App {
             Action::Bookmarks => self.open_bookmarks(),
             Action::Permissions => self.start_permissions_editor(),
             Action::CreateSymlink => self.start_create_symlink(),
+            Action::ArchiveCreate => self.prompt_create_archive(),
             Action::ToggleTree => self.toggle_tree(),
             Action::TreeExpand => self.tree_step(true),
             Action::TreeCollapse => self.tree_step(false),
@@ -3857,6 +3993,58 @@ mod tests {
         ));
     }
 
+    /// An active filter narrows *this* listing. Carrying it into a new one
+    /// would silently hide entries with nothing on screen to explain why.
+    #[test]
+    fn navigating_into_a_directory_clears_a_filter_left_active_from_search() {
+        let dir = dir_with_contents();
+        let mut app = test_app(dir.path());
+
+        // Ctrl+F, narrow down to "sub", Enter closes the bar but leaves the
+        // filter itself in force — exactly the state the bug report starts
+        // from.
+        app.dispatch_key(&key(KeyCode::Char('f'), KeyModifiers::CONTROL));
+        type_pattern(&mut app, "sub");
+        app.dispatch_key(&key(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(app.search().is_none());
+        assert!(app.panes.get_active_pane().filter().is_some());
+        assert_eq!(
+            app.panes
+                .get_active_pane()
+                .get_selected_entry()
+                .map(|e| e.name),
+            Some("sub".to_string())
+        );
+
+        // Enter again opens the highlighted "sub" directory.
+        app.dispatch_key(&key(KeyCode::Enter, KeyModifiers::NONE));
+
+        assert!(app.panes.get_active_pane().path.ends_with("sub"));
+        assert!(
+            app.panes.get_active_pane().filter().is_none(),
+            "the old filter must not silently narrow the new directory"
+        );
+    }
+
+    #[test]
+    fn cd_command_clears_a_filter_left_active_from_search() {
+        let dir = dir_with_contents();
+        let mut app = test_app(dir.path());
+
+        app.dispatch_key(&key(KeyCode::Char('f'), KeyModifiers::CONTROL));
+        type_pattern(&mut app, "top");
+        app.dispatch_key(&key(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(app.panes.get_active_pane().filter().is_some());
+
+        app.run_command(&format!("cd {}", dir.path().join("sub").display()));
+
+        assert!(app.panes.get_active_pane().path.ends_with("sub"));
+        assert!(
+            app.panes.get_active_pane().filter().is_none(),
+            "the old filter must not silently narrow the new directory"
+        );
+    }
+
     /// `Enter` on a zip/tar/tar.gz switches the pane into a read-only virtual
     /// listing of its contents; navigation, selection and `Copy` (extraction)
     /// keep working, everything that writes is refused.
@@ -4057,6 +4245,181 @@ mod tests {
                     .unwrap_or_default()
                     .contains("Read-only")
             );
+        }
+    }
+
+    /// `c` packs the active pane's selection into a new zip or tar.gz
+    /// archive, created in the pane's own directory — the inverse of
+    /// `archive_vfs`'s extraction.
+    mod archive_create {
+        use super::*;
+
+        fn zip_with(dir: &Path, name: &str, files: &[(&str, &[u8])]) -> PathBuf {
+            let path = dir.join(name);
+            let file = std::fs::File::create(&path).unwrap();
+            let mut zip = zip::ZipWriter::new(file);
+            let options = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
+            for (entry_name, content) in files {
+                zip.start_file(*entry_name, options).unwrap();
+                std::io::Write::write_all(&mut zip, content).unwrap();
+            }
+            zip.finish().unwrap();
+            path
+        }
+
+        /// Drains the active worker to completion, the same way the run loop
+        /// does every frame, without needing a real terminal tick.
+        fn settle_progress(app: &mut App) {
+            for _ in 0..600 {
+                app.pump_progress();
+                if app.progress.is_none() {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            panic!("the background archive creation never finished");
+        }
+
+        fn type_text(app: &mut App, text: &str) {
+            for c in text.chars() {
+                app.dispatch_key(&key(KeyCode::Char(c), KeyModifiers::NONE));
+            }
+        }
+
+        #[test]
+        fn c_opens_the_name_prompt() {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(dir.path().join("a.txt"), "hi").unwrap();
+            let mut app = test_app(dir.path());
+            app.panes
+                .get_active_pane_mut()
+                .select_by_path(&dir.path().join("a.txt"));
+
+            app.dispatch_key(&key(KeyCode::Char('c'), KeyModifiers::NONE));
+
+            assert_eq!(app.overlay_kind(), Some(OverlayKind::Dialog));
+        }
+
+        #[test]
+        fn submitting_a_zip_name_packs_the_selection_and_reloads() {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(dir.path().join("a.txt"), "hi").unwrap();
+            let mut app = test_app(dir.path());
+            app.panes
+                .get_active_pane_mut()
+                .select_by_path(&dir.path().join("a.txt"));
+
+            app.dispatch_key(&key(KeyCode::Char('c'), KeyModifiers::NONE));
+            type_text(&mut app, "out.zip");
+            app.dispatch_key(&key(KeyCode::Enter, KeyModifiers::NONE));
+            settle_progress(&mut app);
+
+            let dest = dir.path().join("out.zip");
+            let entries = archive::list_entries(&dest, archive::ArchiveKind::Zip).unwrap();
+            assert!(entries.iter().any(|e| e.name == "a.txt" && !e.is_dir));
+
+            // The pane reloaded, so the new archive shows up in the listing.
+            let pane = app.panes.get_active_pane_mut();
+            pane.select_by_path(&dest);
+            assert_eq!(
+                pane.get_selected_entry().map(|e| e.name),
+                Some("out.zip".to_string())
+            );
+        }
+
+        #[test]
+        fn submitting_a_tar_gz_name_packs_the_selection() {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(dir.path().join("a.txt"), "hi").unwrap();
+            let mut app = test_app(dir.path());
+            app.panes
+                .get_active_pane_mut()
+                .select_by_path(&dir.path().join("a.txt"));
+
+            app.dispatch_key(&key(KeyCode::Char('c'), KeyModifiers::NONE));
+            type_text(&mut app, "out.tar.gz");
+            app.dispatch_key(&key(KeyCode::Enter, KeyModifiers::NONE));
+            settle_progress(&mut app);
+
+            let dest = dir.path().join("out.tar.gz");
+            let entries = archive::list_entries(&dest, archive::ArchiveKind::TarGz).unwrap();
+            assert!(entries.iter().any(|e| e.name == "a.txt" && !e.is_dir));
+        }
+
+        #[test]
+        fn an_existing_name_triggers_the_overwrite_dialog_instead_of_overwriting() {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(dir.path().join("a.txt"), "hi").unwrap();
+            let existing = zip_with(dir.path(), "out.zip", &[("old.txt", b"old")]);
+            let mut app = test_app(dir.path());
+            app.panes
+                .get_active_pane_mut()
+                .select_by_path(&dir.path().join("a.txt"));
+
+            app.dispatch_key(&key(KeyCode::Char('c'), KeyModifiers::NONE));
+            type_text(&mut app, "out.zip");
+            app.dispatch_key(&key(KeyCode::Enter, KeyModifiers::NONE));
+
+            // Still a dialog — the overwrite confirmation, not a finished
+            // pack — and the original archive is untouched.
+            assert_eq!(app.overlay_kind(), Some(OverlayKind::Dialog));
+            assert!(app.progress.is_none());
+            let entries = archive::list_entries(&existing, archive::ArchiveKind::Zip).unwrap();
+            assert!(entries.iter().any(|e| e.name == "old.txt"));
+        }
+
+        #[test]
+        fn refused_with_a_footer_error_inside_an_archive_pane() {
+            let dir = tempfile::tempdir().unwrap();
+            let zip = zip_with(dir.path(), "a.zip", &[("top.txt", b"hi")]);
+            let mut app = test_app(dir.path());
+            app.panes.get_active_pane_mut().select_by_path(&zip);
+            app.dispatch_key(&key(KeyCode::Enter, KeyModifiers::NONE));
+            assert!(app.panes.get_active_pane().is_archive());
+
+            app.dispatch_key(&key(KeyCode::Char('c'), KeyModifiers::NONE));
+
+            assert!(app.overlay.is_none());
+            assert!(
+                app.footer
+                    .status_text()
+                    .unwrap_or_default()
+                    .contains("Read-only")
+            );
+        }
+
+        #[test]
+        fn an_empty_selection_is_a_no_op() {
+            let dir = tempfile::tempdir().unwrap();
+            let mut app = test_app(dir.path());
+
+            app.dispatch_key(&key(KeyCode::Char('c'), KeyModifiers::NONE));
+
+            assert!(app.overlay.is_none());
+        }
+
+        #[test]
+        fn an_unrecognized_extension_is_rejected_with_a_footer_error() {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(dir.path().join("a.txt"), "hi").unwrap();
+            let mut app = test_app(dir.path());
+            app.panes
+                .get_active_pane_mut()
+                .select_by_path(&dir.path().join("a.txt"));
+
+            app.dispatch_key(&key(KeyCode::Char('c'), KeyModifiers::NONE));
+            type_text(&mut app, "out.rar");
+            app.dispatch_key(&key(KeyCode::Enter, KeyModifiers::NONE));
+
+            assert!(app.overlay.is_none());
+            assert!(
+                app.footer
+                    .status_text()
+                    .unwrap_or_default()
+                    .contains("Unrecognized")
+            );
+            assert!(!dir.path().join("out.rar").exists());
         }
     }
 

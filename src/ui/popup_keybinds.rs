@@ -71,6 +71,11 @@ const KEYBINDS: &[Keybind] = &[
     bind("M", "Move to other pane", &[Action::Move]),
     bind("L", "Symlink to other pane", &[Action::CreateSymlink]),
     bind(
+        "c",
+        "Create archive (zip/tar.gz) from selection",
+        &[Action::ArchiveCreate],
+    ),
+    bind(
         "C",
         "Permissions/ownership (chmod/chown)",
         &[Action::Permissions],

@@ -1,3 +1,42 @@
+# Unreleased
+
+## Fixed
+
+- A pane's `Ctrl+f` filter no longer follows it to a new location. Entering a
+  subdirectory, going to the parent, entering or leaving an archive's virtual
+  listing, and `:cd`/reveal all used to carry the old query along, silently
+  hiding entries in a directory the filter was never typed against. Every
+  real navigation now clears it, through a new `Pane::navigate_to_path` (or an
+  explicit `clear_filter()` at the archive-transition points that do not
+  change `path`).
+
+## Added
+
+- **Per-extension "open with" actions.** An ordered `[[actions]]` table in
+  `config.toml` maps a glob to a shell command — `glob = "*.pdf"` /
+  `command = "zathura %f"` — and opening a file runs the first matching
+  rule's command instead of `editor`. `%f` expands the same way it already
+  does for `:!`/`:term`, and the command runs in the foreground, suspending
+  rodeo like `editor` does; a file with no matching rule still opens in
+  `editor`. First match wins rather than most-specific-wins, since file order
+  is the precedence a list gives the user — a `glob -> command` table would
+  leave overlapping patterns like `*.tar.gz`/`*.gz` at TOML's unspecified key
+  order. Files rodeo already recognizes as archives (`.zip`/`.tar`/`.tar.gz`/
+  `.tgz`) never reach this dispatch, since opening one goes to the archive
+  browser first. The wildcard matcher moved out to a new, dependency-free
+  `src/glob.rs`, shared with pane selection (`*`) instead of duplicated.
+
+- **Archive creation from a selection.** `c` prompts for a name (`backup.zip`,
+  `backup.tar.gz`, …) and packs the active pane's selection — files or
+  directories, including nested contents — into a new archive of that format
+  in the pane's own directory: the inverse of the existing archive
+  extraction. An existing name prompts for an overwrite instead of failing
+  outright. It reuses the same worker-thread-plus-progress-channel machinery
+  as extraction and ordinary transfers, so the progress gauge and its
+  cancellation needed no archive-specific UI code. Refused with a footer
+  error inside an archive-browsing pane, which has no real filesystem source
+  to pack.
+
 # 0.4.5
 
 ## Fixed
