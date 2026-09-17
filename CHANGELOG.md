@@ -1,3 +1,15 @@
+# Unreleased
+
+## Fixed
+
+- `rustls` bumped from 0.23.43 to 0.23.45, fixing
+  [RUSTSEC-2026-0285](https://rustsec.org/advisories/RUSTSEC-2026-0285): a TLS
+  1.3 handshake could accept messages sent at the wrong encryption level when
+  packed into the same record as a key-changing message, which `rustls`
+  should have rejected per RFC 8446 section 5.1. Pulled in transitively
+  through `reqwest`'s `hyper-rustls`, `tokio-rustls`, and
+  `rustls-platform-verifier`.
+
 # 0.5.0
 
 ## Fixed
