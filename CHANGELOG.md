@@ -2,6 +2,13 @@
 
 ## Fixed
 
+- `rodeo --left .` (or `--right .`) started the pane in the current directory
+  as expected, but going to its parent landed on an empty listing instead of
+  the real parent. `.` was stored verbatim; `Path::new(".").parent()` is
+  `Some("")`, an empty path that fails to read. CLI-supplied start
+  directories are now canonicalized to an absolute path up front, and
+  `Pane::go_to_parent` canonicalizes its input before computing the parent
+  as well, so any single-component relative path resolves correctly.
 - `rustls` bumped from 0.23.43 to 0.23.45, fixing
   [RUSTSEC-2026-0285](https://rustsec.org/advisories/RUSTSEC-2026-0285): a TLS
   1.3 handshake could accept messages sent at the wrong encryption level when

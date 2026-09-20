@@ -1234,15 +1234,24 @@ impl Pane {
             return OpenAction::DirectoryOpened;
         }
 
-        if let Some(parent) = Path::new(current_path).parent() {
-            let resolved = parent
-                .canonicalize()
-                .unwrap_or_else(|_| parent.to_path_buf());
+        // Canonicalize `current_path` itself before taking its parent.
+        // Relative single-component paths like "." (e.g. left over from a
+        // `--left .` launch) have no parent as far as `Path` is concerned:
+        // `Path::new(".").parent()` returns `Some("")`, an empty path that
+        // fails to open and left the pane on an empty listing instead of the
+        // real parent directory. Resolving `current_path` first means the
+        // subsequent `.parent()` always operates on an absolute path.
+        let current = Path::new(current_path)
+            .canonicalize()
+            .unwrap_or_else(|_| Path::new(current_path).to_path_buf());
+
+        if let Some(parent) = current.parent() {
+            let resolved = parent.to_path_buf();
 
             // A tree re-roots upwards rather than replacing its contents, so
             // keep the directory just left open: collapsing it would hide the
             // very rows the cursor came from.
-            if let Some(name) = Path::new(current_path).file_name() {
+            if let Some(name) = current.file_name() {
                 let child = resolved.join(name);
                 self.expand(&child);
             }
@@ -3167,6 +3176,37 @@ mod tests {
 
             assert!(matches!(action, OpenAction::DirectoryOpened));
             assert_eq!(pane.filter(), None);
+        }
+
+        /// `rodeo --left .` used to leave `Pane::path` holding the literal
+        /// string `"."`. `Path::new(".").parent()` is `Some("")` — an
+        /// empty path that fails to read — so going up from a
+        /// `.`-started pane landed on an empty listing instead of the real
+        /// parent directory. Any relative path with a single component has
+        /// the same empty `.parent()`, so a directory name with no leading
+        /// `./` reproduces it without needing to change the process's
+        /// current directory (which cargo runs tests concurrently in and
+        /// would make other tests' relative paths resolve unpredictably).
+        /// `go_to_parent` now canonicalizes `current_path` itself first, so
+        /// this must work even if a relative path reaches it directly
+        /// (defense in depth alongside `Config::set_initial_dir`
+        /// canonicalizing CLI arguments up front).
+        #[test]
+        fn going_to_the_parent_directory_from_a_relative_single_component_path_finds_the_real_parent()
+         {
+            let cwd = std::env::current_dir().unwrap();
+            let dir = tempfile::Builder::new().tempdir_in(&cwd).unwrap();
+            let name = dir.path().file_name().unwrap().to_str().unwrap();
+
+            let mut pane = Pane::new(&Config::default(), name);
+
+            let action = pane.go_to_parent(name);
+
+            assert!(matches!(action, OpenAction::DirectoryOpened));
+            assert_eq!(
+                Path::new(&pane.path).canonicalize().unwrap(),
+                cwd.canonicalize().unwrap()
+            );
         }
 
         #[test]
