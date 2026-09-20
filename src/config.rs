@@ -159,14 +159,30 @@ impl Default for Config {
     }
 }
 
+/// Resolves a `--left`/`--right` argument to an absolute path.
+///
+/// Relative inputs like `.` or `..` must be resolved against the process's
+/// current directory *now*, while it still matches what the user meant.
+/// Storing them as-is left `Pane::path` holding the literal string `.`;
+/// `Path::new(".").parent()` then returns `Some("")`, an empty path that
+/// fails to open, so navigating up from a `.`-started pane landed on an
+/// empty listing instead of the real parent directory. Falls back to the
+/// raw path unchanged if canonicalization fails (e.g. the directory does
+/// not exist yet) — `repair_initial_dirs` catches that case on next load.
+fn canonicalize_initial_dir(path: String) -> String {
+    std::fs::canonicalize(&path)
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or(path)
+}
+
 impl Config {
     pub fn set_initial_dir(&mut self, left: Option<String>, right: Option<String>) {
         if let Some(left) = left {
-            self.initial_directory_left = PathBuf::from(left).to_string_lossy().to_string();
+            self.initial_directory_left = canonicalize_initial_dir(left);
         };
 
         if let Some(right) = right {
-            self.initial_directory_right = PathBuf::from(right).to_string_lossy().to_string();
+            self.initial_directory_right = canonicalize_initial_dir(right);
         }
     }
 
@@ -342,6 +358,35 @@ mod tests {
             return; // Nothing to compare against in this environment.
         };
         assert_eq!(default_initial_directory(), home);
+    }
+
+    /// `--left .` (or `--right .`) used to store the literal string `"."`.
+    /// `Pane::go_to_parent` then computed `Path::new(".").parent()`, which is
+    /// `Some("")` — an empty path that fails to open — so navigating up from
+    /// a `.`-started pane landed on an empty listing instead of the real
+    /// parent directory. The CLI value must be resolved to an absolute path
+    /// up front, against the process's current directory, while that still
+    /// matches what the user meant.
+    #[test]
+    fn a_relative_cli_start_directory_is_stored_absolute() {
+        let mut config = Config::default();
+
+        config.set_initial_dir(Some(".".to_string()), Some("..".to_string()));
+
+        assert!(
+            Path::new(&config.initial_directory_left).is_absolute(),
+            "{:?} must not be relative",
+            config.initial_directory_left
+        );
+        assert!(
+            Path::new(&config.initial_directory_right).is_absolute(),
+            "{:?} must not be relative",
+            config.initial_directory_right
+        );
+        assert_eq!(
+            Path::new(&config.initial_directory_left),
+            std::env::current_dir().unwrap()
+        );
     }
 
     #[test]
