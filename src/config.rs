@@ -409,7 +409,10 @@ mod tests {
 
         config.set_initial_dir(Some(path.clone()), Some(path));
 
-        assert_eq!(config.initial_directory_left, config.initial_directory_right);
+        assert_eq!(
+            config.initial_directory_left,
+            config.initial_directory_right
+        );
         assert_eq!(Path::new(&config.initial_directory_left), expected);
         assert_eq!(Path::new(&config.initial_directory_right), expected);
         assert!(
