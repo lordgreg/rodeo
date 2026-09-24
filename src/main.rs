@@ -14,13 +14,22 @@ fn main() -> color_eyre::Result<()> {
 
     let args = rodeo::cli::Args::parse();
 
+    if let Some(path) = args.path.as_deref()
+        && let Err(msg) = rodeo::cli::validate_path(path)
+    {
+        eprintln!("rodeo: {path}: {msg}");
+        std::process::exit(1);
+    }
+
     // Resolved once and held on to. Everything that later reads or writes the
     // configuration — `:w`, `:so` — uses this path, so a session started with
     // `--config` stays with that file; bookmarks are stored beside it too.
     let config_path = Config::get_config_path(args.config.as_deref());
     let mut config = Config::load_config_at(&config_path)?;
 
-    if args.left.is_some() || args.right.is_some() {
+    if let Some(path) = args.path {
+        config.set_initial_dir(Some(path.clone()), Some(path));
+    } else if args.left.is_some() || args.right.is_some() {
         config.set_initial_dir(args.left, args.right);
     }
 

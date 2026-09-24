@@ -389,6 +389,41 @@ mod tests {
         );
     }
 
+    /// A single positional CLI path argument sets both panes by calling
+    /// `set_initial_dir` with the same path cloned into both slots. Each side
+    /// is still resolved independently, so this pins that a shared relative
+    /// path ends up absolute and identical on both sides.
+    ///
+    /// Starts left and right at different values rather than `Config::default()`
+    /// (where both already start out equal) — otherwise the test would pass
+    /// even if `set_initial_dir` were deleted or a no-op.
+    #[test]
+    fn a_single_positional_path_sets_both_panes_to_the_same_absolute_directory() {
+        let mut config = Config {
+            initial_directory_left: "/definitely/not/a/real/directory".to_string(),
+            initial_directory_right: "/tmp".to_string(),
+            ..Default::default()
+        };
+        let path = ".".to_string();
+        let expected = std::fs::canonicalize(".").unwrap();
+
+        config.set_initial_dir(Some(path.clone()), Some(path));
+
+        assert_eq!(config.initial_directory_left, config.initial_directory_right);
+        assert_eq!(Path::new(&config.initial_directory_left), expected);
+        assert_eq!(Path::new(&config.initial_directory_right), expected);
+        assert!(
+            Path::new(&config.initial_directory_left).is_absolute(),
+            "{:?} must not be relative",
+            config.initial_directory_left
+        );
+        assert!(
+            Path::new(&config.initial_directory_right).is_absolute(),
+            "{:?} must not be relative",
+            config.initial_directory_right
+        );
+    }
+
     #[test]
     fn a_start_directory_that_no_longer_exists_falls_back_to_home() {
         let mut config = Config {

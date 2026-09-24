@@ -1,3 +1,13 @@
+# Unreleased
+
+## Added
+
+- **`rodeo <path>` positional argument.** Running `rodeo .` (or `rodeo
+  <any-path>`) opens both panes at `<path>` instead of the configured
+  directories. Mutually exclusive with `--left`/`--right`: combining them is
+  a CLI error. rodeo exits with a clear error before starting the UI if
+  `<path>` doesn't exist or isn't a directory.
+
 # 0.5.1
 
 ## Fixed
