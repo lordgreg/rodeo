@@ -4,7 +4,7 @@
 .SH NAME
 rodeo \- A dual\-pane terminal file manager with Vim\-style keybindings
 .SH SYNOPSIS
-\fBrodeo\fR [\fB\-c\fR|\fB\-\-config\fR] [\fB\-t\fR|\fB\-\-theme\fR] [\fB\-l\fR|\fB\-\-left\fR] [\fB\-r\fR|\fB\-\-right\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] 
+\fBrodeo\fR [\fB\-c\fR|\fB\-\-config\fR] [\fB\-t\fR|\fB\-\-theme\fR] [\fB\-l\fR|\fB\-\-left\fR] [\fB\-r\fR|\fB\-\-right\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] [\fIPATH\fR] 
 .SH DESCRIPTION
 A dual\-pane terminal file manager with Vim\-style keybindings
 .SH OPTIONS
@@ -26,6 +26,9 @@ Print help
 .TP
 \fB\-V\fR, \fB\-\-version\fR
 Print version
+.TP
+[\fIPATH\fR]
+Open both panes at this directory (mutually exclusive with \-\-left/\-\-right)
 .SH EXTRA
 CONFIGURATION:
     ~/.config/rodeo/config.toml   created with defaults on first run
@@ -42,6 +45,7 @@ KEYS:
 
 EXAMPLES:
     rodeo                              open both panes at the configured directories
+    rodeo .                            open both panes at the current directory
     rodeo \-l ~/src \-r /tmp             open the two panes somewhere specific
     rodeo \-\-theme nord                 override the configured theme for this run
     rodeo \-\-config ./rodeo.toml        use a different configuration file

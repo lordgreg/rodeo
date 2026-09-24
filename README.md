@@ -136,8 +136,13 @@ clean slate.
 ### Usage
 
 ```
-rodeo [--left <PATH>] [--right <PATH>] [--theme <NAME>] [--config <FILE>]
+rodeo [PATH] [--left <PATH>] [--right <PATH>] [--theme <NAME>] [--config <FILE>]
 ```
+
+`rodeo .` opens both panes at the current directory; `rodeo -l ~/src -r /tmp`
+opens the two panes somewhere specific. The positional `PATH` is mutually
+exclusive with `--left`/`--right` — combining them is a CLI error, and `PATH`
+must exist and be a directory or rodeo exits with an error before starting.
 
 `rodeo --help` lists the flags and where configuration and themes are read
 from.
