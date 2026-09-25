@@ -1,0 +1,13 @@
+pkgbase = rodeo-bin
+	pkgdesc = A dual-pane terminal file manager with Vim-style keybindings (prebuilt binary)
+	pkgver = 0.6.0
+	pkgrel = 1
+	url = https://github.com/lordgreg/rodeo
+	arch = x86_64
+	license = Apache-2.0
+	depends = gcc-libs
+	conflicts = rodeo
+	source = rodeo-bin-0.6.0.tar.gz::https://github.com/lordgreg/rodeo/releases/download/v0.6.0/rodeo-0.6.0-x86_64-unknown-linux-gnu.tar.gz
+	sha256sums = 8c613918f4523ca6b2980d82840d524caf1b2740cad7debeadd0c85dc7f0443f
+
+pkgname = rodeo-bin

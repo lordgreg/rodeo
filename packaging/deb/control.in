@@ -1,0 +1,14 @@
+Package: rodeo
+Version: @VERSION@
+Section: utils
+Priority: optional
+Architecture: @ARCH@
+Installed-Size: @INSTALLED_SIZE@
+Depends: libc6
+Maintainer: Your Name <you@example.com>
+Homepage: https://github.com/lordgreg/rodeo
+Description: A dual-pane terminal file manager with Vim-style keybindings
+ Rodeo is a terminal file manager inspired by Norton and Midnight
+ Commander, written in Rust. It pairs the classic dual-pane layout with
+ Vim-style keybindings, a rich preview, and themes — with no runtime
+ dependencies beyond a terminal.

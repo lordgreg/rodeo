@@ -164,6 +164,51 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+      - name: Build .deb and .rpm
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+          PACKAGE: ${{ steps.package.outputs.package }}
+        run: |
+          set -eux
+
+          VERSION="${TAG#v}"
+          DEB="rodeo_${VERSION}_amd64.deb"
+          RPM="rodeo-${VERSION}-1.x86_64.rpm"
+
+          sudo apt-get update
+          sudo apt-get install -y rpm
+
+          export VERSION SRC_DIR="$PACKAGE" OUT_DIR="$PWD"
+          packaging/deb/build.sh
+          sha256sum "$DEB" > "$DEB.sha256"
+
+          sha256="$(sha256sum "${PACKAGE}.tar.gz" | cut -d ' ' -f1)"
+          mkdir -p rpmbuild/{SOURCES,SPECS,BUILD,RPMS,SRPMS,BUILDROOT}
+          cp "${PACKAGE}.tar.gz" rpmbuild/SOURCES/
+          sed \
+            -e "s/^Version: *.*/Version:        $VERSION/" \
+            -e "s/^%global source_sha256 .*/%global source_sha256 $sha256/" \
+            packaging/rpm/rodeo.spec > rpmbuild/SPECS/rodeo.spec
+
+          topdir="$PWD/rpmbuild"
+          rpmbuild --define "_topdir $topdir" -bb rpmbuild/SPECS/rodeo.spec
+          cp rpmbuild/RPMS/x86_64/rodeo-"$VERSION"-*.rpm "$RPM"
+          sha256sum "$RPM" > "$RPM.sha256"
+
+      - name: Upload deb/rpm artifacts
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.package.outputs.package }}-packages
+          path: |
+            rodeo_*.deb
+            rodeo_*.deb.sha256
+            rodeo-*.rpm
+            rodeo-*.rpm.sha256
+          if-no-files-found: error
+          retention-days: 7
+
   # One job publishes everything, so the matrix legs cannot race each other to
   # create the same release.
   release:
@@ -197,7 +242,9 @@ jobs:
   # assets are not publicly downloadable, so the formula would 404.
   homebrew:
     needs: [prepare, release]
-    if: needs.prepare.outputs.dry_run != 'true' && needs.prepare.outputs.draft != 'true'
+    if: >-
+      needs.prepare.outputs.dry_run != 'true' &&
+      needs.prepare.outputs.draft != 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout tap

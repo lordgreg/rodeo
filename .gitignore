@@ -4,3 +4,10 @@
 .*.swp
 *.log
 /themes/*.swp
+
+# Nix build result symlink and local packaging build outputs
+/result
+/result-*
+/packaging/deb/*.deb
+/packaging/rpm/*.rpm
+/packaging/rpm/rpmbuild/

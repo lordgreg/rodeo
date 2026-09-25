@@ -44,6 +44,23 @@ jobs:
       - name: Format
         run: cargo fmt --check
 
+  # Sanity-checks flake.nix builds and evaluates.
+  nix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build flake package
+        run: nix build .#default -L
+
+      - name: Check flake outputs evaluate
+        run: nix flake check -L --keep-going
+
   # Licence and security audit of the dependency tree.
   deny:
     runs-on: ubuntu-latest
@@ -72,7 +89,9 @@ jobs:
         uses: taiki-e/install-action@cargo-llvm-cov
 
       - name: Collect coverage
-        run: cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info
+        run: |
+          cargo llvm-cov --all-features --workspace --lcov \
+            --output-path lcov.info
 
       - name: Summarise
         run: cargo llvm-cov report --summary-only

@@ -1,0 +1,46 @@
+# Maintainer: Your Name <you@example.com>
+#
+# Packages the prebuilt x86_64-unknown-linux-gnu release asset that
+# .github/workflows/release.yml already publishes for every tag — binary,
+# man page and themes, the same bin/share layout install.sh and the
+# Homebrew formula (lordgreg/homebrew-rodeo) use. No build step, no
+# makedepends: `cargo build` isn't needed because upstream already ships a
+# tested, stripped binary for this target.
+#
+# NOTE: the AUR already has an unrelated, unmaintained package literally
+# named "rodeo" (a Python data-science IDE, last touched 2017). That name
+# is taken, hence "rodeo-bin" instead of "rodeo". Its .deb-derived install
+# very likely also drops a /usr/bin/rodeo launcher, so `conflicts` is set
+# below to make that explicit — `provides` is deliberately NOT set, since
+# the two projects are unrelated tools and not interchangeable.
+#
+# rodeo isn't published on crates.io either (the crate name "rodeo" is
+# taken by an unrelated arena-allocator crate), so a source PKGBUILD would
+# have to build from the GitHub tag instead of `cargo install` — a
+# possible separate package (e.g. rodeo-fm) later, distinct from this one.
+
+pkgname=rodeo-bin
+pkgver=0.6.0
+pkgrel=1
+pkgdesc="A dual-pane terminal file manager with Vim-style keybindings (prebuilt binary)"
+arch=('x86_64')
+url="https://github.com/lordgreg/rodeo"
+license=('Apache-2.0')
+conflicts=('rodeo')
+depends=('gcc-libs')
+source=("$pkgname-$pkgver.tar.gz::https://github.com/lordgreg/rodeo/releases/download/v$pkgver/rodeo-$pkgver-x86_64-unknown-linux-gnu.tar.gz")
+sha256sums=('8c613918f4523ca6b2980d82840d524caf1b2740cad7debeadd0c85dc7f0443f')
+
+package() {
+  local _pkgdir="$srcdir/rodeo-$pkgver-x86_64-unknown-linux-gnu"
+
+  install -Dm755 "$_pkgdir/rodeo" "$pkgdir/usr/bin/rodeo"
+  install -Dm644 "$_pkgdir/rodeo.1" "$pkgdir/usr/share/man/man1/rodeo.1"
+  install -Dm644 "$_pkgdir/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 "$_pkgdir/README.md" "$pkgdir/usr/share/doc/$pkgname/README.md"
+
+  # rodeo looks for its themes under $XDG_DATA_HOME/rodeo/themes at
+  # runtime, same as the Homebrew formula and install.sh lay them out.
+  install -d "$pkgdir/usr/share/rodeo/themes"
+  install -m644 "$_pkgdir"/themes/*.toml "$pkgdir/usr/share/rodeo/themes/"
+}
