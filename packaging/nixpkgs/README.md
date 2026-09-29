@@ -40,20 +40,46 @@ are real, computed by building against nixpkgs-unstable locally:
 Checked: no package named `rodeo` exists in nixpkgs today, so — unlike the
 AUR — naming isn't a blocker. Submitting this only takes a GitHub PR
 against `NixOS/nixpkgs`, no account approval gate the way AUR currently
-has:
+has. **Status: submitted** — live as `pkgs/by-name/ro/rodeo/package.nix`
+on the `add-rodeo` branch of the `lordgreg/nixpkgs` fork, PR open against
+`NixOS/nixpkgs:master`.
 
-```sh
-cp packaging/nixpkgs/rodeo/package.nix nixpkgs/pkgs/by-name/ro/rodeo/package.nix
-cd nixpkgs && git checkout -b add-rodeo
-git add pkgs/by-name/ro/rodeo/package.nix
-git commit -m "rodeo: init at 0.6.0"
-# open a PR; nixpkgs CI + a maintainer review from there
-```
+## Updating for a new release
 
-Both `hash` and `cargoHash` need bumping on every rodeo release (a fresh
-tag changes the source hash, and any dependency bump changes the vendor
-hash) — `nix-build` will report the correct value on a mismatch if
-`lib.fakeHash` is swapped in first, the same way they were derived here.
+Two scripts split this into a safe, fully-automatable half and a
+human-review-required half — because nixpkgs' own
+[automation/AI policy](https://github.com/NixOS/nixpkgs/blob/master/CONTRIBUTING.md#automationai-policy)
+requires "a responsible person in the loop who ... reviews it before
+submission" for every contribution, a nixpkgs PR can never be opened by
+unattended CI — but keeping this repo's own staged copy current involves
+no such risk, since nothing leaves this repo.
+
+1. **`refresh-hashes.sh`** — bumps `version` and recomputes `src.hash` +
+   `cargoHash` in `packaging/nixpkgs/rodeo/package.nix`, by setting both to
+   `lib.fakeHash` and reading the real values back out of the resulting
+   hash-mismatch errors (the same trick used to derive the hashes
+   originally committed here). Touches nothing outside this repo, so it's
+   safe to run unattended — `.github/workflows/release.yml`'s
+   `nixpkgs-staged` job runs it automatically on every tagged release and
+   commits the refreshed file straight to `master`.
+
+   ```sh
+   VERSION=0.7.0 ./packaging/nixpkgs/refresh-hashes.sh
+   ```
+
+2. **`publish-to-fork.sh`** — copies the (already-refreshed) staged file
+   into a local nixpkgs checkout, on a fresh branch, and runs the same
+   verification the initial submission went through (`nix-build`,
+   `nixfmt --check`, `check-by-name.sh`) — then stops, deliberately, before
+   committing or pushing anything, so you can review the diff yourself
+   first. This step is manual by design and always will be.
+
+   ```sh
+   NIXPKGS_DIR=/home/gregor/Projects/github/nixpkgs VERSION=0.7.0 \
+     ./packaging/nixpkgs/publish-to-fork.sh
+   # review `git diff` in $NIXPKGS_DIR, then commit (with an `Assisted-by:`
+   # trailer if AI-drafted — see the policy link above), push, and open the PR
+   ```
 
 ## Caveat: two tests skipped in the sandbox
 

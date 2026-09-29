@@ -62,7 +62,8 @@ jobs:
           case "$TAG" in
             v*) ;;
             *)
-              echo "'$TAG' is not a version tag — pass one as the 'tag' input." >&2
+              echo "'$TAG' is not a version tag" >&2
+              echo "pass one as the 'tag' input." >&2
               exit 1
               ;;
           esac
@@ -73,7 +74,8 @@ jobs:
             echo "dry_run=${DRY_RUN:-false}"
           } >> "$GITHUB_OUTPUT"
 
-          echo "Releasing $TAG (draft=${DRAFT:-false}, dry-run=${DRY_RUN:-false})"
+          echo "Releasing $TAG"
+          echo "draft=${DRAFT:-false} dry-run=${DRY_RUN:-false}"
 
   build:
     needs: prepare
@@ -287,3 +289,54 @@ jobs:
 
           git commit -m "rodeo ${TAG}"
           git push
+
+  # Refreshes packaging/nixpkgs/rodeo/package.nix's version, src.hash and
+  # cargoHash for this release, and commits the result straight to this repo
+  # (not to nixpkgs — see packaging/nixpkgs/refresh-hashes.sh and
+  # packaging/nixpkgs/publish-to-fork.sh for why that split exists). Keeps
+  # the staged file always ready to copy into a nixpkgs checkout, without
+  # ever opening or touching anything in NixOS/nixpkgs itself — nixpkgs'
+  # own contribution policy requires a human to review a change before it's
+  # submitted there, so that step stays manual, on purpose.
+  nixpkgs-staged:
+    needs: [prepare, release]
+    if: >-
+      needs.prepare.outputs.dry_run != 'true' &&
+      needs.prepare.outputs.draft != 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: master
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Refresh hashes
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          set -eux
+          VERSION="${TAG#v}"
+          VERSION="$VERSION" ./packaging/nixpkgs/refresh-hashes.sh
+
+      - name: Commit and push
+        run: |
+          set -eux
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add packaging/nixpkgs/rodeo/package.nix
+
+          if git diff --cached --quiet; then
+            echo "Staged nixpkgs package already up to date, nothing to commit."
+            exit 0
+          fi
+
+          TAG="${{ needs.prepare.outputs.tag }}"
+          git commit -m "packaging/nixpkgs: refresh hashes for $TAG"
+          git push origin HEAD:master

@@ -1,11 +1,3 @@
-# Ready for a `nixpkgs/pkgs/by-name/ro/rodeo/package.nix` PR — unlike the
-# flake.nix at the repo root (which points rustPlatform.buildRustPackage at
-# the local checkout via cargoLock.lockFile), nixpkgs packages fetch their
-# own pinned source, so this uses fetchFromGitHub + cargoHash instead. No
-# account or gatekeeping needed to submit this, just a GitHub PR against
-# NixOS/nixpkgs and going through normal review — unlike the AUR's current
-# registration freeze. (Checked: no "rodeo" package exists in nixpkgs
-# today, so the name is free.)
 {
   lib,
   fetchFromGitHub,
@@ -55,6 +47,6 @@ rustPlatform.buildRustPackage (finalAttrs: {
     license = lib.licenses.asl20;
     mainProgram = "rodeo";
     platforms = lib.platforms.unix;
-    # maintainers = with lib.maintainers; [ ];
+    maintainers = with lib.maintainers; [ lordgreg ];
   };
 })
