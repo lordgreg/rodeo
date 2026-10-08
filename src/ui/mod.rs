@@ -992,7 +992,9 @@ impl App {
         };
 
         match &mut self.overlay {
-            Some(Overlay::Keybinds) => PopupKeybinds::new().render(frame, &self.theme, area),
+            Some(Overlay::Keybinds) => {
+                PopupKeybinds::new(&self.keymap).render(frame, &self.theme, area)
+            }
             Some(Overlay::Preview(preview)) => preview.render(frame, &self.theme, area),
             Some(Overlay::BulkRename(br)) => br.render(frame, &self.theme, area),
             Some(Overlay::Trash(tv)) => tv.render(frame, &self.theme, area),
