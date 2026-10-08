@@ -1,3 +1,16 @@
+# 0.6.1
+
+## Fixed
+
+- **Custom keybindings now appear in the `?` help popup.** The popup printed
+  the built-in keys from a hard-coded table, so a `[keybindings]` override
+  reached the footer but not the popup. Each action's row is now resolved
+  against the active keymap, with a custom binding winning over the built-in —
+  the same choice the footer already makes. Keys the keymap does not own
+  (preview scrolling, `Esc`, `:!` / `:term`) stay fixed, and `dd` / the cursor
+  pair stay as written, because the live form would misrepresent a double
+  press or reorder an interleaved pair.
+
 # 0.6.0
 
 ## Added

@@ -236,8 +236,8 @@ Bundled themes: `default`, `catppuccin-frappe`, `catppuccin-latte`,
 ## Keybindings
 
 The defaults are vim-first: no function keys, one key per job. `?` shows this
-list in the app, and the bar along the bottom always shows the keys that are
-actually bound — rebind something and the bar says so.
+list in the app; both it and the bar along the bottom show the keys that are
+actually bound — rebind something and they say so.
 
 | Key | Action |
 |-----|--------|
@@ -275,8 +275,8 @@ actually bound — rebind something and the bar says so.
 Function keys are not bound by default: they duplicate keys that already
 exist, and terminals steal several of them (`F10` opens the menu in GNOME
 Terminal, `F1` opens help in others). If you want them anyway, paste this into
-`config.toml` — `:so` applies it without a restart, and the footer relabels
-itself to match:
+`config.toml` — `:so` applies it without a restart, and the footer and the
+`?` popup relabel themselves to match:
 
 ```toml
 [keybindings]

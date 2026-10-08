@@ -366,13 +366,42 @@ impl Keymap {
             .map(|(chord, _)| chord.label())
     }
 
-    /// Keys bound to an action, for the help popup.
+    /// Keys bound to an action, in config-file form (`ctrl+f`), for the
+    /// conflict warnings and tests.
     pub fn keys_for(&self, action: Action) -> Vec<String> {
         self.bindings
             .iter()
             .filter(|(_, binding)| *binding == Binding::Action(action))
             .map(|(chord, _)| chord.describe())
             .collect()
+    }
+
+    /// Display labels for an action's effective keys, ready for the help popup.
+    ///
+    /// A key the user bound in `[keybindings]` wins over the built-ins: if the
+    /// action has any chord the defaults do not give it, only those custom
+    /// chords are returned — the same choice [`Self::display_key`] already
+    /// makes for the footer, so the popup and the bar beside it never disagree.
+    /// An action bound only by default returns every default chord, in binding
+    /// order; an action with no key at all returns nothing.
+    pub fn labels_for(&self, action: Action) -> Vec<String> {
+        let defaults = default_keymap();
+        let mut all = Vec::new();
+        let mut custom = Vec::new();
+
+        for (chord, binding) in &self.bindings {
+            if *binding != Binding::Action(action) {
+                continue;
+            }
+            all.push(chord.label());
+            // A chord is custom when the defaults never gave it this action —
+            // including the case where it used to mean something else.
+            if defaults.get(*chord) != Some(&Binding::Action(action)) {
+                custom.push(chord.label());
+            }
+        }
+
+        if custom.is_empty() { all } else { custom }
     }
 
     fn set(&mut self, chord: Chord, binding: Binding) {
@@ -716,6 +745,37 @@ mod tests {
                 .iter()
                 .any(|w| w.contains("unknown action 'qiut'"))
         );
+    }
+
+    #[test]
+    fn labels_follow_the_effective_binding() {
+        // A key the config adds wins over the built-in, exactly as the footer
+        // shows it; the built-in is not repeated beside it.
+        let map = build_keymap(&config_with(&[("z", "select")]));
+        assert_eq!(map.labels_for(Action::ToggleSelect), vec!["z"]);
+    }
+
+    #[test]
+    fn labels_fall_back_to_every_default_key() {
+        let map = default_keymap();
+        assert_eq!(
+            map.labels_for(Action::MoveDown),
+            vec!["j".to_string(), "Down".to_string()]
+        );
+    }
+
+    #[test]
+    fn labels_keep_all_custom_keys() {
+        let map = build_keymap(&config_with(&[("z", "select"), ("Z", "select")]));
+        let mut labels = map.labels_for(Action::ToggleSelect);
+        labels.sort();
+        assert_eq!(labels, vec!["Z".to_string(), "z".to_string()]);
+    }
+
+    #[test]
+    fn labels_are_empty_when_the_action_was_freed() {
+        let map = build_keymap(&config_with(&[("q", "none")]));
+        assert!(map.labels_for(Action::Quit).is_empty());
     }
 
     #[test]
