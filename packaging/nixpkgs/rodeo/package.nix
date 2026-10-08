@@ -7,16 +7,16 @@
 
 rustPlatform.buildRustPackage (finalAttrs: {
   pname = "rodeo";
-  version = "0.6.0";
+  version = "0.6.1";
 
   src = fetchFromGitHub {
     owner = "lordgreg";
     repo = "rodeo";
     tag = "v${finalAttrs.version}";
-    hash = "sha256-+elJAVUt7baiFyDSEczE4NngTs8tv9VxU9QxX0PZvxM=";
+    hash = "sha256-OPZQO+siPqH2jfR9Rr5ubqfy6bEvXxMiqArcNyI9q6U=";
   };
 
-  cargoHash = "sha256-YnSlEn6CUQU/rGFeki7SEknFpw4pRDP1AU+wNn6ac24=";
+  cargoHash = "sha256-vmv9NyPlySo67uNg7laom6BM+pPOpOOmesaf5UUtgQ0=";
 
   nativeBuildInputs = [ installShellFiles ];
 
