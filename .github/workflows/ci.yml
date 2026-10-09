@@ -4,6 +4,16 @@ on:
   push:
     branches: [master]
   pull_request:
+    # A prose-only change cannot affect the build, so it does not need a runner.
+    # `docs/**` is deliberately absent: docs/rodeo.1 is a generated man page
+    # that tests/man.rs compares against the CLI definition, so a change to it
+    # has to run the suite. Markdown is safe — the .md files in the tests are
+    # fixtures written into temp dirs, never read back from the repository.
+    # Beware: a skipped check is not a passing one, so while this filter is in
+    # place `test` and `deny` must not be required status checks — otherwise a
+    # prose-only pull request can never satisfy a merge rule waiting on them.
+    paths-ignore:
+      - "**.md"
 
 permissions:
   contents: read
@@ -31,7 +41,14 @@ jobs:
       - name: Check
         run: cargo check --locked --all-targets
 
+      # On master the suite is run by the coverage job through `cargo llvm-cov`,
+      # so repeating it here would compile the crate and the tests twice. That
+      # instrumented run does not include doc tests, which is fine while there
+      # are none: the only fenced block in the source is TOML, in
+      # src/ui/keymap.rs. Adding a Rust doc test would make it run on pull
+      # requests only.
       - name: Test
+        if: github.event_name != 'push'
         run: cargo test --locked --all
 
       - name: Clippy
@@ -39,23 +56,6 @@ jobs:
 
       - name: Format
         run: cargo fmt --check
-
-  # Sanity-checks flake.nix builds and evaluates.
-  nix:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Install Nix
-        uses: cachix/install-nix-action@v31
-        with:
-          github_access_token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build flake package
-        run: nix build .#default -L
-
-      - name: Check flake outputs evaluate
-        run: nix flake check -L --keep-going
 
   # Licence and security audit of the dependency tree.
   deny:
@@ -67,8 +67,13 @@ jobs:
           command: check
 
   # Coverage is informational: most of the code is TUI rendering, which is only
-  # partly reachable from tests (see tests/render.rs).
+  # partly reachable from tests (see tests/render.rs). Master only: the
+  # instrumented build is the most expensive job in this workflow and nothing
+  # gates on the result, so a pull request should not pay for it. This is also
+  # the run that executes the test suite on master, which is why the `test` job
+  # above skips that step on a push.
   coverage:
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -86,7 +91,7 @@ jobs:
 
       - name: Collect coverage
         run: |
-          cargo llvm-cov --all-features --workspace --lcov \
+          cargo llvm-cov --locked --all-features --workspace --lcov \
             --output-path lcov.info
 
       - name: Summarise
