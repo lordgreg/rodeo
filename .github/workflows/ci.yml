@@ -3,17 +3,11 @@ name: CI
 on:
   push:
     branches: [master]
+  # Deliberately unfiltered: `test` and `deny` are required status checks on
+  # master, and a workflow-level `paths-ignore` would leave a prose-only pull
+  # request waiting forever for a check that never starts. Skipping docs-only
+  # changes has to happen inside a job, not here.
   pull_request:
-    # A prose-only change cannot affect the build, so it does not need a runner.
-    # `docs/**` is deliberately absent: docs/rodeo.1 is a generated man page
-    # that tests/man.rs compares against the CLI definition, so a change to it
-    # has to run the suite. Markdown is safe — the .md files in the tests are
-    # fixtures written into temp dirs, never read back from the repository.
-    # Beware: a skipped check is not a passing one, so while this filter is in
-    # place `test` and `deny` must not be required status checks — otherwise a
-    # prose-only pull request can never satisfy a merge rule waiting on them.
-    paths-ignore:
-      - "**.md"
 
 permissions:
   contents: read
