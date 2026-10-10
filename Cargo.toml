@@ -53,7 +53,7 @@ tokio = { version = "1.53.2", features = ["full"] }
 toml = "1.1.8"
 trash = "5.2.9"
 xdg = "3.0.0"
-zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
+zip = { version = "9.0.1", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 clap_mangen = "0.3.3"
