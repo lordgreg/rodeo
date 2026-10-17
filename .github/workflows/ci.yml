@@ -98,3 +98,21 @@ jobs:
         with:
           name: coverage
           path: lcov.info
+
+  # Validates the flake Nix users install from (`nix run
+  # github:lordgreg/rodeo`). The cargo jobs above never touch Nix, so a stale
+  # `cargoLock.lockFile` reference or a file `postInstall` needs that was
+  # renamed would only surface here.
+  nix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+
+      - name: Check flake
+        run: nix flake check
+
+      - name: Build default package
+        run: nix build .#default --print-build-logs

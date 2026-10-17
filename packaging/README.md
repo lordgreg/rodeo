@@ -7,7 +7,7 @@ next steps.
 | Path | Target | Status |
 | --- | --- | --- |
 | `aur/rodeo-bin/` | Arch Linux (AUR) | Ready to push; blocked on AUR account (registration currently closed, see below) |
-| `nixpkgs/rodeo/package.nix` + `/flake.nix` | Nix / NixOS | `flake.nix` usable today (no gate); built + `nix flake check`ed on every CI run; nixpkgs PR ready to open |
+| `/flake.nix` | Nix / NixOS | Usable today (no gate); built + `nix flake check`ed on every CI run |
 | `rpm/rodeo.spec` | Fedora (Copr) | `.github/workflows/release.yml` builds and attaches a `.rpm` to every GitHub release automatically; publishing it to Copr still needs a (currently open) FAS account |
 | `deb/` | Debian / Ubuntu (.deb) | `.github/workflows/release.yml` builds and attaches a `.deb` to every GitHub release automatically; no formal gate |
 
@@ -19,8 +19,8 @@ from the checkout) repackages the same prebuilt
 `.github/workflows/release.yml` already publishes on tag — binary, man
 page, themes, laid out the same way `install.sh` and the Homebrew formula
 (`lordgreg/homebrew-rodeo`) install them: `bin/`, `share/man/man1/`,
-`share/rodeo/themes/`. No package here compiles rodeo itself except the Nix
-ones (`buildRustPackage`, using the committed `Cargo.lock`).
+`share/rodeo/themes/`. No package here compiles rodeo itself except the flake
+(`buildRustPackage`, using the committed `Cargo.lock`).
 
 All of these were built and sanity-checked locally before being written up
 here (`makepkg`/`rpmbuild`/`dpkg-deb`/`nix build` — see each README), not
@@ -37,8 +37,9 @@ needed there. `.github/workflows/ci.yml` builds the `flake.nix` package and
 runs `nix flake check` on every push/PR, so a broken flake fails CI the
 same way a broken `cargo build` would.
 
-AUR and nixpkgs-PR publishing remain manual (an account gate for AUR, a
-review process for nixpkgs) — see their own READMEs.
+AUR publishing remains manual (an account gate) — see its README. A nixpkgs
+submission was declined upstream, so Nix users get rodeo through the flake
+only.
 
 ## Naming
 
