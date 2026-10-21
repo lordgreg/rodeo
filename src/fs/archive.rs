@@ -122,7 +122,11 @@ fn list_zip(path: &Path) -> io::Result<Vec<(String, bool, u64)>> {
     let mut out = Vec::with_capacity(archive.len());
     for i in 0..archive.len() {
         let entry = archive.by_index(i).map_err(io::Error::other)?;
-        out.push((entry.name().to_string(), entry.is_dir(), entry.size()));
+        out.push((
+            entry.name().map_err(io::Error::other)?.to_string(),
+            entry.is_dir(),
+            entry.size(),
+        ));
     }
     Ok(out)
 }
@@ -264,7 +268,11 @@ fn extract_zip(
     for i in 0..archive.len() {
         check_cancel(cancel)?;
         let entry = archive.by_index(i).map_err(io::Error::other)?;
-        let name = entry.name().trim_matches('/').to_string();
+        let name = entry
+            .name()
+            .map_err(io::Error::other)?
+            .trim_matches('/')
+            .to_string();
         let Some(dest) = dest_for(&name, names, dest_dir) else {
             continue;
         };
