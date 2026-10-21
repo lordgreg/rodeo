@@ -502,7 +502,7 @@ impl PopupPreview {
         let mut entries = Vec::new();
         for i in 0..archive.len() {
             let entry = archive.by_index(i)?;
-            entries.push((entry.name().to_string(), entry.size()));
+            entries.push((entry.name()?.to_string(), entry.size()));
         }
         Ok(entries)
     }
