@@ -1,3 +1,19 @@
+# 0.6.2
+
+## Fixed
+
+- **Dependency advisories cleared.** `zip` is upgraded from 8.6.0 to 9.3.0,
+  which resolves its security advisories; the three call sites that used the
+  now-fallible `ZipFile::name()` propagate the error instead of formatting it
+  directly. `rustls` and `rustls-webpki` are also bumped to versions that
+  clear their advisories, keeping `cargo deny check` green.
+
+## Changed
+
+- Routine dependency updates: `ignore` 0.4.34, `libc` 0.2.191, `log`
+  0.4.35, `notify` 8.2.1, `serde_json` 1.0.154, `tokio` 1.54.1, `toml`
+  1.2.0 and `trash` 5.3.0.
+
 # 0.6.1
 
 ## Fixed
