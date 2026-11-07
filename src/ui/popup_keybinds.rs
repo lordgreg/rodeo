@@ -143,6 +143,11 @@ const KEYBINDS: &[Keybind] = &[
         "Switch panes",
     ),
     bind(
+        &[key(Action::Maximize)],
+        ", ",
+        "Maximize the active pane, or restore the split",
+    ),
+    bind(
         &[curated(
             "j, k, Up, Down",
             &[Action::MoveDown, Action::MoveUp],

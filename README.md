@@ -11,6 +11,9 @@ terminal.
 
 - **Dual-pane navigation** with per-pane sorting, filtering and hidden-file
   toggling; the active pane is highlighted and the inactive one dimmed.
+  `Ctrl+b` maximizes the active pane, hiding the other one until toggled back;
+  switching panes while maximized follows the focus, so the view stays zoomed
+  as `Tab` moves between panes.
 - **Tree view** (`t`) — a collapsible tree in place of a pane's flat listing,
   rooted where the pane already is, for getting around a deep project without
   walking into it one directory at a time. Nodes open lazily, file operations
@@ -162,6 +165,7 @@ sort_order = "Ascending"            # Ascending | Descending
 show_hidden = false
 directories_on_top = true
 active_pane = "Left"                # Left | Right
+maximized = false                   # start with the active pane full width
 editor = "nvim"                     # defaults to $VISUAL, then $EDITOR, then vi
 icons = false                       # file-type glyphs; needs a Nerd Font
 
@@ -206,7 +210,7 @@ those into the archive browser first, so an `[[actions]]` rule for `*.zip`
 will never fire.
 
 Action names: `open` `parent` `first` `last` `select`
-`select_all` `glob` `sizes` `quit` `left` `right` `switch` `help`
+`select_all` `glob` `sizes` `quit` `left` `right` `switch` `maximize` `help`
 `preview` `search` `filter` `find` `palette` `rename` `create` `yank` `paste`
 `paste_move` `delete_chord` `copy` `move` `delete` `down` `up` `hidden`
 `refresh` `sort_next` `sort_prev` `sort_reverse` `bulk_rename` `bookmark`
@@ -244,6 +248,7 @@ actually bound — rebind something and they say so.
 | `j` `k` / `↓` `↑` | Move cursor |
 | `g` / `G` | First / last entry |
 | `h` / `l` / `Tab` | Left pane / right pane / switch |
+| `Ctrl+b` | Maximize the active pane (hides the other) |
 | `Enter` | Open directory, or edit file in `$EDITOR` |
 | `Backspace` | Parent directory (tree: re-root one level up) |
 | `t` | Tree view on/off |
@@ -313,6 +318,7 @@ theme names for `:theme`.
 | `:bookmarks` | Browse the bookmarks |
 | `:term <cmd>` | Run a command attached to the terminal (lazygit, htop…) |
 | `:!<cmd>` | Run a shell command and show its output |
+| `:max` `:maximize` | Maximize the active pane, or restore the split |
 | `:help` | Show the help popup |
 
 `%f` expands to the selected (or highlighted) paths in both `:!` and `:term` —

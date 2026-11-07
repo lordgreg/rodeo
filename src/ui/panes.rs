@@ -1890,6 +1890,8 @@ pub struct Panes {
     pub pane_left: Pane,
     pub pane_right: Pane,
     active_pane: ActivePane,
+    /// When set, only the active pane is drawn, full width.
+    maximized: bool,
 }
 
 impl Panes {
@@ -1898,11 +1900,24 @@ impl Panes {
             pane_left: Pane::new(config, &config.initial_directory_left),
             pane_right: Pane::new(config, &config.initial_directory_right),
             active_pane: config.active_pane,
+            maximized: config.maximized,
         }
     }
 
     pub fn set_active_pane(&mut self, pane: ActivePane) {
         self.active_pane = pane;
+    }
+
+    /// Turns maximize on/off, returning the new state.
+    pub fn toggle_maximize(&mut self) -> bool {
+        self.maximized = !self.maximized;
+        self.maximized
+    }
+
+    /// Applies a maximize state from outside, e.g. a `:so` that re-read the
+    /// config, or the startup value.
+    pub fn set_maximized(&mut self, maximized: bool) {
+        self.maximized = maximized;
     }
 
     pub fn get_active_pane_mut(&mut self) -> &mut Pane {
@@ -2003,6 +2018,18 @@ impl Panes {
 
 impl Component for Panes {
     fn render(&mut self, frame: &mut Frame<'_>, theme: &Theme, area: Rect) {
+        // Maximized: the active pane takes the whole area and the other one is
+        // simply not drawn. It still exists and stays live (the watcher and git
+        // still poll it), so switching to it is instant and operations aimed at
+        // it — copy, move, symlink — keep working while it is hidden.
+        if self.maximized {
+            match self.active_pane {
+                ActivePane::Left => self.pane_left.render(frame, theme, area, true),
+                ActivePane::Right => self.pane_right.render(frame, theme, area, true),
+            }
+            return;
+        }
+
         let layout = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])

@@ -1777,6 +1777,7 @@ impl App {
                 }
             }
             "theme" => self.switch_theme(arg),
+            "max" | "maximize" => self.toggle_maximize(),
             "help" => self.overlay = Some(Overlay::Keybinds),
             "term" => {
                 if arg.is_empty() {
@@ -1819,6 +1820,12 @@ impl App {
                 self.keymap = crate::ui::keymap::build_keymap(&self.config);
                 self.footer.update_hints(&self.keymap);
                 self.panes.reload(&self.config, false);
+                // View state the panes own, re-seeded from the file: `:so`
+                // otherwise left the live active pane and maximize state alone,
+                // so editing either in the config had no effect until restart.
+                self.panes.set_active_pane(self.config.active_pane);
+                self.panes.set_maximized(self.config.maximized);
+                self.sync_header();
                 self.ok_status("Config reloaded".to_string());
                 self.report_keymap_warnings();
             }
@@ -2120,6 +2127,7 @@ impl App {
             Action::PaneLeft => self.panes.set_active_pane(ActivePane::Left),
             Action::PaneRight => self.panes.set_active_pane(ActivePane::Right),
             Action::PaneToggle => self.toggle_pane(),
+            Action::Maximize => self.toggle_maximize(),
             Action::Help => self.toggle_keybinds(),
             Action::Preview => self.toggle_preview(),
             Action::MoveDown => self.panes.goto_next(MoveDirection::Down),
@@ -2288,6 +2296,13 @@ impl App {
     fn toggle_pane(&mut self) {
         self.panes.toggle_active_pane();
         self.sync_header();
+    }
+
+    /// Shows the active pane full width, or restores the split. Persisted so
+    /// the state survives a restart, like the other view toggles.
+    fn toggle_maximize(&mut self) {
+        self.config.maximized = self.panes.toggle_maximize();
+        let _ = self.persist_config();
     }
 
     fn toggle_keybinds(&mut self) {

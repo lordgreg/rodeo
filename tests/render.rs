@@ -37,6 +37,15 @@ fn draw(app: &mut App, width: u16, height: u16) -> ratatui::buffer::Buffer {
     terminal.backend().buffer().clone()
 }
 
+/// The whole frame as one string, for `contains` assertions.
+fn text(app: &mut App, width: u16, height: u16) -> String {
+    draw(app, width, height)
+        .content()
+        .iter()
+        .map(|c| c.symbol())
+        .collect()
+}
+
 /// A directory with one of everything the panes have to format.
 fn populated_dir() -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
@@ -322,6 +331,55 @@ fn enter_in_the_file_finder_takes_the_pane_to_the_match() {
     assert!(text.contains("sub"), "{text}");
     assert!(text.contains("target.txt"), "{text}");
     assert!(!text.contains("Find Files"), "{text}");
+}
+
+/// Maximizing hides the inactive pane and gives the active one the full width.
+/// Switching panes while maximized follows the focus rather than restoring the
+/// split, so it doubles as a focus mode.
+#[test]
+fn maximizing_shows_one_pane_at_a_time() {
+    let left = tempfile::tempdir().unwrap();
+    std::fs::write(left.path().join("left-marker.rs"), "l\n").unwrap();
+    let right = tempfile::tempdir().unwrap();
+    std::fs::write(right.path().join("right-marker.rs"), "r\n").unwrap();
+
+    // Distinct directories, so which pane was drawn is never in doubt.
+    let config = Config {
+        initial_directory_left: left.path().to_string_lossy().to_string(),
+        initial_directory_right: right.path().to_string_lossy().to_string(),
+        ..Default::default()
+    };
+    let mut app = App::new(
+        Theme::builtin().expect("built-in theme"),
+        config,
+        &left.path().join("config.toml"),
+    );
+
+    // Split: both listings are on screen.
+    let screen = text(&mut app, 120, 30);
+    assert!(screen.contains("left-marker.rs"), "{screen}");
+    assert!(screen.contains("right-marker.rs"), "{screen}");
+
+    // `Ctrl+b`: the active (left) pane fills the width, the right one is gone.
+    press(&mut app, 'b', crossterm::event::KeyModifiers::CONTROL);
+    let screen = text(&mut app, 120, 30);
+    assert!(screen.contains("left-marker.rs"), "{screen}");
+    assert!(!screen.contains("right-marker.rs"), "{screen}");
+
+    // `Tab` while maximized follows the focus: the right pane now fills it.
+    app.dispatch_key(&crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Tab,
+        crossterm::event::KeyModifiers::NONE,
+    ));
+    let screen = text(&mut app, 120, 30);
+    assert!(screen.contains("right-marker.rs"), "{screen}");
+    assert!(!screen.contains("left-marker.rs"), "{screen}");
+
+    // Toggling back restores both.
+    press(&mut app, 'b', crossterm::event::KeyModifiers::CONTROL);
+    let screen = text(&mut app, 120, 30);
+    assert!(screen.contains("left-marker.rs"), "{screen}");
+    assert!(screen.contains("right-marker.rs"), "{screen}");
 }
 
 fn press(app: &mut App, c: char, modifiers: crossterm::event::KeyModifiers) {

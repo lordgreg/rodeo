@@ -34,6 +34,7 @@ pub enum Action {
     PaneLeft,
     PaneRight,
     PaneToggle,
+    Maximize,
     Help,
     Preview,
     Search,
@@ -84,6 +85,7 @@ impl Action {
             Self::PaneLeft => "left",
             Self::PaneRight => "right",
             Self::PaneToggle => "switch",
+            Self::Maximize => "maximize",
             Self::Help => "help",
             Self::Preview => "preview",
             Self::Search => "search",
@@ -131,6 +133,7 @@ impl Action {
         Self::PaneLeft,
         Self::PaneRight,
         Self::PaneToggle,
+        Self::Maximize,
         Self::Help,
         Self::Preview,
         Self::Search,
@@ -448,6 +451,9 @@ pub fn default_keymap() -> Keymap {
         (plain(Char('h')), PaneLeft),
         (plain(Char('l')), PaneRight),
         (plain(Tab), PaneToggle),
+        // `Ctrl+b` pages the preview popup, a separate input mode; here it
+        // hides the inactive pane and gives the active one the full width.
+        (ctrl(Char('b')), Maximize),
         (plain(Char('?')), Help),
         (plain(Char(' ')), Preview),
         (plain(Char('/')), Search),
