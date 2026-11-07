@@ -122,6 +122,12 @@ pub const COMMANDS: &[CommandSpec] = &[
         arg_kind: ArgKind::Text,
     },
     CommandSpec {
+        names: &["max", "maximize"],
+        args: "",
+        description: "Maximize the active pane, or restore the split",
+        arg_kind: ArgKind::None,
+    },
+    CommandSpec {
         names: &["help"],
         args: "",
         description: "Show the help popup",

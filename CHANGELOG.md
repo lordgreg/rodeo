@@ -1,3 +1,16 @@
+# Unreleased
+
+## Added
+
+- **Maximize the active pane.** `Ctrl+b` hides the inactive pane and gives the
+  active one the full width; pressing it again restores the split. Switching
+  panes while maximized follows the focus, so `Tab` moves between panes without
+  un-zooming, and the hidden pane stays live — copy, move and symlink still
+  target it. Also available as `:max` / `:maximize`, and rebindable as the
+  `maximize` action. The state is saved in `config.toml` (`maximized`) and
+  restored on the next launch; `:so` now reapplies both `maximized` and
+  `active_pane` from a reloaded file.
+
 # 0.6.2
 
 ## Fixed

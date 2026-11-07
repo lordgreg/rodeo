@@ -97,6 +97,9 @@ pub struct Config {
     pub directories_on_top: bool,
     #[serde(default = "default_active_pane")]
     pub active_pane: ActivePane,
+    /// Show only the active pane, full width, hiding the other one.
+    #[serde(default)]
+    pub maximized: bool,
     #[serde(default = "default_editor")]
     pub editor: String,
     #[serde(default = "default_auto_update")]
@@ -334,6 +337,7 @@ mod tests {
         assert!(!config.show_hidden);
         assert!(config.directories_on_top);
         assert!(matches!(config.active_pane, ActivePane::Left));
+        assert!(!config.maximized);
         assert!(!config.icons);
         assert!(config.filter_gitignore);
         assert!(config.filter_hidden);
@@ -496,6 +500,7 @@ sort_order = "Descending"
 show_hidden = true
 directories_on_top = false
 active_pane = "Right"
+maximized = true
 editor = "emacs"
 filter_gitignore = false
 filter_hidden = false
@@ -518,6 +523,7 @@ help = "H"
         assert!(config.show_hidden);
         assert!(!config.directories_on_top);
         assert!(matches!(config.active_pane, ActivePane::Right));
+        assert!(config.maximized);
         assert_eq!(config.editor, "emacs");
         assert!(!config.filter_gitignore);
         assert!(!config.filter_hidden);
@@ -651,6 +657,7 @@ command = "gzip1 %f"
             let config = Config {
                 theme: "nord".to_string(),
                 show_hidden: true,
+                maximized: true,
                 ..Default::default()
             };
             Config::save_config(&config, &path).unwrap();
@@ -659,6 +666,7 @@ command = "gzip1 %f"
 
             assert_eq!(read.theme, "nord");
             assert!(read.show_hidden);
+            assert!(read.maximized);
         }
 
         #[test]
