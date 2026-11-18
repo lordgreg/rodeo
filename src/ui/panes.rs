@@ -133,7 +133,9 @@ pub(crate) fn format_size(size: u64) -> String {
 pub(crate) fn format_date(t: SystemTime) -> String {
     match Timestamp::try_from(t) {
         Ok(ts) => ts.strftime("%Y-%m-%d %H:%M").to_string(),
-        // Out of jiff's range (years beyond ±9999); chrono panicked here.
+        // jiff stops at ±9999 years and chrono ran much wider, so a
+        // timestamp outside that now reads "-" instead of a date. No
+        // filesystem timestamp comes close to either bound.
         Err(_) => "-".to_string(),
     }
 }
@@ -2284,8 +2286,9 @@ mod tests {
         }
 
         #[test]
-        fn before_the_epoch_does_not_panic() {
-            // chrono's `From<SystemTime>` used to panic here.
+        fn before_the_epoch() {
+            // chrono rendered this the same way, so the test pins that the
+            // migration to jiff did not change pre-epoch output.
             let t = SystemTime::UNIX_EPOCH - Duration::from_secs(60);
             assert_eq!(format_date(t), "1969-12-31 23:59");
         }
