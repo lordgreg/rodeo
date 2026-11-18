@@ -603,11 +603,7 @@ impl Updater {
     }
 
     pub fn is_update_pending() -> bool {
-        if CacheFileInfo::get_cache_file().is_ok() {
-            return true;
-        }
-
-        false
+        CacheFileInfo::get_cache_file().is_ok()
     }
 
     pub fn cleanup_everything() {
