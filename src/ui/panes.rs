@@ -24,6 +24,7 @@ use crate::{
         theme::Theme,
     },
 };
+use jiff::Timestamp;
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, HorizontalAlignment, Layout, Rect},
@@ -130,8 +131,11 @@ pub(crate) fn format_size(size: u64) -> String {
 }
 
 pub(crate) fn format_date(t: SystemTime) -> String {
-    let dt: chrono::DateTime<chrono::Utc> = t.into();
-    dt.format("%Y-%m-%d %H:%M").to_string()
+    match Timestamp::try_from(t) {
+        Ok(ts) => ts.strftime("%Y-%m-%d %H:%M").to_string(),
+        // Out of jiff's range (years beyond ±9999); chrono panicked here.
+        Err(_) => "-".to_string(),
+    }
 }
 
 #[derive(PartialEq, Debug, Clone, Copy)]
@@ -2277,6 +2281,13 @@ mod tests {
             // 2024-01-15 12:30:00 UTC
             let t = SystemTime::UNIX_EPOCH + Duration::from_secs(1705321800);
             assert_eq!(format_date(t), "2024-01-15 12:30");
+        }
+
+        #[test]
+        fn before_the_epoch_does_not_panic() {
+            // chrono's `From<SystemTime>` used to panic here.
+            let t = SystemTime::UNIX_EPOCH - Duration::from_secs(60);
+            assert_eq!(format_date(t), "1969-12-31 23:59");
         }
     }
 
