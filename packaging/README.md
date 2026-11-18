@@ -7,7 +7,7 @@ next steps.
 | Path | Target | Status |
 | --- | --- | --- |
 | `aur/rodeo-bin/` | Arch Linux (AUR) | Ready to push; blocked on AUR account (registration currently closed, see below) |
-| `/flake.nix` | Nix / NixOS | Usable today (no gate); built + `nix flake check`ed on every CI run |
+| `/flake.nix` | Nix / NixOS | Usable today (no gate); built and `nix flake check`ed locally, not in CI |
 | `rpm/rodeo.spec` | Fedora (Copr) | `.github/workflows/release.yml` builds and attaches a `.rpm` to every GitHub release automatically; publishing it to Copr still needs a (currently open) FAS account |
 | `deb/` | Debian / Ubuntu (.deb) | `.github/workflows/release.yml` builds and attaches a `.deb` to every GitHub release automatically; no formal gate |
 
@@ -33,9 +33,10 @@ just hand-written from convention.
 it packages the `.tar.gz`, reusing that same tree instead of re-downloading
 it), and uploads them alongside the other release assets — the `release`
 job's `files: assets/*` already picks up anything uploaded, no changes
-needed there. `.github/workflows/ci.yml` builds the `flake.nix` package and
-runs `nix flake check` on every push/PR, so a broken flake fails CI the
-same way a broken `cargo build` would.
+needed there. `.github/workflows/ci.yml` no longer builds the `flake.nix`
+package: `nix flake check` and `nix build` were the slowest jobs in the
+workflow, so the flake is verified locally instead and a broken flake no
+longer fails CI.
 
 AUR publishing remains manual (an account gate) — see its README. A nixpkgs
 submission was declined upstream, so Nix users get rodeo through the flake
