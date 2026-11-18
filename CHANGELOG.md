@@ -1,4 +1,4 @@
-# Unreleased
+# 0.7.0
 
 ## Added
 
@@ -10,6 +10,21 @@
   `maximize` action. The state is saved in `config.toml` (`maximized`) and
   restored on the next launch; `:so` now reapplies both `maximized` and
   `active_pane` from a reloaded file.
+
+## Changed
+
+- **`chrono` replaced with `jiff`.** `chrono` is unmaintained
+  (RUSTSEC-2026-0543) and `cargo deny check` fails on any new unmaintained
+  advisory. `jiff` was already in the tree through `env_logger`, so the
+  modification time column now formats through it and `chrono` is gone
+  entirely; `trash` 5.4.0 moved off it at the same time. The one visible
+  difference is that a modification time outside `jiff`'s ±9999-year range
+  shows `-` where it used to show a date, which no filesystem timestamp comes
+  close to.
+
+- Routine dependency updates: `clap` 4.6.8, `clap_mangen` 0.3.4, `flate2`
+  1.1.11, `notify` 8.2.2, `regex` 1.13.2, `toml` 1.2.1, `trash` 5.4.0 and
+  `zip` 9.7.0.
 
 # 0.6.2
 
