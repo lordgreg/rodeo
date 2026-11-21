@@ -14,11 +14,11 @@ categories = ["command-line-utilities", "filesystem"]
 exclude = ["screenshots"]
 
 [dependencies]
-clap = { version = "4.6.8", features = ["derive"] }
+clap = { version = "4.6.9", features = ["derive"] }
 clap_mangen = "0.3.4"
 color-eyre = "0.6.5"
 crossterm = "0.29.0"
-env_logger = "0.11.11"
+env_logger = "0.11.12"
 flate2 = "1.1.11"
 ignore = "0.4.34"
 image = "0.25.10"
@@ -52,10 +52,10 @@ syntect = { version = "5.3.0", default-features = false, features = [
 tar = "0.4.46"
 tempfile = "3.27.0"
 tokio = { version = "1.54.1", features = ["full"] }
-toml = "1.2.1"
+toml = "1.2.2"
 trash = "5.4.0"
 xdg = "3.0.0"
-zip = { version = "9.7.0", default-features = false, features = ["deflate"] }
+zip = { version = "9.8.1", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 clap_mangen = "0.3.4"
